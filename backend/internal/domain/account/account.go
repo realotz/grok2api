@@ -132,6 +132,9 @@ type Credential struct {
 	LinkedAccountID           uint64
 	LinkedAccountName         string
 	LinkedProvider            Provider
+	// LinkedWebTier 是 Build 账号关联 Grok Web 账号的已同步等级。
+	// 仅明确的 basic/super/heavy 参与 Build 判级；auto/空值保持 Unknown。
+	LinkedWebTier WebTier
 	// BuildAPIFallback 仅记录 grok_build 曾因当次 Build 403 成功回退到 XAI。
 	// 它不参与路由；每个新请求仍先走 Build，只有当次严格 403 才可尝试 XAI。
 	// token refresh / SSO 转换 / 普通 upsert / 重启不得清除。
@@ -374,7 +377,7 @@ func isFreeBillingPlan(value string) bool {
 	}
 }
 
-// IsBuildSuper 判定 Grok Build 账号是否为 Super：Billing IsPaid 或管理员确认 BuildSuperEntitled。
+// IsBuildSuper 判定 Grok Build 账号是否为 Super：付费 Billing、管理员确认或关联 Web Super/Heavy。
 // 非 Build Provider 恒为 false。与 SQL accountBuildSuperPredicate 语义一致。
 func IsBuildSuper(credential Credential, billing *Billing) bool {
 	if credential.Provider != ProviderBuild {
@@ -383,17 +386,23 @@ func IsBuildSuper(credential Credential, billing *Billing) bool {
 	if credential.BuildSuperEntitled {
 		return true
 	}
+	if credential.LinkedWebTier == WebTierSuper || credential.LinkedWebTier == WebTierHeavy {
+		return true
+	}
 	return billing != nil && billing.IsPaid()
 }
 
 // IsKnownFreeBuild 判断候选是否是已确认的 Grok Build Free 账号。
-// Super（Billing paid 或 BuildSuperEntitled）优先，避免旧的响应模型或恢复记录把 Super 错分为 Free。
+// Super 信号优先，避免旧的响应模型或恢复记录把 Super 错分为 Free。
 func (c RoutingCandidate) IsKnownFreeBuild() bool {
 	if c.Credential.Provider != ProviderBuild {
 		return false
 	}
 	if IsBuildSuper(c.Credential, c.Billing) {
 		return false
+	}
+	if c.Credential.LinkedWebTier == WebTierBasic {
+		return true
 	}
 	if c.QuotaRecovery != nil && c.QuotaRecovery.Kind == QuotaRecoveryKindFree {
 		return true

@@ -150,6 +150,10 @@ func TestAccountRepositoryLinksWebAndBuildAccountsOnce(t *testing.T) {
 	if err := repo.LinkWebToBuild(ctx, web.ID, build.ID); err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now().UTC()
+	if err := repo.SaveQuotaWindows(ctx, web.ID, account.WebTierSuper, now, nil); err != nil {
+		t.Fatal(err)
+	}
 	if err := repo.LinkWebToBuild(ctx, web.ID, build.ID); err != nil {
 		t.Fatalf("idempotent link = %v", err)
 	}
@@ -166,6 +170,23 @@ func TestAccountRepositoryLinksWebAndBuildAccountsOnce(t *testing.T) {
 	}
 	if linkedBuild.LinkedAccountID != web.ID || linkedBuild.LinkedProvider != account.ProviderWeb || linkedBuild.LinkedAccountName != web.Name {
 		t.Fatalf("build link = %#v", linkedBuild)
+	}
+	if linkedBuild.LinkedWebTier != account.WebTierSuper {
+		t.Fatalf("build linked Web tier = %q", linkedBuild.LinkedWebTier)
+	}
+	enabledBuilds, err := repo.ListEnabled(ctx, account.ProviderBuild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enabledBuilds) != 1 || enabledBuilds[0].LinkedWebTier != account.WebTierSuper {
+		t.Fatalf("enabled Build links = %#v", enabledBuilds)
+	}
+	routingCandidates, err := repo.ListRoutingCandidates(ctx, account.ProviderBuild, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routingCandidates) != 1 || routingCandidates[0].Credential.LinkedWebTier != account.WebTierSuper {
+		t.Fatalf("Build routing candidates = %#v", routingCandidates)
 	}
 	unlinkedWeb, _, err := repo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web-2", SourceKey: "web-2", EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive})
 	if err != nil {

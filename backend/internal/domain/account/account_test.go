@@ -59,6 +59,14 @@ func TestIsBuildSuper(t *testing.T) {
 	if !IsBuildSuper(Credential{Provider: ProviderBuild}, &paid) {
 		t.Fatal("paid billing must make Build Super")
 	}
+	for _, tier := range []WebTier{WebTierSuper, WebTierHeavy} {
+		if !IsBuildSuper(Credential{Provider: ProviderBuild, LinkedWebTier: tier}, &zeroFree) {
+			t.Fatalf("linked Web tier %q must make Build Super", tier)
+		}
+	}
+	if IsBuildSuper(Credential{Provider: ProviderBuild, LinkedWebTier: WebTierBasic}, &zeroFree) {
+		t.Fatal("linked Web Basic must not make Build Super")
+	}
 	if IsBuildSuper(Credential{Provider: ProviderBuild}, &zeroFree) {
 		t.Fatal("zero billing without entitlement is not Super")
 	}
@@ -80,6 +88,9 @@ func TestRoutingCandidateIsKnownFreeBuild(t *testing.T) {
 		{name: "ambiguous weekly profile", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild}, Billing: &Billing{IsUnifiedBillingUser: true, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY"}}},
 		{name: "observed response model", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, ObservedModel: "grok-4.5-build-free"}}, want: true},
 		{name: "quota recovery", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild}, QuotaRecovery: &freeRecovery}, want: true},
+		{name: "linked Web Basic", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, LinkedWebTier: WebTierBasic}}, want: true},
+		{name: "linked Web Super overrides stale free signal", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, LinkedWebTier: WebTierSuper, ObservedModel: "grok-4.5-build-free"}}},
+		{name: "linked Web Heavy overrides free recovery", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, LinkedWebTier: WebTierHeavy}, QuotaRecovery: &freeRecovery}},
 		{name: "paid overrides stale free signal", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, ObservedModel: "grok-4.5-build-free"}, Billing: &paidBilling}},
 		{name: "entitlement overrides free profile", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, BuildSuperEntitled: true}, Billing: &freeBilling}},
 		{name: "entitlement overrides free recovery", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, BuildSuperEntitled: true}, QuotaRecovery: &freeRecovery}},
