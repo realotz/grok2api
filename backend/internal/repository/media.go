@@ -54,9 +54,9 @@ type MediaJobStats struct {
 type MediaJobRepository interface {
 	CreateMediaJob(ctx context.Context, value media.Job) error
 	GetMediaJob(ctx context.Context, id string, clientKeyID uint64) (media.Job, error)
-	// GetMediaJobByID 按任务 ID 读取（管理端预览等不受客户端密钥约束的场景）。
-	GetMediaJobByID(ctx context.Context, id string) (media.Job, error)
+	GetMediaJobsByIDs(ctx context.Context, ids []string) ([]media.Job, error)
 	UpdateMediaJob(ctx context.Context, value media.Job) error
+	DeleteMediaJob(ctx context.Context, id string) error
 	ListMediaJobs(ctx context.Context, query MediaJobListQuery) ([]media.Job, int64, error)
 	SummarizeMediaJobs(ctx context.Context) (MediaJobStats, error)
 	ListRecoverableMediaJobs(ctx context.Context, limit int) ([]media.Job, error)
@@ -69,8 +69,6 @@ type MediaJobRepository interface {
 type MediaAssetRepository interface {
 	CreateMediaAsset(ctx context.Context, value media.Asset) error
 	GetMediaAsset(ctx context.Context, id string) (media.Asset, error)
-	// ExistingVideoAssetIDs 返回 ids 中仍存在且 kind=video 的资产 ID 集合。
-	ExistingVideoAssetIDs(ctx context.Context, ids []string) (map[string]struct{}, error)
 	ListMediaAssets(ctx context.Context, query MediaAssetListQuery) ([]media.Asset, int64, error)
 	SummarizeMediaAssets(ctx context.Context) (MediaAssetStats, error)
 	TotalMediaAssetBytes(ctx context.Context) (int64, error)
@@ -93,6 +91,8 @@ type MediaUploadTicketRepository interface {
 	// DeleteUploadTicketByHash 按 token_hash 精确删除票据；行不存在时幂等成功。
 	// 用于签发过程中 bind 失败后的补偿回滚，不得按 job/asset 批量删除。
 	DeleteUploadTicketByHash(ctx context.Context, tokenHash string) error
+	// DeleteUploadTicketsByJobID 撤销指定任务尚存的上传入口；行不存在时幂等成功。
+	DeleteUploadTicketsByJobID(ctx context.Context, jobID string) error
 	DeleteExpiredUploadTickets(ctx context.Context, before time.Time, limit int) (int64, error)
 	BindJobResultAsset(ctx context.Context, jobID, assetID string) error
 }

@@ -4,51 +4,47 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
-	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 )
 
 type Handler struct {
-	service       *mediaapp.Service
-	previewTokens videoPreviewTokenService
+	service *mediaapp.Service
 }
 
-type videoPreviewTokenService interface {
-	CreateVideoPreviewToken(jobID string, ttl time.Duration) (string, error)
-	ParseVideoPreviewToken(raw, jobID string) error
-}
-
-const videoPreviewTokenTTL = 5 * time.Minute
-
-func NewHandler(service *mediaapp.Service, previewTokens videoPreviewTokenService) *Handler {
-	return &Handler{service: service, previewTokens: previewTokens}
-}
+func NewHandler(service *mediaapp.Service) *Handler { return &Handler{service: service} }
 
 // RegisterPublic 注册使用不可猜测资源 ID 的公开图片读取与视频上传接收端点。
 // 上传 PUT 不使用客户端 API key：xAI 无法携带，票据本身即授权。
 func (h *Handler) RegisterPublic(router *gin.Engine) {
 	router.GET("/v1/media/images/:assetId", h.getImage)
 	router.HEAD("/v1/media/images/:assetId", h.getImage)
+	router.GET("/v1/media/videos/:assetId", h.getVideo)
+	router.HEAD("/v1/media/videos/:assetId", h.getVideo)
 	router.PUT("/v1/media/uploads/:token", h.putVideoUpload)
-	router.GET("/v1/media/video-previews/:jobId", h.streamVideoPreview)
-	router.HEAD("/v1/media/video-previews/:jobId", h.streamVideoPreview)
 }
 
 // RegisterAdmin 注册管理端媒体列表和统计端点。
 func (h *Handler) RegisterAdmin(router *gin.RouterGroup) {
 	router.GET("/media/images", h.listImages)
+	router.DELETE("/media/images", h.deleteImages)
 	router.GET("/media/images/stats", h.imageStats)
 	router.GET("/media/videos", h.listVideos)
+	router.DELETE("/media/videos", h.deleteVideos)
 	router.GET("/media/videos/stats", h.videoStats)
-	router.POST("/media/videos/:jobId/preview", h.issueVideoPreview)
+}
+
+type deleteImagesRequest struct {
+	IDs []string `json:"ids" binding:"required"`
+}
+
+type deleteVideosRequest struct {
+	IDs []string `json:"ids" binding:"required"`
 }
 
 func (h *Handler) getImage(c *gin.Context) {
@@ -79,6 +75,30 @@ func (h *Handler) getImage(c *gin.Context) {
 	}
 	c.Status(http.StatusOK)
 	_, _ = io.Copy(c.Writer, body)
+}
+
+func (h *Handler) getVideo(c *gin.Context) {
+	asset, body, err := h.service.OpenVideo(c.Request.Context(), c.Param("assetId"))
+	if errors.Is(err, mediaapp.ErrAssetNotFound) {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	defer body.Close()
+	seeker, ok := body.(io.ReadSeeker)
+	if !ok {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	c.Header("Content-Type", asset.MIMEType)
+	c.Header("Content-Disposition", `inline; filename="`+asset.ID+`"`)
+	c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	c.Header("ETag", `"`+asset.SHA256+`"`)
+	c.Header("X-Content-Type-Options", "nosniff")
+	http.ServeContent(c.Writer, c.Request, asset.ID, asset.CreatedAt, seeker)
 }
 
 // putVideoUpload 接收 XAI ZDR 视频 PUT。响应与错误不得回显完整票据。
@@ -132,6 +152,24 @@ func (h *Handler) imageStats(c *gin.Context) {
 	response.Success(c, http.StatusOK, imageStatsDTO{TotalImages: stats.TotalImages, TotalBytes: stats.TotalBytes})
 }
 
+func (h *Handler) deleteImages(c *gin.Context) {
+	var request deleteImagesRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	deleted, err := h.service.AdminDeleteImages(c.Request.Context(), request.IDs)
+	if errors.Is(err, mediaapp.ErrInvalidImageSelection) {
+		response.Error(c, http.StatusBadRequest, "invalidImageSelection", err.Error())
+		return
+	}
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "mediaDeleteImagesFailed", "删除图片失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": deleted})
+}
+
 func (h *Handler) listVideos(c *gin.Context) {
 	page, pageSize := parsePagination(c)
 	jobs, total, err := h.service.AdminListVideoJobs(c.Request.Context(), page, pageSize, c.Query("search"), c.Query("status"), repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))})
@@ -144,94 +182,25 @@ func (h *Handler) listVideos(c *gin.Context) {
 		return
 	}
 	items := make([]mediaJobDTO, 0, len(jobs))
-	for _, item := range jobs {
-		j := item.Job
+	for _, j := range jobs {
 		var completedAt *string
+		assetID := ""
 		if j.CompletedAt != nil {
-			formatted := j.CompletedAt.UTC().Format(time.RFC3339)
+			formatted := j.CompletedAt.Format("2006-01-02T15:04:05Z")
 			completedAt = &formatted
 		}
-		// 仅 failed 输出错误文案，遮蔽 completed 历史脏数据。
-		errorMessage := ""
-		if j.Status == mediadomain.StatusFailed {
-			errorMessage = j.ErrorMessage
+		if j.Status == "completed" {
+			assetID = j.ResultAssetID
 		}
 		items = append(items, mediaJobDTO{
 			ID: j.ID, Model: j.Model, Prompt: j.Prompt, Status: string(j.Status),
 			Progress: j.Progress, Seconds: j.Seconds, Size: j.Size, Quality: j.Quality,
 			AccountName: j.AccountName, ClientKeyName: j.ClientKeyName,
-			CreatedAt: j.CreatedAt.UTC().Format(time.RFC3339), CompletedAt: completedAt,
-			ErrorMessage: errorMessage, PreviewAvailable: item.PreviewAvailable,
+			CreatedAt:   j.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			CompletedAt: completedAt, ErrorMessage: j.ErrorMessage, AssetID: assetID,
 		})
 	}
 	response.Success(c, http.StatusOK, gin.H{"items": items, "page": page, "pageSize": pageSize, "total": total})
-}
-
-// issueVideoPreview 为已认证管理员签发仅绑定当前任务的短时流媒体票据。
-func (h *Handler) issueVideoPreview(c *gin.Context) {
-	c.Header("Cache-Control", "private, no-store")
-	if h.previewTokens == nil {
-		response.Error(c, http.StatusServiceUnavailable, "mediaVideoPreviewUnavailable", "视频预览服务未配置")
-		return
-	}
-	jobID := strings.TrimSpace(c.Param("jobId"))
-	_, body, err := h.service.AdminOpenVideoJobContent(c.Request.Context(), jobID)
-	if errors.Is(err, mediaapp.ErrAssetNotFound) {
-		response.Error(c, http.StatusNotFound, "mediaVideoPreviewUnavailable", "本地视频缓存不可用或已清理")
-		return
-	}
-	if errors.Is(err, mediaapp.ErrMediaJobsUnavailable) {
-		response.Error(c, http.StatusServiceUnavailable, "mediaVideoPreviewUnavailable", "视频任务仓储未配置")
-		return
-	}
-	if err != nil {
-		response.Error(c, http.StatusInternalServerError, "mediaVideoPreviewFailed", "读取本地视频缓存失败")
-		return
-	}
-	_ = body.Close()
-	ticket, err := h.previewTokens.CreateVideoPreviewToken(jobID, videoPreviewTokenTTL)
-	if err != nil {
-		response.Error(c, http.StatusInternalServerError, "mediaVideoPreviewFailed", "创建视频预览票据失败")
-		return
-	}
-	path := "/v1/media/video-previews/" + url.PathEscape(jobID) + "?ticket=" + url.QueryEscape(ticket)
-	response.Success(c, http.StatusOK, videoPreviewDTO{URL: path})
-}
-
-// streamVideoPreview 验证短时票据后交由 ServeContent 处理 Range、HEAD 和条件请求。
-func (h *Handler) streamVideoPreview(c *gin.Context) {
-	c.Header("Cache-Control", "private, no-store")
-	c.Header("Content-Disposition", "inline")
-	jobID := strings.TrimSpace(c.Param("jobId"))
-	if h.previewTokens == nil || h.previewTokens.ParseVideoPreviewToken(strings.TrimSpace(c.Query("ticket")), jobID) != nil {
-		c.Status(http.StatusUnauthorized)
-		return
-	}
-	asset, body, err := h.service.AdminOpenVideoJobContent(c.Request.Context(), jobID)
-	if errors.Is(err, mediaapp.ErrAssetNotFound) {
-		c.Status(http.StatusNotFound)
-		return
-	}
-	if errors.Is(err, mediaapp.ErrMediaJobsUnavailable) {
-		c.Status(http.StatusServiceUnavailable)
-		return
-	}
-	if err != nil {
-		c.Status(http.StatusInternalServerError)
-		return
-	}
-	defer body.Close()
-	content, ok := body.(io.ReadSeeker)
-	if !ok {
-		c.Status(http.StatusInternalServerError)
-		return
-	}
-	mimeType := strings.TrimSpace(asset.MIMEType)
-	if mimeType == "" {
-		mimeType = "application/octet-stream"
-	}
-	c.Header("Content-Type", mimeType)
-	http.ServeContent(c.Writer, c.Request, asset.ID, asset.CreatedAt, content)
 }
 
 func (h *Handler) videoStats(c *gin.Context) {
@@ -244,6 +213,24 @@ func (h *Handler) videoStats(c *gin.Context) {
 		TotalJobs: stats.TotalJobs, Completed: stats.Completed, Failed: stats.Failed,
 		InProgress: stats.InProgress, Queued: stats.Queued,
 	})
+}
+
+func (h *Handler) deleteVideos(c *gin.Context) {
+	var request deleteVideosRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	deleted, err := h.service.AdminDeleteVideoJobs(c.Request.Context(), request.IDs)
+	if errors.Is(err, mediaapp.ErrInvalidVideoSelection) || errors.Is(err, mediaapp.ErrActiveVideoSelection) {
+		response.Error(c, http.StatusBadRequest, "invalidVideoSelection", err.Error())
+		return
+	}
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "mediaDeleteVideosFailed", "删除视频任务失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": deleted})
 }
 
 func parsePagination(c *gin.Context) (int, int) {

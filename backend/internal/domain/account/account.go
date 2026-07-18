@@ -132,6 +132,9 @@ type Credential struct {
 	LinkedAccountID           uint64
 	LinkedAccountName         string
 	LinkedProvider            Provider
+	// LinkedWebTier 是 Build 账号关联 Grok Web 账号的已同步等级。
+	// 仅明确的 basic/super/heavy 参与 Build 判级；auto/空值保持 Unknown。
+	LinkedWebTier WebTier
 	// BuildAPIFallback 仅记录 grok_build 曾因当次 Build 403 成功回退到 XAI。
 	// 它不参与路由；每个新请求仍先走 Build，只有当次严格 403 才可尝试 XAI。
 	// token refresh / SSO 转换 / 普通 upsert / 重启不得清除。
@@ -333,20 +336,48 @@ func (b Billing) Remaining() float64 {
 }
 
 // IsPaid 判断 Billing 快照是否呈现 Super/paid 信号。
-// 语义与 SQL accountPaidBillingSignals 及 QuotaView paid 分支一致：
-// 任一 MonthlyLimit、OnDemandCap、OnDemandUsed、PrepaidBalance、CreditUsagePercent 为正即为 paid。
+// 语义与 SQL accountPaidBillingPredicate 及 QuotaView paid 分支一致：
+// 已确认的付费订阅名称，或任一付费额度字段为正，即为 paid。
+// creditUsagePercent 只是当前周期使用率，Free 与 paid 都可能存在，不能参与判级。
 // 无快照时应由调用方按 Unknown 处理，不得调用本方法。
 // 注意：零 Billing + 管理员确认的 BuildSuperEntitled 由 IsBuildSuper 统一判定，不经本方法。
 func (b Billing) IsPaid() bool {
-	return b.MonthlyLimit > 0 || b.OnDemandCap > 0 || b.OnDemandUsed > 0 || b.PrepaidBalance > 0 || b.CreditUsagePercent > 0
+	return isPaidBillingPlan(b.PlanCode) || isPaidBillingPlan(b.PlanName) ||
+		b.MonthlyLimit > 0 || b.OnDemandCap > 0 || b.OnDemandUsed > 0 || b.PrepaidBalance > 0
 }
 
-// HasFreeProfileSignal 判断零付费额度快照是否包含已知 Free 账号特征。
+// HasFreeProfileSignal 仅接受明确的 Free/Basic 套餐名称。
+// currentPeriod、unified billing、top-up 等字段在零使用量的付费账号上同样存在，
+// 不能作为 Free 证据，否则会把刚开通的 SuperGrok 误判为 Free。
 func (b Billing) HasFreeProfileSignal() bool {
-	return b.IsUnifiedBillingUser || b.UsagePeriodType != "" || b.TopUpMethod != "" || b.BillingPeriodStart != "" || len(b.History) > 0
+	return isFreeBillingPlan(b.PlanCode) || isFreeBillingPlan(b.PlanName)
 }
 
-// IsBuildSuper 判定 Grok Build 账号是否为 Super：Billing IsPaid 或管理员确认 BuildSuperEntitled。
+func normalizeBillingPlan(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.NewReplacer(" ", "", "_", "", "-", "", "+", "plus").Replace(value)
+}
+
+func isPaidBillingPlan(value string) bool {
+	switch normalizeBillingPlan(value) {
+	case "super", "supergrok", "supergrokpro", "supergrokheavy", "supergroklite",
+		"grokpro", "xpremium", "xpremiumplus", "apikey":
+		return true
+	default:
+		return false
+	}
+}
+
+func isFreeBillingPlan(value string) bool {
+	switch normalizeBillingPlan(value) {
+	case "free", "grokfree", "freetier", "basic", "grokbasic", "xbasic":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsBuildSuper 判定 Grok Build 账号是否为 Super：付费 Billing、管理员确认或关联 Web Super/Heavy。
 // 非 Build Provider 恒为 false。与 SQL accountBuildSuperPredicate 语义一致。
 func IsBuildSuper(credential Credential, billing *Billing) bool {
 	if credential.Provider != ProviderBuild {
@@ -355,17 +386,23 @@ func IsBuildSuper(credential Credential, billing *Billing) bool {
 	if credential.BuildSuperEntitled {
 		return true
 	}
+	if credential.LinkedWebTier == WebTierSuper || credential.LinkedWebTier == WebTierHeavy {
+		return true
+	}
 	return billing != nil && billing.IsPaid()
 }
 
 // IsKnownFreeBuild 判断候选是否是已确认的 Grok Build Free 账号。
-// Super（Billing paid 或 BuildSuperEntitled）优先，避免旧的响应模型或恢复记录把 Super 错分为 Free。
+// Super 信号优先，避免旧的响应模型或恢复记录把 Super 错分为 Free。
 func (c RoutingCandidate) IsKnownFreeBuild() bool {
 	if c.Credential.Provider != ProviderBuild {
 		return false
 	}
 	if IsBuildSuper(c.Credential, c.Billing) {
 		return false
+	}
+	if c.Credential.LinkedWebTier == WebTierBasic {
+		return true
 	}
 	if c.QuotaRecovery != nil && c.QuotaRecovery.Kind == QuotaRecoveryKindFree {
 		return true

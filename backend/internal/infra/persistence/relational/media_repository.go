@@ -212,6 +212,15 @@ func (r *MediaUploadTicketRepository) DeleteUploadTicketByHash(ctx context.Conte
 	return r.db.db.WithContext(ctx).Where("token_hash = ?", tokenHash).Delete(&mediaUploadTicketModel{}).Error
 }
 
+// DeleteUploadTicketsByJobID 删除任务关联的上传票据，终止后续延迟上传。
+func (r *MediaUploadTicketRepository) DeleteUploadTicketsByJobID(ctx context.Context, jobID string) error {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return nil
+	}
+	return r.db.db.WithContext(ctx).Where("job_id = ?", jobID).Delete(&mediaUploadTicketModel{}).Error
+}
+
 // DeleteExpiredUploadTickets 删除已过期票据行（已消费或未消费均可）；未过期票据与媒体资产不受影响。
 func (r *MediaUploadTicketRepository) DeleteExpiredUploadTickets(ctx context.Context, before time.Time, limit int) (int64, error) {
 	if limit <= 0 || limit > 1000 {
@@ -263,46 +272,20 @@ func (r *MediaJobRepository) GetMediaJob(ctx context.Context, id string, clientK
 	return mediaJobToDomain(row), nil
 }
 
-func (r *MediaJobRepository) GetMediaJobByID(ctx context.Context, id string) (media.Job, error) {
-	var row mediaJobModel
-	if err := r.db.db.WithContext(ctx).Where("id = ?", id).First(&row).Error; err != nil {
-		return media.Job{}, mapError(err)
-	}
-	return mediaJobToDomain(row), nil
-}
-
-// ExistingVideoAssetIDs 批量判断本地视频资产元数据是否仍存在。
-func (r *MediaAssetRepository) ExistingVideoAssetIDs(ctx context.Context, ids []string) (map[string]struct{}, error) {
-	result := make(map[string]struct{}, len(ids))
+// GetMediaJobsByIDs 返回管理端明确选择的完整视频任务。
+func (r *MediaJobRepository) GetMediaJobsByIDs(ctx context.Context, ids []string) ([]media.Job, error) {
 	if len(ids) == 0 {
-		return result, nil
+		return []media.Job{}, nil
 	}
-	unique := make([]string, 0, len(ids))
-	seen := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		unique = append(unique, id)
-	}
-	if len(unique) == 0 {
-		return result, nil
-	}
-	var found []string
-	if err := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).
-		Where("id IN ? AND kind = ?", unique, "video").
-		Pluck("id", &found).Error; err != nil {
+	var rows []mediaJobModel
+	if err := r.db.db.WithContext(ctx).Where("id IN ?", ids).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	for _, id := range found {
-		result[id] = struct{}{}
+	values := make([]media.Job, 0, len(rows))
+	for _, row := range rows {
+		values = append(values, mediaJobToDomain(row))
 	}
-	return result, nil
+	return values, nil
 }
 
 func (r *MediaJobRepository) UpdateMediaJob(ctx context.Context, value media.Job) error {
@@ -312,6 +295,20 @@ func (r *MediaJobRepository) UpdateMediaJob(ctx context.Context, value media.Job
 		query = query.Where("claim_token = ?", value.ClaimToken)
 	}
 	result := query.Select("request_id", "client_key_name", "account_id", "account_name", "egress_node_id", "egress_node_name", "egress_scope", "egress_mode", "provider", "model", "model_route_id", "upstream_model", "prompt", "seconds", "size", "quality", "status", "progress", "input_json", "upstream_url", "result_asset_id", "content_type", "error_code", "error_message", "lease_until", "claim_token", "updated_at", "completed_at", "usage_recorded_at").Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return repository.ErrNotFound
+	}
+	return nil
+}
+
+// DeleteMediaJob 仅删除终态任务，避免管理端与视频 Worker 并发修改同一任务。
+func (r *MediaJobRepository) DeleteMediaJob(ctx context.Context, id string) error {
+	result := r.db.db.WithContext(ctx).
+		Where("id = ? AND status IN ?", id, []media.Status{media.StatusCompleted, media.StatusFailed}).
+		Delete(&mediaJobModel{})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -348,7 +345,7 @@ func (r *MediaJobRepository) ListMediaJobs(ctx context.Context, input repository
 	}, sortSpec{expression: "created_at", defaultDirection: repository.SortDescending}, "id")
 	if err := query.Select(
 		"id", "client_key_name", "account_name", "model", "prompt", "seconds", "size", "quality",
-		"status", "progress", "error_message", "result_asset_id", "created_at", "completed_at",
+		"status", "progress", "result_asset_id", "error_message", "created_at", "completed_at",
 	).Offset(input.Page.Offset).Limit(input.Page.Limit).Find(&rows).Error; err != nil {
 		return nil, 0, err
 	}

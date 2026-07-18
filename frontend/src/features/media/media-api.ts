@@ -3,14 +3,13 @@ import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
 import {
   createObjectDecoder,
   createPaginatedDecoder,
+  decodeCountResult,
   hasShape,
-  isBoolean,
   isNumber,
   isString,
   isOneOf,
 } from "@/shared/api/decoder";
 import type { SortOrder } from "@/shared/lib/table-sort";
-import { runtimeConfig } from "@/shared/config/runtime-config";
 
 export type ListImagesInput = {
   page: number;
@@ -26,8 +25,6 @@ export type ListVideosInput = {
   sortBy?: string;
   sortOrder?: SortOrder;
 };
-
-type VideoPreviewDTO = { url: string };
 
 const mediaAssetShape = {
   id: isString,
@@ -53,7 +50,7 @@ const mediaJobShape = {
   createdAt: isString,
   completedAt: (value: unknown) => value === null || isString(value),
   errorMessage: isString,
-  previewAvailable: isBoolean,
+  assetId: isString,
 };
 
 const decodeImageStats = createObjectDecoder<ImageStatsDTO>("image stats", {
@@ -67,9 +64,6 @@ const decodeVideoStats = createObjectDecoder<VideoStatsDTO>("video stats", {
   inProgress: isNumber,
   queued: isNumber,
 });
-const decodeVideoPreview = createObjectDecoder<VideoPreviewDTO>("video preview", {
-  url: isString,
-});
 
 export function listImages(input: ListImagesInput): Promise<PaginatedDTO<MediaAssetDTO>> {
   const query = new URLSearchParams({ page: String(input.page), pageSize: String(input.pageSize) });
@@ -79,6 +73,10 @@ export function listImages(input: ListImagesInput): Promise<PaginatedDTO<MediaAs
 
 export function getImageStats(): Promise<ImageStatsDTO> {
   return apiRequest("/api/admin/v1/media/images/stats", {}, decodeImageStats);
+}
+
+export function deleteImages(ids: string[]): Promise<{ deleted: number }> {
+  return apiRequest("/api/admin/v1/media/images", { method: "DELETE", body: { ids } }, decodeCountResult<{ deleted: number }>("deleted"));
 }
 
 export function listVideos(input: ListVideosInput): Promise<PaginatedDTO<MediaJobDTO>> {
@@ -96,12 +94,6 @@ export function getVideoStats(): Promise<VideoStatsDTO> {
   return apiRequest("/api/admin/v1/media/videos/stats", {}, decodeVideoStats);
 }
 
-/** 使用管理员凭据换取短时、单任务范围的原生媒体流地址。 */
-export async function createVideoPreview(jobId: string): Promise<VideoPreviewDTO> {
-  const preview = await apiRequest(
-    `/api/admin/v1/media/videos/${encodeURIComponent(jobId)}/preview`,
-    { method: "POST" },
-    decodeVideoPreview,
-  );
-  return { ...preview, url: `${runtimeConfig.apiBaseUrl}${preview.url}` };
+export function deleteVideos(ids: string[]): Promise<{ deleted: number }> {
+  return apiRequest("/api/admin/v1/media/videos", { method: "DELETE", body: { ids } }, decodeCountResult<{ deleted: number }>("deleted"));
 }

@@ -1,5 +1,4 @@
-/** 格式化时间。timeZone 可选；省略时沿用浏览器本地时区，保持其他页面现有行为。 */
-export function formatDateTime(value: string | null | undefined, locale: string, timeZone?: string): string {
+export function formatDateTime(value: string | null | undefined, locale: string): string {
   if (!value) {
     return "-";
   }
@@ -10,7 +9,6 @@ export function formatDateTime(value: string | null | undefined, locale: string,
   return new Intl.DateTimeFormat(locale, {
     dateStyle: "medium",
     timeStyle: "short",
-    ...(timeZone ? { timeZone } : {}),
   }).format(date);
 }
 

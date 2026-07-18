@@ -16,20 +16,20 @@ type imageStatsDTO struct {
 }
 
 type mediaJobDTO struct {
-	ID               string  `json:"id"`
-	Model            string  `json:"model"`
-	Prompt           string  `json:"prompt"`
-	Status           string  `json:"status"`
-	Progress         int     `json:"progress"`
-	Seconds          int     `json:"seconds"`
-	Size             string  `json:"size"`
-	Quality          string  `json:"quality"`
-	AccountName      string  `json:"accountName"`
-	ClientKeyName    string  `json:"clientKeyName"`
-	CreatedAt        string  `json:"createdAt"`
-	CompletedAt      *string `json:"completedAt"`
-	ErrorMessage     string  `json:"errorMessage"`
-	PreviewAvailable bool    `json:"previewAvailable"`
+	ID            string  `json:"id"`
+	Model         string  `json:"model"`
+	Prompt        string  `json:"prompt"`
+	Status        string  `json:"status"`
+	Progress      int     `json:"progress"`
+	Seconds       int     `json:"seconds"`
+	Size          string  `json:"size"`
+	Quality       string  `json:"quality"`
+	AccountName   string  `json:"accountName"`
+	ClientKeyName string  `json:"clientKeyName"`
+	CreatedAt     string  `json:"createdAt"`
+	CompletedAt   *string `json:"completedAt"`
+	ErrorMessage  string  `json:"errorMessage"`
+	AssetID       string  `json:"assetId"`
 }
 
 type videoStatsDTO struct {
@@ -38,8 +38,4 @@ type videoStatsDTO struct {
 	Failed     int64 `json:"failed"`
 	InProgress int64 `json:"inProgress"`
 	Queued     int64 `json:"queued"`
-}
-
-type videoPreviewDTO struct {
-	URL string `json:"url"`
 }

@@ -132,10 +132,7 @@ func New(deps Dependencies) *gin.Engine {
 	if deps.SwaggerEnabled {
 		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	}
-	mediaHandler := mediahttp.NewHandler(deps.Media, nil)
-	if deps.AdminAuth != nil {
-		mediaHandler = mediahttp.NewHandler(deps.Media, deps.AdminAuth)
-	}
+	mediaHandler := mediahttp.NewHandler(deps.Media)
 	mediaHandler.RegisterPublic(router)
 
 	adminRoot := router.Group("/api/admin/v1")
