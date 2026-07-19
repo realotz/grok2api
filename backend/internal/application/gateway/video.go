@@ -352,6 +352,9 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 				case status >= http.StatusInternalServerError:
 					// 5xx 是 Provider 服务级故障，不应让某个账号退出号池。
 					failureHandled = true
+				case status >= http.StatusBadRequest && status < http.StatusInternalServerError:
+					// 其余 4xx 通常是请求参数或协议不兼容，不能据此伤害账号健康。
+					failureHandled = true
 				default:
 					s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
 					failureHandled = true
@@ -495,7 +498,7 @@ func (s *Service) generateVideoWithFailover(ctx context.Context, job *media.Job,
 				}
 			}
 
-			s.handleRetryableVideoAccountFailure(ctx, lease, generateErr)
+			s.handleRetryableVideoAccountFailure(ctx, route, lease, generateErr)
 			lease.Release()
 			break
 		}
@@ -531,7 +534,7 @@ func videoRequiresBuildSuper(route model.Route) bool {
 	return route.Provider == account.ProviderBuild && strings.Contains(strings.ToLower(route.UpstreamModel), "grok-imagine-video-1.5")
 }
 
-func (s *Service) handleRetryableVideoAccountFailure(ctx context.Context, lease *accountLease, err error) {
+func (s *Service) handleRetryableVideoAccountFailure(ctx context.Context, route model.Route, lease *accountLease, err error) {
 	if lease == nil {
 		return
 	}
@@ -557,7 +560,10 @@ func (s *Service) handleRetryableVideoAccountFailure(ctx context.Context, lease 
 			return
 		}
 	}
-	if status == http.StatusForbidden && credential.Provider == account.ProviderBuild && account.IsBuildSuper(credential, lease.Billing) {
+	if status == http.StatusForbidden && credential.Provider == account.ProviderBuild {
+		// Adapter 已经完成当次 Build -> XAI 回退；仍被拒绝时只隔离该视频模型，
+		// 不影响同一 OAuth 账号继续承载聊天和其他模型。
+		s.selector.MarkModelAccessDenied(ctx, credential, route.UpstreamModel, 0)
 		return
 	}
 	s.selector.MarkFailure(ctx, credential, status, 0)

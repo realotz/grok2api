@@ -199,6 +199,17 @@ func TestVideoExplicitCreateForbiddenSwitchesAccount(t *testing.T) {
 	if len(adapter.generateAccountIDs) != 2 || adapter.generateAccountIDs[0] != accounts[0].ID || adapter.generateAccountIDs[1] != accounts[1].ID {
 		t.Fatalf("generate accounts=%v", adapter.generateAccountIDs)
 	}
+	updated, err := accountRepo.Get(context.Background(), accounts[0].ID)
+	if err != nil || updated.FailureCount != 0 || updated.CooldownUntil != nil {
+		t.Fatalf("403 changed account-wide health: credential=%#v err=%v", updated, err)
+	}
+	blocked, blockErr := service.selector.AcquirePinned(context.Background(), account.ProviderBuild, accounts[0].ID, testBuildVideoRoute().UpstreamModel, "", true)
+	if blocked != nil {
+		blocked.Release()
+	}
+	if blockErr == nil {
+		t.Fatal("403 did not apply a model-scoped cooldown")
+	}
 }
 
 func TestVideoPollFailureNeverSwitchesAccount(t *testing.T) {
