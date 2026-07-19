@@ -24,16 +24,14 @@ type quotaBreakdownJSON struct {
 }
 
 const (
-	accountPaidPlanSignal         = `(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_code), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('super', 'supergrok', 'supergrokpro', 'supergrokheavy', 'supergroklite', 'grokpro', 'xpremium', 'xpremiumplus', 'apikey') OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_name), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('super', 'supergrok', 'supergrokpro', 'supergrokheavy', 'supergroklite', 'grokpro', 'xpremium', 'xpremiumplus', 'apikey'))`
-	accountFreePlanSignal         = `(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_code), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('free', 'grokfree', 'freetier', 'basic', 'grokbasic', 'xbasic') OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_name), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('free', 'grokfree', 'freetier', 'basic', 'grokbasic', 'xbasic'))`
-	accountPaidBillingSignals     = `(` + accountPaidPlanSignal + ` OR billing.monthly_limit > 0 OR billing.on_demand_cap > 0 OR billing.on_demand_used > 0 OR billing.prepaid_balance > 0)`
-	accountPaidBillingPredicate   = `EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = provider_accounts.id AND ` + accountPaidBillingSignals + `)`
-	accountLinkedWebPaidPredicate = `(provider_accounts.provider = 'grok_build' AND EXISTS (SELECT 1 FROM account_provider_links link JOIN web_account_profiles profile ON profile.account_id = link.web_account_id WHERE link.build_account_id = provider_accounts.id AND profile.tier IN ('super', 'heavy')))`
-	accountLinkedWebFreePredicate = `(provider_accounts.provider = 'grok_build' AND EXISTS (SELECT 1 FROM account_provider_links link JOIN web_account_profiles profile ON profile.account_id = link.web_account_id WHERE link.build_account_id = provider_accounts.id AND profile.tier = 'basic'))`
+	accountPaidPlanSignal       = `(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_code), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('super', 'supergrok', 'supergrokpro', 'supergrokheavy', 'supergroklite', 'grokpro', 'xpremium', 'xpremiumplus', 'apikey') OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_name), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('super', 'supergrok', 'supergrokpro', 'supergrokheavy', 'supergroklite', 'grokpro', 'xpremium', 'xpremiumplus', 'apikey'))`
+	accountFreePlanSignal       = `(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_code), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('free', 'grokfree', 'freetier', 'basic', 'grokbasic', 'xbasic') OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_name), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('free', 'grokfree', 'freetier', 'basic', 'grokbasic', 'xbasic'))`
+	accountPaidBillingSignals   = `(` + accountPaidPlanSignal + ` OR billing.monthly_limit > 0 OR billing.on_demand_cap > 0 OR billing.on_demand_used > 0 OR billing.prepaid_balance > 0)`
+	accountPaidBillingPredicate = `EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = provider_accounts.id AND ` + accountPaidBillingSignals + `)`
 	// 仅 grok_build 的管理员确认 Super entitlement；与 domain.IsBuildSuper 对齐。
 	accountBuildSuperEntitledPredicate = `(provider_accounts.provider = 'grok_build' AND provider_accounts.build_super_entitled = TRUE)`
-	accountBuildSuperPredicate         = `(` + accountPaidBillingPredicate + ` OR ` + accountBuildSuperEntitledPredicate + ` OR ` + accountLinkedWebPaidPredicate + `)`
-	accountFreeSignalPredicate         = `(` + accountLinkedWebFreePredicate + ` OR LOWER(TRIM(provider_accounts.observed_model)) LIKE '%-build-free' OR EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = provider_accounts.id AND ` + accountFreePlanSignal + `))`
+	accountBuildSuperPredicate         = `(` + accountPaidBillingPredicate + ` OR ` + accountBuildSuperEntitledPredicate + `)`
+	accountFreeSignalPredicate         = `(LOWER(TRIM(provider_accounts.observed_model)) LIKE '%-build-free' OR EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = provider_accounts.id AND ` + accountFreePlanSignal + `))`
 	accountRecoveryPredicate           = `EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status IN ('exhausted', 'probing'))`
 	providerQuotaExhaustedPredicate    = `((provider_accounts.provider = 'grok_web' AND ((EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.mode = 'weekly') AND NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.mode = 'weekly' AND quota.remaining > 0)) OR (NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.mode = 'weekly') AND EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id) AND NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.remaining > 0)))) OR (provider_accounts.provider = 'grok_console' AND EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id) AND NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.remaining > 0)))`
 	accountTypeSortExpression          = `CASE WHEN provider_accounts.provider = 'grok_web' THEN COALESCE((SELECT profile.tier FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id), 'auto') WHEN ` + accountBuildSuperPredicate + ` THEN 'paid' WHEN ` + accountFreeSignalPredicate + ` THEN 'free' ELSE 'unknown' END`
@@ -53,7 +51,7 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 	}
 	switch input.Filter.QuotaType {
 	case "free":
-		// Super（Billing paid、BuildSuperEntitled 或关联 Web Super/Heavy）不得落入 free。
+		// Super（Billing paid 或 BuildSuperEntitled）不得落入 free；与 IsKnownFreeBuild / QuotaView 一致。
 		query = query.Where("NOT " + accountBuildSuperPredicate + " AND (EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.kind = 'free') OR " + accountFreeSignalPredicate + ")")
 	case "paid":
 		query = query.Where(accountBuildSuperPredicate)
@@ -311,7 +309,7 @@ func (r *AccountRepository) ListEnabled(ctx context.Context, provider account.Pr
 	for _, row := range rows {
 		out = append(out, toAccountDomain(row))
 	}
-	if err := r.attachAccountLinks(ctx, out); err != nil {
+	if err := r.attachRoutingEgressIdentities(ctx, provider, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -502,37 +500,162 @@ func (r *AccountRepository) attachAccountLinks(ctx context.Context, values []acc
 		ids = append(ids, values[index].ID)
 		positions[values[index].ID] = index
 	}
-	var rows []struct {
-		WebAccountID   uint64
-		BuildAccountID uint64
-		WebName        string
-		BuildName      string
-		LinkedWebTier  string
+	var buildRows []struct {
+		WebAccountID            uint64
+		BuildAccountID          uint64
+		WebName                 string
+		BuildName               string
+		WebEmail                string
+		BuildEmail              string
+		WebUserID               string
+		BuildUserID             string
+		WebSourceKey            string
+		EgressIdentity          string
+		WebNSFWEnabledAt        *time.Time
+		WebTermsAcceptedAt      *time.Time
+		WebTermsAcceptedVersion int
 	}
 	err := r.db.db.WithContext(ctx).Table("account_provider_links AS link").
-		Select("link.web_account_id, link.build_account_id, web.name AS web_name, build.name AS build_name, web_profile.tier AS linked_web_tier").
+		Select("link.web_account_id, link.build_account_id, web.name AS web_name, build.name AS build_name, web.email AS web_email, build.email AS build_email, web.user_id AS web_user_id, build.user_id AS build_user_id, web.source_key AS web_source_key, profile.egress_identity, profile.nsfw_enabled_at AS web_nsfw_enabled_at, profile.terms_accepted_at AS web_terms_accepted_at, profile.terms_accepted_version AS web_terms_accepted_version").
 		Joins("JOIN provider_accounts AS web ON web.id = link.web_account_id").
 		Joins("JOIN provider_accounts AS build ON build.id = link.build_account_id").
-		Joins("LEFT JOIN web_account_profiles AS web_profile ON web_profile.account_id = web.id").
+		Joins("LEFT JOIN web_account_profiles AS profile ON profile.account_id = web.id").
 		Where("link.web_account_id IN ? OR link.build_account_id IN ?", ids, ids).
-		Scan(&rows).Error
+		Scan(&buildRows).Error
 	if err != nil {
 		return err
 	}
-	for _, row := range rows {
+	for _, row := range buildRows {
+		egressIdentity := linkedWebEgressIdentity(row.EgressIdentity, row.WebSourceKey)
 		if index, ok := positions[row.WebAccountID]; ok {
 			values[index].LinkedAccountID = row.BuildAccountID
 			values[index].LinkedAccountName = row.BuildName
 			values[index].LinkedProvider = account.ProviderBuild
+			values[index].LinkedAccounts = append(values[index].LinkedAccounts, account.LinkedAccount{ID: row.BuildAccountID, Provider: account.ProviderBuild, Name: row.BuildName, Email: row.BuildEmail, UserID: row.BuildUserID})
+			if values[index].EgressIdentity == "" {
+				values[index].EgressIdentity = egressIdentity
+			}
+			values[index].WebNSFWEnabledAt = row.WebNSFWEnabledAt
+			values[index].WebTermsAcceptedVersion = row.WebTermsAcceptedVersion
+			values[index].WebTermsAcceptedAt = currentWebTermsAcceptedAt(row.WebTermsAcceptedAt, row.WebTermsAcceptedVersion)
 		}
 		if index, ok := positions[row.BuildAccountID]; ok {
 			values[index].LinkedAccountID = row.WebAccountID
 			values[index].LinkedAccountName = row.WebName
 			values[index].LinkedProvider = account.ProviderWeb
-			values[index].LinkedWebTier = account.WebTier(row.LinkedWebTier)
+			values[index].LinkedAccounts = append(values[index].LinkedAccounts, account.LinkedAccount{ID: row.WebAccountID, Provider: account.ProviderWeb, Name: row.WebName, Email: row.WebEmail, UserID: row.WebUserID})
+			values[index].EgressIdentity = egressIdentity
+			values[index].WebNSFWEnabledAt = row.WebNSFWEnabledAt
+			values[index].WebTermsAcceptedVersion = row.WebTermsAcceptedVersion
+			values[index].WebTermsAcceptedAt = currentWebTermsAcceptedAt(row.WebTermsAcceptedAt, row.WebTermsAcceptedVersion)
+		}
+	}
+	var consoleRows []struct {
+		WebAccountID            uint64
+		ConsoleAccountID        uint64
+		WebName                 string
+		ConsoleName             string
+		WebEmail                string
+		ConsoleEmail            string
+		WebUserID               string
+		ConsoleUserID           string
+		WebSourceKey            string
+		EgressIdentity          string
+		WebNSFWEnabledAt        *time.Time
+		WebTermsAcceptedAt      *time.Time
+		WebTermsAcceptedVersion int
+	}
+	if err := r.db.db.WithContext(ctx).Table("web_console_account_links AS link").
+		Select("link.web_account_id, link.console_account_id, web.name AS web_name, console.name AS console_name, web.email AS web_email, console.email AS console_email, web.user_id AS web_user_id, console.user_id AS console_user_id, web.source_key AS web_source_key, profile.egress_identity, profile.nsfw_enabled_at AS web_nsfw_enabled_at, profile.terms_accepted_at AS web_terms_accepted_at, profile.terms_accepted_version AS web_terms_accepted_version").
+		Joins("JOIN provider_accounts AS web ON web.id = link.web_account_id").
+		Joins("JOIN provider_accounts AS console ON console.id = link.console_account_id").
+		Joins("LEFT JOIN web_account_profiles AS profile ON profile.account_id = web.id").
+		Where("link.web_account_id IN ? OR link.console_account_id IN ?", ids, ids).
+		Scan(&consoleRows).Error; err != nil {
+		return err
+	}
+	for _, row := range consoleRows {
+		egressIdentity := linkedWebEgressIdentity(row.EgressIdentity, row.WebSourceKey)
+		if index, ok := positions[row.WebAccountID]; ok {
+			values[index].LinkedAccounts = append(values[index].LinkedAccounts, account.LinkedAccount{ID: row.ConsoleAccountID, Provider: account.ProviderConsole, Name: row.ConsoleName, Email: row.ConsoleEmail, UserID: row.ConsoleUserID})
+			if values[index].EgressIdentity == "" {
+				values[index].EgressIdentity = egressIdentity
+			}
+			values[index].WebNSFWEnabledAt = row.WebNSFWEnabledAt
+			values[index].WebTermsAcceptedVersion = row.WebTermsAcceptedVersion
+			values[index].WebTermsAcceptedAt = currentWebTermsAcceptedAt(row.WebTermsAcceptedAt, row.WebTermsAcceptedVersion)
+		}
+		if index, ok := positions[row.ConsoleAccountID]; ok {
+			values[index].LinkedAccounts = append(values[index].LinkedAccounts, account.LinkedAccount{ID: row.WebAccountID, Provider: account.ProviderWeb, Name: row.WebName, Email: row.WebEmail, UserID: row.WebUserID})
+			values[index].EgressIdentity = egressIdentity
+			values[index].WebNSFWEnabledAt = row.WebNSFWEnabledAt
+			values[index].WebTermsAcceptedVersion = row.WebTermsAcceptedVersion
+			values[index].WebTermsAcceptedAt = currentWebTermsAcceptedAt(row.WebTermsAcceptedAt, row.WebTermsAcceptedVersion)
 		}
 	}
 	return nil
+}
+
+func currentWebTermsAcceptedAt(value *time.Time, version int) *time.Time {
+	if version < account.CurrentWebTermsVersion {
+		return nil
+	}
+	return value
+}
+
+// attachRoutingEgressIdentities 只补充推理路由需要的稳定出口身份。
+// 管理端展示所需的账号名称和 linkedAccounts 仍由 attachAccountLinks 加载，
+// 避免路由候选缓存刷新时额外查询两类完整关系。
+func (r *AccountRepository) attachRoutingEgressIdentities(ctx context.Context, provider account.Provider, values []account.Credential) error {
+	if len(values) == 0 || provider == account.ProviderWeb {
+		return nil
+	}
+	ids := make([]uint64, 0, len(values))
+	positions := make(map[uint64]int, len(values))
+	for index := range values {
+		ids = append(ids, values[index].ID)
+		positions[values[index].ID] = index
+	}
+	type identityRow struct {
+		AccountID      uint64
+		WebSourceKey   string
+		EgressIdentity string
+	}
+	var rows []identityRow
+	query := r.db.db.WithContext(ctx)
+	switch provider {
+	case account.ProviderBuild:
+		query = query.Table("account_provider_links AS link").
+			Select("link.build_account_id AS account_id, web.source_key AS web_source_key, profile.egress_identity").
+			Joins("JOIN provider_accounts AS web ON web.id = link.web_account_id").
+			Joins("LEFT JOIN web_account_profiles AS profile ON profile.account_id = web.id").
+			Where("link.build_account_id IN ?", ids)
+	case account.ProviderConsole:
+		query = query.Table("web_console_account_links AS link").
+			Select("link.console_account_id AS account_id, web.source_key AS web_source_key, profile.egress_identity").
+			Joins("JOIN provider_accounts AS web ON web.id = link.web_account_id").
+			Joins("LEFT JOIN web_account_profiles AS profile ON profile.account_id = web.id").
+			Where("link.console_account_id IN ?", ids)
+	default:
+		return nil
+	}
+	if err := query.Scan(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if index, ok := positions[row.AccountID]; ok {
+			values[index].EgressIdentity = linkedWebEgressIdentity(row.EgressIdentity, row.WebSourceKey)
+		}
+	}
+	return nil
+}
+
+func linkedWebEgressIdentity(stored, sourceKey string) string {
+	if value := strings.TrimSpace(stored); value != "" {
+		return value
+	}
+	value, _ := egressIdentityFromWebSourceKey(sourceKey)
+	return value
 }
 
 func (r *AccountRepository) UpsertByIdentity(ctx context.Context, value account.Credential) (account.Credential, bool, error) {
@@ -660,6 +783,13 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 func (r *AccountRepository) Update(ctx context.Context, value account.Credential) (account.Credential, error) {
 	row := fromAccountDomain(value)
 	if err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing accountModel
+		if err := tx.Select("identity_key", "created_at").First(&existing, row.ID).Error; err != nil {
+			return err
+		}
+		// 身份同步补充的 user_id/email 不得让普通编辑重写持久化身份键。
+		row.IdentityKey = existing.IdentityKey
+		row.CreatedAt = existing.CreatedAt
 		if err := tx.Save(&row).Error; err != nil {
 			return err
 		}
@@ -677,9 +807,111 @@ func saveAccountRelations(tx *gorm.DB, value account.Credential, accountID uint6
 		return err
 	}
 	if profile := fromWebProfileDomain(value); profile != nil {
-		return tx.Save(profile).Error
+		updates := []string{"tier", "synced_at"}
+		if profile.NSFWEnabledAt != nil {
+			updates = append(updates, "nsfw_enabled_at")
+		}
+		if profile.TermsAcceptedAt != nil {
+			updates = append(updates, "terms_accepted_at")
+		}
+		if profile.TermsAcceptedVersion > 0 {
+			updates = append(updates, "terms_accepted_version")
+		}
+		if profile.BirthDateSetAt != nil {
+			updates = append(updates, "birth_date_set_at")
+		}
+		if strings.TrimSpace(profile.EgressIdentity) != "" {
+			updates = append(updates, "egress_identity")
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "account_id"}},
+			DoUpdates: clause.AssignmentColumns(updates),
+		}).Create(profile).Error
 	}
 	return tx.Where("account_id = ?", accountID).Delete(&webAccountProfileModel{}).Error
+}
+
+// MarkWebNSFWEnabled 幂等保存首次成功开启时间；重复执行不会覆盖已有标记。
+func (r *AccountRepository) MarkWebNSFWEnabled(ctx context.Context, id uint64, enabledAt time.Time) error {
+	if id == 0 || enabledAt.IsZero() {
+		return fmt.Errorf("Web NSFW 标记参数无效")
+	}
+	return r.markWebProfileTimestamp(ctx, id, "nsfw_enabled_at", enabledAt)
+}
+
+// MarkWebTermsAccepted 幂等保存已完整接受的产品协议版本。
+// 协议升级时会同步更新完成时间；相同或更高版本不会被覆盖。
+func (r *AccountRepository) MarkWebTermsAccepted(ctx context.Context, id uint64, version int, acceptedAt time.Time) error {
+	if id == 0 || version <= 0 || acceptedAt.IsZero() {
+		return fmt.Errorf("Web 服务协议标记参数无效")
+	}
+	acceptedAt = acceptedAt.UTC()
+	return mapError(r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var accountRow accountModel
+		if err := tx.Select("id", "provider").First(&accountRow, id).Error; err != nil {
+			return err
+		}
+		if account.Provider(accountRow.Provider) != account.ProviderWeb {
+			return fmt.Errorf("仅 Grok Web 账号支持资料状态标记")
+		}
+		profile := webAccountProfileModel{
+			AccountID: id, Tier: string(account.WebTierAuto),
+			TermsAcceptedAt: &acceptedAt, TermsAcceptedVersion: version,
+		}
+		created := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&profile)
+		if created.Error != nil || created.RowsAffected > 0 {
+			return created.Error
+		}
+		return tx.Model(&webAccountProfileModel{}).
+			Where("account_id = ? AND (terms_accepted_version < ? OR terms_accepted_at IS NULL)", id, version).
+			Updates(map[string]any{"terms_accepted_at": acceptedAt, "terms_accepted_version": version}).Error
+	}))
+}
+
+// MarkWebBirthDateSet 幂等保存首次成功设置或确认已有生日的时间。
+func (r *AccountRepository) MarkWebBirthDateSet(ctx context.Context, id uint64, setAt time.Time) error {
+	if id == 0 || setAt.IsZero() {
+		return fmt.Errorf("Web 生日标记参数无效")
+	}
+	return r.markWebProfileTimestamp(ctx, id, "birth_date_set_at", setAt)
+}
+
+func (r *AccountRepository) markWebProfileTimestamp(ctx context.Context, id uint64, column string, value time.Time) error {
+	value = value.UTC()
+	return mapError(r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var accountRow accountModel
+		if err := tx.Select("id", "provider").First(&accountRow, id).Error; err != nil {
+			return err
+		}
+		if account.Provider(accountRow.Provider) != account.ProviderWeb {
+			return fmt.Errorf("仅 Grok Web 账号支持资料状态标记")
+		}
+		profile := webAccountProfileModel{AccountID: id, Tier: string(account.WebTierAuto)}
+		switch column {
+		case "nsfw_enabled_at":
+			profile.NSFWEnabledAt = &value
+		case "birth_date_set_at":
+			profile.BirthDateSetAt = &value
+		default:
+			return fmt.Errorf("Web 资料状态字段无效")
+		}
+		created := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&profile)
+		if created.Error != nil || created.RowsAffected > 0 {
+			return created.Error
+		}
+		switch column {
+		case "nsfw_enabled_at":
+			return tx.Model(&webAccountProfileModel{}).
+				Where("account_id = ? AND nsfw_enabled_at IS NULL", id).
+				Update("nsfw_enabled_at", value).Error
+		case "birth_date_set_at":
+			return tx.Model(&webAccountProfileModel{}).
+				Where("account_id = ? AND birth_date_set_at IS NULL", id).
+				Update("birth_date_set_at", value).Error
+		default:
+			return fmt.Errorf("Web 资料状态字段无效")
+		}
+	}))
 }
 
 func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, updates repository.AccountUpdates) (int64, error) {

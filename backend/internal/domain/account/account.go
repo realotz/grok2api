@@ -16,6 +16,16 @@ const (
 	ProviderConsole Provider = "grok_console"
 )
 
+// LinkedAccount 表示同一上游用户在另一 Provider 下的弱关联账号。
+// 关联只用于出口身份与管理端展示，不共享额度、健康或路由状态。
+type LinkedAccount struct {
+	ID       uint64
+	Provider Provider
+	Name     string
+	Email    string
+	UserID   string
+}
+
 var providers = [...]Provider{ProviderBuild, ProviderWeb, ProviderConsole}
 
 // Providers 返回按产品展示和后台维护顺序排列的稳定 Provider 集合。
@@ -65,6 +75,10 @@ const (
 
 // BuildRouteMode 控制 Build 账号的推理地址；模型、Billing 与 OAuth 不受影响。
 type BuildRouteMode string
+
+// CurrentWebTermsVersion 是 Grok Web 当前要求接受的产品服务协议版本。
+// accounts.x.ai 的账号协议使用独立版本，不与该值混用。
+const CurrentWebTermsVersion = 5
 
 const (
 	BuildRouteAuto  BuildRouteMode = "auto"
@@ -129,12 +143,25 @@ type Credential struct {
 	ObservedModelAt           *time.Time
 	WebTier                   WebTier
 	WebTierSyncedAt           *time.Time
-	LinkedAccountID           uint64
-	LinkedAccountName         string
-	LinkedProvider            Provider
-	// LinkedWebTier 是 Build 账号关联 Grok Web 账号的已同步等级。
-	// 仅明确的 basic/super/heavy 参与 Build 判级；auto/空值保持 Unknown。
-	LinkedWebTier WebTier
+	// EgressIdentity 是不含凭据和个人信息的稳定出口身份。
+	// 关联到同一 Web 账号的 Build/Console 只共享该值，不共享任何运行状态。
+	EgressIdentity string
+	// WebNSFWEnabledAt 记录 Grok Web 上游首次确认 NSFW 已成功开启的时间。
+	// 普通导入、额度同步和凭据更新不得清除。
+	WebNSFWEnabledAt *time.Time
+	// WebTermsAcceptedAt 记录 Grok Web 上游确认当前版本完整服务协议已接受的时间。
+	// 关联渠道只共享该展示状态，不获得修改 Web 资料的能力。
+	WebTermsAcceptedAt *time.Time
+	// WebTermsAcceptedVersion 记录已完成的 Grok Web 产品协议版本。
+	// 历史数据默认为 0，必须补执行当前版本后才视为完整接受。
+	WebTermsAcceptedVersion int
+	// WebBirthDateSetAt 记录 Grok Web 上游首次确认生日已设置的时间。
+	// 该字段用于避免批量脚本重复请求不可修改的生日接口。
+	WebBirthDateSetAt *time.Time
+	LinkedAccountID   uint64
+	LinkedAccountName string
+	LinkedProvider    Provider
+	LinkedAccounts    []LinkedAccount
 	// BuildAPIFallback 仅记录 grok_build 曾因当次 Build 403 成功回退到 XAI。
 	// 它不参与路由；每个新请求仍先走 Build，只有当次严格 403 才可尝试 XAI。
 	// token refresh / SSO 转换 / 普通 upsert / 重启不得清除。
@@ -377,7 +404,7 @@ func isFreeBillingPlan(value string) bool {
 	}
 }
 
-// IsBuildSuper 判定 Grok Build 账号是否为 Super：付费 Billing、管理员确认或关联 Web Super/Heavy。
+// IsBuildSuper 判定 Grok Build 账号是否为 Super：Billing IsPaid 或管理员确认 BuildSuperEntitled。
 // 非 Build Provider 恒为 false。与 SQL accountBuildSuperPredicate 语义一致。
 func IsBuildSuper(credential Credential, billing *Billing) bool {
 	if credential.Provider != ProviderBuild {
@@ -386,23 +413,17 @@ func IsBuildSuper(credential Credential, billing *Billing) bool {
 	if credential.BuildSuperEntitled {
 		return true
 	}
-	if credential.LinkedWebTier == WebTierSuper || credential.LinkedWebTier == WebTierHeavy {
-		return true
-	}
 	return billing != nil && billing.IsPaid()
 }
 
 // IsKnownFreeBuild 判断候选是否是已确认的 Grok Build Free 账号。
-// Super 信号优先，避免旧的响应模型或恢复记录把 Super 错分为 Free。
+// Super（Billing paid 或 BuildSuperEntitled）优先，避免旧的响应模型或恢复记录把 Super 错分为 Free。
 func (c RoutingCandidate) IsKnownFreeBuild() bool {
 	if c.Credential.Provider != ProviderBuild {
 		return false
 	}
 	if IsBuildSuper(c.Credential, c.Billing) {
 		return false
-	}
-	if c.Credential.LinkedWebTier == WebTierBasic {
-		return true
 	}
 	if c.QuotaRecovery != nil && c.QuotaRecovery.Kind == QuotaRecoveryKindFree {
 		return true
