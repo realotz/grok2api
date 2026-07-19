@@ -379,7 +379,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		if recoveryValue, ok := recoveries[value.ID]; ok {
 			recovery = &recoveryValue
 		}
-		view.Quota = newQuotaView(view.Billing, observedTokens[value.ID], recovery, value.ObservedModel, value.BuildSuperEntitled && value.Provider == accountdomain.ProviderBuild, value.LinkedWebTier)
+		view.Quota = newQuotaView(view.Billing, observedTokens[value.ID], recovery, value.ObservedModel, value.BuildSuperEntitled && value.Provider == accountdomain.ProviderBuild)
 		view.QuotaWindows = quotaWindows[value.ID]
 		views = append(views, view)
 	}
@@ -497,7 +497,7 @@ func (s *Service) Get(ctx context.Context, id uint64) (View, error) {
 	} else if !errors.Is(err, repository.ErrNotFound) {
 		return View{}, err
 	}
-	view.Quota = newQuotaView(view.Billing, observedTokens[id], recovery, value.ObservedModel, value.BuildSuperEntitled && value.Provider == accountdomain.ProviderBuild, value.LinkedWebTier)
+	view.Quota = newQuotaView(view.Billing, observedTokens[id], recovery, value.ObservedModel, value.BuildSuperEntitled && value.Provider == accountdomain.ProviderBuild)
 	if windows, err := s.accounts.GetQuotaWindows(ctx, []uint64{id}); err == nil {
 		view.QuotaWindows = windows[id]
 	} else {
@@ -521,7 +521,7 @@ func (s *Service) ObserveResponseModel(ctx context.Context, id uint64, model str
 	return s.accounts.UpdateObservedModel(ctx, id, model, time.Now().UTC())
 }
 
-func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery *accountdomain.QuotaRecovery, observedModel string, buildSuperEntitled bool, linkedWebTier accountdomain.WebTier) QuotaView {
+func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery *accountdomain.QuotaRecovery, observedModel string, buildSuperEntitled bool) QuotaView {
 	// Billing paid 优先：保留真实额度数值。
 	if billing != nil && billing.IsPaid() {
 		periodStart, periodEnd := billing.BillingPeriodStart, billing.BillingPeriodEnd
@@ -575,12 +575,6 @@ func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery
 			Confirmed: true, Status: QuotaStatusActive,
 		}
 	}
-	if linkedWebTier == accountdomain.WebTierSuper || linkedWebTier == accountdomain.WebTierHeavy {
-		return QuotaView{
-			Type: QuotaTypePaid, Source: "linkedWebTier", Confidence: "observed",
-			Observed: true, Status: QuotaStatusActive,
-		}
-	}
 	if recovery != nil && recovery.Status != accountdomain.QuotaRecoveryStatusActive && (recovery.Kind == "" || recovery.Kind == accountdomain.QuotaRecoveryKindFree) {
 		limit := recovery.ConfirmedLimit
 		used := recovery.ConfirmedUsed
@@ -609,10 +603,7 @@ func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery
 	}
 	freeSource := ""
 	confidence := ""
-	if linkedWebTier == accountdomain.WebTierBasic {
-		freeSource = "linkedWebTier"
-		confidence = "observed"
-	} else if strings.HasSuffix(strings.ToLower(strings.TrimSpace(observedModel)), "-build-free") {
+	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(observedModel)), "-build-free") {
 		freeSource = "responseModel"
 		confidence = "observed"
 	} else if isEstimatedFreeBillingProfile(billing) {

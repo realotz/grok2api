@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
@@ -75,45 +74,6 @@ func TestListFilters(t *testing.T) {
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{QuotaType: "free", Now: now}, 1)
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Status: "active", Now: now}, 3)
 
-	linkedBasicWeb := accountModel{IdentityKey: testIdentityKey("linked-basic-web"), Provider: "grok_web", Name: "linked-basic-web", SourceKey: "linked-basic-web", Enabled: true, AuthStatus: "active", Priority: 1}
-	linkedBasicBuild := accountModel{IdentityKey: testIdentityKey("linked-basic-build"), Provider: "grok_build", Name: "linked-basic-build", SourceKey: "linked-basic-build", Enabled: true, AuthStatus: "active", Priority: 1}
-	linkedSuperWeb := accountModel{IdentityKey: testIdentityKey("linked-super-web"), Provider: "grok_web", Name: "linked-super-web", SourceKey: "linked-super-web", Enabled: true, AuthStatus: "active", Priority: 1}
-	linkedSuperBuild := accountModel{IdentityKey: testIdentityKey("linked-super-build"), Provider: "grok_build", Name: "linked-super-build", SourceKey: "linked-super-build", ObservedModel: "grok-build-free", Enabled: true, AuthStatus: "active", Priority: 1}
-	for _, value := range []*accountModel{&linkedBasicWeb, &linkedBasicBuild, &linkedSuperWeb, &linkedSuperBuild} {
-		if err := database.db.WithContext(ctx).Create(value).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, profile := range []webAccountProfileModel{
-		{AccountID: linkedBasicWeb.ID, Tier: string(accountdomain.WebTierBasic), SyncedAt: &now},
-		{AccountID: linkedSuperWeb.ID, Tier: string(accountdomain.WebTierSuper), SyncedAt: &now},
-	} {
-		if err := database.db.WithContext(ctx).Create(&profile).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, link := range []accountProviderLinkModel{
-		{WebAccountID: linkedBasicWeb.ID, BuildAccountID: linkedBasicBuild.ID, CreatedAt: now},
-		{WebAccountID: linkedSuperWeb.ID, BuildAccountID: linkedSuperBuild.ID, CreatedAt: now},
-	} {
-		if err := database.db.WithContext(ctx).Create(&link).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_build", QuotaType: "free", Now: now}, 2)
-	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_build", QuotaType: "paid", Now: now}, 3)
-	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_build", QuotaType: "unknown", Now: now}, 1)
-	linkedValues, _, err := accounts.List(ctx, repository.AccountListQuery{
-		Page:   repository.PageQuery{Limit: 10, Sort: repository.SortQuery{Field: "type", Direction: repository.SortAscending}},
-		Filter: repository.AccountListFilter{Provider: "grok_build", AccountIDs: []uint64{linkedBasicBuild.ID, linkedSuperBuild.ID}, RestrictIDs: true, Now: now},
-	})
-	if err != nil || len(linkedValues) != 2 || linkedValues[0].ID != linkedBasicBuild.ID || linkedValues[1].ID != linkedSuperBuild.ID {
-		t.Fatalf("linked Build type sort = %#v, err = %v", linkedValues, err)
-	}
-	if linkedValues[0].LinkedWebTier != accountdomain.WebTierBasic || linkedValues[1].LinkedWebTier != accountdomain.WebTierSuper {
-		t.Fatalf("linked Build tiers = %#v", linkedValues)
-	}
-
 	for _, tier := range []string{"auto", "basic", "super", "heavy"} {
 		value := accountModel{IdentityKey: testIdentityKey("web-" + tier), Provider: "grok_web", Name: "web-" + tier, SourceKey: "web-" + tier, Enabled: true, AuthStatus: "active", Priority: 1}
 		if err := database.db.WithContext(ctx).Create(&value).Error; err != nil {
@@ -122,14 +82,10 @@ func TestListFilters(t *testing.T) {
 		if err := database.db.WithContext(ctx).Create(&webAccountProfileModel{AccountID: value.ID, Tier: tier, SyncedAt: &now}).Error; err != nil {
 			t.Fatal(err)
 		}
-		want := int64(1)
-		if tier == "basic" || tier == "super" {
-			want = 2
-		}
-		assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_web", QuotaType: tier, Now: now}, want)
+		assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_web", QuotaType: tier, Now: now}, 1)
 	}
 	accountValues, _, err := accounts.List(ctx, repository.AccountListQuery{Page: repository.PageQuery{Limit: 20, Sort: repository.SortQuery{Field: "name", Direction: repository.SortAscending}}, Filter: repository.AccountListFilter{Provider: "grok_build", Now: now}})
-	if err != nil || len(accountValues) != 6 || accountValues[0].Name != "disabled" || accountValues[5].Name != "paid" {
+	if err != nil || len(accountValues) != 4 || accountValues[0].Name != "disabled" || accountValues[3].Name != "paid" {
 		t.Fatalf("account name sort = %#v, err = %v", accountValues, err)
 	}
 

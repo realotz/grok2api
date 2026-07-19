@@ -242,14 +242,14 @@ export function VideoGalleryPage() {
       </AlertDialog>
 
       <Dialog open={Boolean(previewing)} onOpenChange={(open) => !open && setPreviewing(null)}>
-        <DialogContent className="max-h-[calc(100svh-2rem)] min-w-0 max-w-4xl overflow-hidden">
-          <DialogHeader className="min-w-0">
-            <DialogTitle className="min-w-0 truncate">{previewing?.prompt || t("media.videos.previewTitle")}</DialogTitle>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle className="truncate">{previewing?.prompt || t("media.videos.previewTitle")}</DialogTitle>
             <DialogDescription className="truncate font-mono">{previewing?.id}</DialogDescription>
           </DialogHeader>
           {previewing?.assetId ? (
-            <div className="min-w-0 max-w-full overflow-hidden rounded-lg bg-black">
-              <video key={previewing.assetId} className="block aspect-video max-h-[70svh] w-full min-w-0 object-contain" src={videoAssetURL(previewing.assetId)} controls playsInline preload="metadata" />
+            <div className="overflow-hidden rounded-lg bg-black">
+              <video key={previewing.assetId} className="max-h-[70vh] w-full" src={videoAssetURL(previewing.assetId)} controls playsInline preload="metadata" />
             </div>
           ) : null}
         </DialogContent>

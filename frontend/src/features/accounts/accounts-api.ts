@@ -41,7 +41,7 @@ export type BillingHistoryDTO = {
 
 export type QuotaDTO = {
   type: "free" | "paid" | "unknown";
-  source: "unknown" | "upstreamBilling" | "upstreamExhaustion" | "responseModel" | "billingProfile" | "buildSuperEntitlement" | "linkedWebTier";
+  source: "unknown" | "upstreamBilling" | "upstreamExhaustion" | "responseModel" | "billingProfile" | "buildSuperEntitlement";
   confidence: "estimated" | "observed" | "confirmed" | "";
   status: "active" | "waitingReset" | "probing";
   unit?: "tokens" | "credits" | "percent";
@@ -161,7 +161,7 @@ const billingValidator = hasShape({
   billingPeriodEnd: isOptional(isString), history: isOptional(isArrayOf(billingHistoryValidator)), syncedAt: isString,
 });
 const quotaValidator = hasShape({
-  type: isOneOf("free", "paid", "unknown"), source: isOneOf("unknown", "upstreamBilling", "upstreamExhaustion", "responseModel", "billingProfile", "buildSuperEntitlement", "linkedWebTier"),
+  type: isOneOf("free", "paid", "unknown"), source: isOneOf("unknown", "upstreamBilling", "upstreamExhaustion", "responseModel", "billingProfile", "buildSuperEntitlement"),
   confidence: isOneOf("estimated", "observed", "confirmed", ""), status: isOneOf("active", "waitingReset", "probing"),
   unit: isOptional(isOneOf("tokens", "credits", "percent")), used: isNumber, limit: isNumber, remaining: isNumber, usagePercent: isNumber,
   limitKnown: isBoolean, windowHours: isOptional(isNumber), observed: isBoolean, confirmed: isBoolean,
