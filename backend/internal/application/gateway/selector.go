@@ -146,6 +146,12 @@ func (s *Selector) routingConfig() (time.Duration, time.Duration, time.Duration,
 }
 
 func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool) (*accountLease, error) {
+	return s.AcquireEligible(ctx, provider, upstreamModel, quotaMode, affinityKey, excluded, allowQuotaProbe, nil)
+}
+
+// AcquireEligible 在通用账号健康条件之外应用调用方的能力过滤。
+// 过滤仅影响本次选择，不修改账号健康、额度或模型冷却状态。
+func (s *Selector) AcquireEligible(ctx context.Context, provider account.Provider, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool, eligible func(account.Credential) bool) (*accountLease, error) {
 	now := time.Now().UTC()
 	stickyKey := stickySessionKey(affinityKey)
 	values, err := s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
@@ -171,6 +177,9 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			continue
 		}
 		supportedCandidates++
+		if eligible != nil && !eligible(value) {
+			continue
+		}
 		if candidate.ModelQuotaBlock != nil && now.Before(candidate.ModelQuotaBlock.CooldownUntil) {
 			modelCoolingCandidates++
 			earliestRetry = earlierFuture(earliestRetry, candidate.ModelQuotaBlock.CooldownUntil, now)

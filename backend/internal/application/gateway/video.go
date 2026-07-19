@@ -32,6 +32,8 @@ const (
 
 var errVideoBuildSuperRequired = errors.New("当前 Build 账号不再具备 Super 视频资格")
 
+var errVideoCredentialRiskFlagged = errors.New("风控 OAuth 账号不支持视频生成")
+
 type VideoInput struct {
 	RequestID     string
 	ClientKey     clientkey.Key
@@ -63,7 +65,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	}
 	externalModel := model.ExternalPublicID(route.Provider, route.PublicID)
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
-	lease, err := s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", nil, false)
+	lease, err := s.selector.AcquireEligible(ctx, route.Provider, route.UpstreamModel, quotaMode, "", nil, false, s.videoCredentialEligible)
 	if err != nil {
 		return media.Job{}, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
 	}
@@ -416,12 +418,16 @@ func (s *Service) generateVideoWithFailover(ctx context.Context, job *media.Job,
 		if firstPinned {
 			firstPinned = false
 			lease, err = s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.UpstreamModel, quotaMode, true)
-			if err != nil {
+			if err == nil && lease != nil && !s.videoCredentialEligible(lease.Credential) {
+				excluded[lease.Credential.ID] = true
+				lease.Release()
+				lease = nil
+			} else if err != nil {
 				excluded[job.AccountID] = true
 			}
 		}
 		if lease == nil {
-			lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", excluded, false)
+			lease, err = s.selector.AcquireEligible(ctx, route.Provider, route.UpstreamModel, quotaMode, "", excluded, false, s.videoCredentialEligible)
 		}
 		if err != nil {
 			lastErr = err
@@ -433,6 +439,14 @@ func (s *Service) generateVideoWithFailover(ctx context.Context, job *media.Job,
 		if err = s.prepareVideoLease(ctx, route, lease); err != nil {
 			lastErr = err
 			lease.Release()
+			continue
+		}
+		// OAuth 刷新可能换入带风控标记的新 access token，提交上游前必须再次检查。
+		if !s.videoCredentialEligible(lease.Credential) {
+			lastErr = errVideoCredentialRiskFlagged
+			excluded[lease.Credential.ID] = true
+			lease.Release()
+			attempt--
 			continue
 		}
 		if job.AccountID != lease.Credential.ID || job.AccountName != lease.Credential.Name {
@@ -532,6 +546,13 @@ func (s *Service) prepareVideoLease(ctx context.Context, route model.Route, leas
 
 func videoRequiresBuildSuper(route model.Route) bool {
 	return route.Provider == account.ProviderBuild && strings.Contains(strings.ToLower(route.UpstreamModel), "grok-imagine-video-1.5")
+}
+
+func (s *Service) videoCredentialEligible(credential account.Credential) bool {
+	if credential.AuthType != account.AuthTypeOAuth || s.providers == nil {
+		return true
+	}
+	return !s.providers.CredentialMetadata(credential).BuildBotFlagged
 }
 
 func (s *Service) handleRetryableVideoAccountFailure(ctx context.Context, route model.Route, lease *accountLease, err error) {

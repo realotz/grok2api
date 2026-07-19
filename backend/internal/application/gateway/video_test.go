@@ -144,6 +144,58 @@ func TestVideoRefreshesStaleBillingAndSwitchesExpiredSuperAccount(t *testing.T) 
 	}
 }
 
+func TestVideoSkipsRiskFlaggedPinnedOAuthAccount(t *testing.T) {
+	adapter := &videoFailoverAdapter{}
+	service, accountRepo, jobs, accounts := newVideoFailoverTestService(t, adapter, 3, 2)
+	adapter.flaggedAccountIDs = map[uint64]bool{accounts[0].ID: true}
+	now := time.Now().UTC()
+	for _, credential := range accounts {
+		if err := accountRepo.SaveBilling(context.Background(), account.Billing{AccountID: credential.ID, PlanName: "SuperGrok", MonthlyLimit: 15000, SyncedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	job := testVideoFailoverJob(accounts[0])
+	jobs.job = job
+	result, lease, err := service.generateVideoWithFailover(context.Background(), &job, testBuildVideoRoute(), adapter, nil)
+	if lease != nil {
+		lease.Release()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AssetID != "generated" || len(adapter.generateAccountIDs) != 1 || adapter.generateAccountIDs[0] != accounts[1].ID {
+		t.Fatalf("result=%#v generate accounts=%v", result, adapter.generateAccountIDs)
+	}
+	if jobs.job.AccountID != accounts[1].ID {
+		t.Fatalf("persisted account=%d, want %d", jobs.job.AccountID, accounts[1].ID)
+	}
+}
+
+func TestVideoRejectsPoolContainingOnlyRiskFlaggedOAuth(t *testing.T) {
+	adapter := &videoFailoverAdapter{}
+	service, accountRepo, jobs, accounts := newVideoFailoverTestService(t, adapter, 3, 1)
+	adapter.flaggedAccountIDs = map[uint64]bool{accounts[0].ID: true}
+	if err := accountRepo.SaveBilling(context.Background(), account.Billing{
+		AccountID: accounts[0].ID, PlanName: "SuperGrok", MonthlyLimit: 15000, SyncedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	job := testVideoFailoverJob(accounts[0])
+	jobs.job = job
+	_, lease, err := service.generateVideoWithFailover(context.Background(), &job, testBuildVideoRoute(), adapter, nil)
+	if lease != nil {
+		lease.Release()
+	}
+	if err == nil {
+		t.Fatal("risk-only video pool was accepted")
+	}
+	if len(adapter.generateAccountIDs) != 0 {
+		t.Fatalf("risk account reached video adapter: %v", adapter.generateAccountIDs)
+	}
+}
+
 func TestVideoUnauthorizedRefreshesCredentialAndRetriesSameAccount(t *testing.T) {
 	adapter := &videoFailoverAdapter{generate: func(request provider.VideoRequest, call int) (provider.VideoResult, error) {
 		if call == 1 {
@@ -266,6 +318,7 @@ func TestVideoAccountFailoverHonorsAttemptLimit(t *testing.T) {
 
 type videoFailoverAdapter struct {
 	billings           map[uint64]account.Billing
+	flaggedAccountIDs  map[uint64]bool
 	billingAccountIDs  []uint64
 	generateAccountIDs []uint64
 	refreshCalls       int
@@ -273,6 +326,10 @@ type videoFailoverAdapter struct {
 }
 
 func (a *videoFailoverAdapter) Provider() account.Provider { return account.ProviderBuild }
+
+func (a *videoFailoverAdapter) CredentialMetadata(credential account.Credential) provider.CredentialMetadata {
+	return provider.CredentialMetadata{BuildBotFlagged: a.flaggedAccountIDs[credential.ID]}
+}
 
 func (a *videoFailoverAdapter) Definition() provider.Definition {
 	return provider.Definition{
