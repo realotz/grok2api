@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,7 +33,7 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailureCreate, true, err)
 	}
 	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, request.Credential)
 	if err != nil {
@@ -44,7 +45,7 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	for _, rawReference := range request.ReferenceURLs {
 		reference, referenceErr := a.prepareVideoReference(ctx, cfg, lease, token, rawReference)
 		if referenceErr != nil {
-			return provider.VideoResult{}, referenceErr
+			return provider.VideoResult{}, webVideoCreateFailure(referenceErr)
 		}
 		references = append(references, reference)
 	}
@@ -68,17 +69,33 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	payload := videoCreatePayload(request.Prompt, parentID, ratio, resolution, segments[0], references)
 	response, err := a.postJSON(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.VideoTimeoutSeconds)*time.Second)
 	if err != nil {
+		// 传输失败时无法确认 POST 是否到达上游，禁止换号重复生成。
 		return provider.VideoResult{}, err
 	}
+	status := response.StatusCode
 	result, _, parseErr := parseVideoStream(response, request.Progress)
 	_ = response.Body.Close()
 	if parseErr != nil {
-		return provider.VideoResult{}, parseErr
+		if status < 200 || status >= 300 {
+			return provider.VideoResult{}, webVideoCreateFailure(parseErr)
+		}
+		return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailurePoll, false, parseErr)
 	}
 	if result.URL == "" {
-		return provider.VideoResult{}, fmt.Errorf("视频生成完成但没有返回内容 URL")
+		return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailurePoll, false, fmt.Errorf("视频生成完成但没有返回内容 URL"))
 	}
 	return result, nil
+}
+
+func webVideoCreateFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	retrySafe := errors.Is(err, provider.ErrUnauthorized)
+	if status, ok := provider.ErrorHTTPStatus(err); ok {
+		retrySafe = status == http.StatusUnauthorized || status == http.StatusPaymentRequired || status == http.StatusForbidden || status == http.StatusTooManyRequests
+	}
+	return provider.NewVideoFailureError(provider.VideoFailureCreate, retrySafe, err)
 }
 
 func (a *Adapter) prepareVideoReference(ctx context.Context, cfg Config, lease *egress.Lease, token, value string) (string, error) {

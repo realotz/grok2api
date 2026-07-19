@@ -1137,6 +1137,27 @@ func TestParseVideoStreamPreservesUpstreamStatus(t *testing.T) {
 	}
 }
 
+func TestWebVideoCreateFailureOnlyRetriesExplicitAccountRejections(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		err       error
+		retrySafe bool
+	}{
+		{name: "unauthorized", err: provider.ErrUnauthorized, retrySafe: true},
+		{name: "forbidden", err: &webMediaUpstreamError{status: http.StatusForbidden}, retrySafe: true},
+		{name: "rate_limited", err: &webMediaUpstreamError{status: http.StatusTooManyRequests}, retrySafe: true},
+		{name: "server_error", err: &webMediaUpstreamError{status: http.StatusBadGateway}, retrySafe: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := webVideoCreateFailure(test.err)
+			stage, retrySafe, classified := provider.VideoFailureDetails(err)
+			if !classified || stage != provider.VideoFailureCreate || retrySafe != test.retrySafe {
+				t.Fatalf("stage=%q retrySafe=%v classified=%v", stage, retrySafe, classified)
+			}
+		})
+	}
+}
+
 func TestParseVideoConcatenatedJSONFixture(t *testing.T) {
 	fixture := `{"result":{"conversation":{"conversationId":"conversation_1"}}}` +
 		`{"result":{"response":{"streamingVideoGenerationResponse":{"videoId":"video_1","progress":1,"videoPostId":"post_1","resolutionName":"720p"}}}}` +

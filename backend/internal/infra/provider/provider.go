@@ -81,6 +81,53 @@ func IsMediaPostProcessingError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// VideoFailureStage 标识视频请求失败时上游任务所处的生命周期阶段。
+type VideoFailureStage string
+
+const (
+	VideoFailureCreate VideoFailureStage = "create"
+	VideoFailurePoll   VideoFailureStage = "poll"
+)
+
+// VideoFailureError 保留视频失败阶段以及跨账号重试是否安全。
+// 只有上游明确拒绝创建、确认没有产生任务时，AccountRetrySafe 才能为 true。
+type VideoFailureError struct {
+	Stage            VideoFailureStage
+	AccountRetrySafe bool
+	Cause            error
+}
+
+func (e *VideoFailureError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "video request failed"
+	}
+	return e.Cause.Error()
+}
+
+func (e *VideoFailureError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// NewVideoFailureError 给视频 Provider 错误补充生命周期语义。
+func NewVideoFailureError(stage VideoFailureStage, accountRetrySafe bool, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return &VideoFailureError{Stage: stage, AccountRetrySafe: accountRetrySafe, Cause: cause}
+}
+
+// VideoFailureDetails 从错误链中读取视频失败阶段和换号安全性。
+func VideoFailureDetails(err error) (VideoFailureStage, bool, bool) {
+	var target *VideoFailureError
+	if !errors.As(err, &target) {
+		return "", false, false
+	}
+	return target.Stage, target.AccountRetrySafe, true
+}
+
 // CredentialRefreshError 区分需要重新认证的永久 OAuth 错误与可后台退避重试的临时错误。
 type CredentialRefreshError struct {
 	Status     int

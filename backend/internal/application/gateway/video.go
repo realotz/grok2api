@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +27,10 @@ const (
 	videoJobLease            = videoJobTimeout + 5*time.Minute
 	videoJobRecoveryInterval = 30 * time.Second
 	videoOutputAttempts      = 3
+	videoBuildBillingMaxAge  = 30 * time.Minute
 )
+
+var errVideoBuildSuperRequired = errors.New("当前 Build 账号不再具备 Super 视频资格")
 
 type VideoInput struct {
 	RequestID     string
@@ -281,41 +285,29 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	if err := s.mediaJobs.UpdateMediaJob(ctx, job); err != nil {
 		s.logger.Warn("video_job_progress_write_failed", "job_id", job.ID, "error", err)
 	}
-	// 视频任务创建时已持久化账号归属；恢复只能重新获取原账号，禁止因后续
-	// 轮询或结果处理失败切换到其他账号。
-	lease, err := s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.UpstreamModel, "", true)
-	if err != nil {
-		if parent.Err() != nil {
-			s.deferVideoJob(parent, job)
-			return
-		}
-		s.failVideoJob(parent, job, "account_unavailable", err)
-		return
-	}
-	defer lease.Release()
 	adapter, ok := s.providers.Videos(route.Provider)
 	if !ok {
 		s.failVideoJob(parent, job, "provider_unavailable", ErrNoAvailableAccount)
 		return
 	}
 	lastProgress := job.Progress
-	result, err := adapter.GenerateVideo(ctx, provider.VideoRequest{
-		Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
-		ReferenceURLs: decodeVideoInput(job.InputJSON),
-		Progress: func(value int) {
-			value = min(99, max(1, value))
-			if value-lastProgress < 5 {
-				return
-			}
-			lastProgress = value
-			job.Progress, job.UpdatedAt = value, time.Now().UTC()
-			leaseUntil := job.UpdatedAt.Add(videoJobLease)
-			job.LeaseUntil = &leaseUntil
-			updateCtx, updateCancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_ = s.mediaJobs.UpdateMediaJob(updateCtx, job)
-			updateCancel()
-		},
-	})
+	progress := func(value int) {
+		value = min(99, max(1, value))
+		if value-lastProgress < 5 {
+			return
+		}
+		lastProgress = value
+		job.Progress, job.UpdatedAt = value, time.Now().UTC()
+		leaseUntil := job.UpdatedAt.Add(videoJobLease)
+		job.LeaseUntil = &leaseUntil
+		updateCtx, updateCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = s.mediaJobs.UpdateMediaJob(updateCtx, job)
+		updateCancel()
+	}
+	result, lease, err := s.generateVideoWithFailover(ctx, &job, route, adapter, progress)
+	if lease != nil {
+		defer lease.Release()
+	}
 	if err == nil && result.AssetID == "" && result.URL != "" {
 		result, err = s.persistRemoteVideo(ctx, job.ID, adapter, lease.Credential, result)
 	}
@@ -325,45 +317,48 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			return
 		}
 		failureCtx, failureCancel := context.WithTimeout(context.Background(), finalizationTimeout)
-		failureHandled := false
-		if errors.Is(err, provider.ErrUnauthorized) {
+		failureHandled := lease == nil || errors.Is(err, errVideoBuildSuperRequired)
+		if lease != nil && errors.Is(err, provider.ErrUnauthorized) {
 			if lease.Credential.AuthType == account.AuthTypeSSO {
 				s.markSSOCredentialRejected(failureCtx, lease.Credential, fmt.Sprintf("%s SSO credential rejected", lease.Credential.Provider))
 			}
 			failureHandled = true
-		} else if status, ok := provider.ErrorHTTPStatus(err); ok {
-			switch {
-			case status == http.StatusUnauthorized && lease.Credential.AuthType == account.AuthTypeSSO:
-				s.markSSOCredentialRejected(failureCtx, lease.Credential, fmt.Sprintf("%s SSO credential rejected", lease.Credential.Provider))
-				failureHandled = true
-			case status == http.StatusForbidden && s.providers.RetryForbiddenAsEgress(lease.Credential.Provider):
-				// Web Provider 已对 anti-bot 403 降低出口健康并重建浏览器会话；
-				// 视频请求已提交，不能换号重试，也不能误伤账号池。
-				// 符合资格的 Build 主地址 403 由 Adapter 尝试 XAI，不在此禁用账号。
-				failureHandled = true
-			case status == http.StatusForbidden && lease.Credential.Provider == account.ProviderBuild:
-				if !account.IsBuildSuper(lease.Credential, lease.Billing) {
-					// 非 Super 的 403 按账号级故障处理；auto 模式不会因此回退 XAI。
+		} else if lease != nil {
+			status, hasStatus := provider.ErrorHTTPStatus(err)
+			if hasStatus {
+				switch {
+				case status == http.StatusUnauthorized && lease.Credential.AuthType == account.AuthTypeSSO:
+					s.markSSOCredentialRejected(failureCtx, lease.Credential, fmt.Sprintf("%s SSO credential rejected", lease.Credential.Provider))
+					failureHandled = true
+				case status == http.StatusForbidden && s.providers.RetryForbiddenAsEgress(lease.Credential.Provider):
+					// Web Provider 已对 anti-bot 403 降低出口健康并重建浏览器会话；
+					// 视频请求已提交，不能换号重试，也不能误伤账号池。
+					// 符合资格的 Build 主地址 403 由 Adapter 尝试 XAI，不在此禁用账号。
+					failureHandled = true
+				case status == http.StatusForbidden && lease.Credential.Provider == account.ProviderBuild:
+					if !account.IsBuildSuper(lease.Credential, lease.Billing) {
+						// 非 Super 的 403 按账号级故障处理；auto 模式不会因此回退 XAI。
+						s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
+					}
+					// Super（Billing paid 或 entitlement）的 403 保持服务级处理。
+					failureHandled = true
+				case (status == http.StatusPaymentRequired || status == http.StatusTooManyRequests) && lease.QuotaMode != "":
+					exhausted, reconcileErr := s.accounts.ReconcileRateLimit(failureCtx, lease.Credential.ID, lease.QuotaMode, 0)
+					s.selector.MarkQuotaStateChanged(lease.Credential.Provider)
+					if reconcileErr != nil || !exhausted {
+						s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
+					}
+					failureHandled = true
+				case status >= http.StatusInternalServerError:
+					// 5xx 是 Provider 服务级故障，不应让某个账号退出号池。
+					failureHandled = true
+				default:
 					s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
+					failureHandled = true
 				}
-				// Super（Billing paid 或 entitlement）的 403 保持服务级处理。
-				failureHandled = true
-			case (status == http.StatusPaymentRequired || status == http.StatusTooManyRequests) && lease.QuotaMode != "":
-				exhausted, reconcileErr := s.accounts.ReconcileRateLimit(failureCtx, lease.Credential.ID, lease.QuotaMode, 0)
-				s.selector.MarkQuotaStateChanged(lease.Credential.Provider)
-				if reconcileErr != nil || !exhausted {
-					s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
-				}
-				failureHandled = true
-			case status >= http.StatusInternalServerError:
-				// 5xx 是 Provider 服务级故障，不应让某个账号退出号池。
-				failureHandled = true
-			default:
-				s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
-				failureHandled = true
 			}
 		}
-		if !failureHandled && !provider.IsMediaPostProcessingError(err) {
+		if lease != nil && !failureHandled && !provider.IsMediaPostProcessingError(err) {
 			s.selector.MarkFailure(failureCtx, lease.Credential, 0, 0)
 		}
 		failureCancel()
@@ -395,6 +390,177 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode == "weekly" {
 		s.accounts.QueueQuotaRefresh(job.AccountID, lease.QuotaMode)
 	}
+}
+
+// generateVideoWithFailover 只在 Provider 明确确认创建请求被拒绝时换号。
+// 一旦创建响应可能已产生任务、进入轮询或后处理，错误会原样返回并固定当前账号。
+func (s *Service) generateVideoWithFailover(ctx context.Context, job *media.Job, route model.Route, adapter provider.VideoAdapter, progress func(int)) (provider.VideoResult, *accountLease, error) {
+	attempts := int(s.maxAttempts.Load())
+	if attempts <= 0 {
+		attempts = 3
+	}
+	excluded := make(map[uint64]bool)
+	authRecoveryAttempted := make(map[uint64]bool)
+	egressRecoveryAttempted := make(map[uint64]bool)
+	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
+	firstPinned := job.AccountID != 0
+	var lastErr error
+	var lastLease *accountLease
+
+	for attempt := 0; attempt < attempts; attempt++ {
+		var lease *accountLease
+		var err error
+		if firstPinned {
+			firstPinned = false
+			lease, err = s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.UpstreamModel, quotaMode, true)
+			if err != nil {
+				excluded[job.AccountID] = true
+			}
+		}
+		if lease == nil {
+			lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", excluded, false)
+		}
+		if err != nil {
+			lastErr = err
+			break
+		}
+		lastLease = lease
+		excluded[lease.Credential.ID] = true
+
+		if err = s.prepareVideoLease(ctx, route, lease); err != nil {
+			lastErr = err
+			lease.Release()
+			continue
+		}
+		if job.AccountID != lease.Credential.ID || job.AccountName != lease.Credential.Name {
+			job.AccountID, job.AccountName = lease.Credential.ID, lease.Credential.Name
+			job.UpdatedAt = time.Now().UTC()
+			if err = s.persistVideoJobWithRetry(ctx, *job); err != nil {
+				lease.Release()
+				return provider.VideoResult{}, lease, fmt.Errorf("持久化视频任务账号归属: %w", err)
+			}
+		}
+
+		billingRecoveryAttempted := false
+		for {
+			result, generateErr := adapter.GenerateVideo(ctx, provider.VideoRequest{
+				Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID,
+				Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
+				ReferenceURLs: decodeVideoInput(job.InputJSON), Progress: progress,
+			})
+			if generateErr == nil {
+				return result, lease, nil
+			}
+			lastErr = generateErr
+			_, retrySafe, classified := provider.VideoFailureDetails(generateErr)
+			if !classified || !retrySafe || ctx.Err() != nil {
+				return provider.VideoResult{}, lease, generateErr
+			}
+
+			status, hasStatus := provider.ErrorHTTPStatus(generateErr)
+			unauthorized := errors.Is(generateErr, provider.ErrUnauthorized) || (hasStatus && status == http.StatusUnauthorized)
+			if unauthorized && lease.Credential.AuthType == account.AuthTypeOAuth && !authRecoveryAttempted[lease.Credential.ID] {
+				authRecoveryAttempted[lease.Credential.ID] = true
+				refreshed, refreshErr := s.accounts.EnsureCredential(ctx, lease.Credential, true)
+				if refreshErr == nil {
+					lease.Credential = refreshed
+					continue
+				}
+				lastErr = refreshErr
+				if lease.Credential.RefreshPermanent {
+					s.markCredentialRejectedAfterPermanentRefresh(ctx, lease.Credential)
+				}
+			}
+
+			if hasStatus && status == http.StatusForbidden && route.Provider == account.ProviderWeb {
+				if !egressRecoveryAttempted[lease.Credential.ID] {
+					egressRecoveryAttempted[lease.Credential.ID] = true
+					continue
+				}
+				// Web 403 是出口会话故障；换账号不会修复出口，且不应冷却账号。
+				return provider.VideoResult{}, lease, generateErr
+			}
+
+			if hasStatus && status == http.StatusForbidden && route.Provider == account.ProviderBuild && !billingRecoveryAttempted {
+				billingRecoveryAttempted = true
+				wasSuper := account.IsBuildSuper(lease.Credential, lease.Billing)
+				billing, refreshErr := s.accounts.RefreshBilling(ctx, lease.Credential.ID)
+				s.selector.MarkQuotaStateChanged(lease.Credential.Provider)
+				if refreshErr == nil {
+					lease.Billing = &billing
+					s.queueAccountModelSync(lease.Credential.ID)
+					if !wasSuper && account.IsBuildSuper(lease.Credential, lease.Billing) {
+						continue
+					}
+				}
+			}
+
+			s.handleRetryableVideoAccountFailure(ctx, lease, generateErr)
+			lease.Release()
+			break
+		}
+	}
+	if lastErr == nil {
+		lastErr = ErrNoAvailableAccount
+	}
+	return provider.VideoResult{}, lastLease, lastErr
+}
+
+func (s *Service) prepareVideoLease(ctx context.Context, route model.Route, lease *accountLease) error {
+	credential, err := s.accounts.EnsureCredential(ctx, lease.Credential, false)
+	if err != nil {
+		return err
+	}
+	lease.Credential = credential
+	if videoRequiresBuildSuper(route) && !credential.BuildSuperEntitled && (lease.Billing == nil || lease.Billing.SyncedAt.IsZero() || time.Since(lease.Billing.SyncedAt) >= videoBuildBillingMaxAge) {
+		billing, refreshErr := s.accounts.RefreshBilling(ctx, credential.ID)
+		s.selector.MarkQuotaStateChanged(credential.Provider)
+		if refreshErr != nil {
+			return refreshErr
+		}
+		lease.Billing = &billing
+		s.queueAccountModelSync(credential.ID)
+	}
+	if videoRequiresBuildSuper(route) && !account.IsBuildSuper(credential, lease.Billing) {
+		return errVideoBuildSuperRequired
+	}
+	return nil
+}
+
+func videoRequiresBuildSuper(route model.Route) bool {
+	return route.Provider == account.ProviderBuild && strings.Contains(strings.ToLower(route.UpstreamModel), "grok-imagine-video-1.5")
+}
+
+func (s *Service) handleRetryableVideoAccountFailure(ctx context.Context, lease *accountLease, err error) {
+	if lease == nil {
+		return
+	}
+	credential := lease.Credential
+	status, hasStatus := provider.ErrorHTTPStatus(err)
+	if errors.Is(err, provider.ErrUnauthorized) || (hasStatus && status == http.StatusUnauthorized) {
+		if credential.AuthType == account.AuthTypeSSO {
+			s.markSSOCredentialRejected(ctx, credential, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
+		} else {
+			_ = s.accounts.MarkReauthRequired(ctx, credential.ID, fmt.Sprintf("%s video credential rejected after refresh", credential.Provider))
+			s.selector.MarkQuotaStateChanged(credential.Provider)
+		}
+		return
+	}
+	if !hasStatus {
+		s.selector.MarkFailure(ctx, credential, 0, 0)
+		return
+	}
+	if (status == http.StatusPaymentRequired || status == http.StatusTooManyRequests) && lease.QuotaMode != "" {
+		exhausted, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, 0)
+		s.selector.MarkQuotaStateChanged(credential.Provider)
+		if reconcileErr == nil && exhausted {
+			return
+		}
+	}
+	if status == http.StatusForbidden && credential.Provider == account.ProviderBuild && account.IsBuildSuper(credential, lease.Billing) {
+		return
+	}
+	s.selector.MarkFailure(ctx, credential, status, 0)
 }
 
 // persistRemoteVideo 只重试已经生成的视频结果下载与本地归档，不重新调用生成接口，

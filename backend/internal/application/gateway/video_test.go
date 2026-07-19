@@ -5,14 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
+	"github.com/chenyme/grok2api/backend/internal/domain/model"
+	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -104,6 +110,257 @@ func TestPersistRemoteVideoRetriesSameResultWithoutRegeneration(t *testing.T) {
 	}
 }
 
+func TestVideoRefreshesStaleBillingAndSwitchesExpiredSuperAccount(t *testing.T) {
+	adapter := &videoFailoverAdapter{}
+	service, accountRepo, jobs, accounts := newVideoFailoverTestService(t, adapter, 3, 2)
+	now := time.Now().UTC()
+	if err := accountRepo.SaveBilling(context.Background(), account.Billing{AccountID: accounts[0].ID, PlanName: "SuperGrok", MonthlyLimit: 15000, SyncedAt: now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accountRepo.SaveBilling(context.Background(), account.Billing{AccountID: accounts[1].ID, PlanName: "SuperGrok", MonthlyLimit: 15000, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	adapter.billings = map[uint64]account.Billing{
+		accounts[0].ID: {PlanName: "Free", SyncedAt: now},
+	}
+
+	job := testVideoFailoverJob(accounts[0])
+	jobs.job = job
+	result, lease, err := service.generateVideoWithFailover(context.Background(), &job, testBuildVideoRoute(), adapter, nil)
+	if lease != nil {
+		lease.Release()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AssetID != "generated" || len(adapter.generateAccountIDs) != 1 || adapter.generateAccountIDs[0] != accounts[1].ID {
+		t.Fatalf("result=%#v generate accounts=%v", result, adapter.generateAccountIDs)
+	}
+	if len(adapter.billingAccountIDs) != 1 || adapter.billingAccountIDs[0] != accounts[0].ID {
+		t.Fatalf("billing refresh accounts=%v", adapter.billingAccountIDs)
+	}
+	if jobs.job.AccountID != accounts[1].ID || jobs.job.AccountName != accounts[1].Name {
+		t.Fatalf("persisted ownership=%d/%q", jobs.job.AccountID, jobs.job.AccountName)
+	}
+}
+
+func TestVideoUnauthorizedRefreshesCredentialAndRetriesSameAccount(t *testing.T) {
+	adapter := &videoFailoverAdapter{generate: func(request provider.VideoRequest, call int) (provider.VideoResult, error) {
+		if call == 1 {
+			return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailureCreate, true, provider.ErrUnauthorized)
+		}
+		return provider.VideoResult{AssetID: "generated", ContentType: "video/mp4"}, nil
+	}}
+	service, accountRepo, jobs, accounts := newVideoFailoverTestService(t, adapter, 3, 1)
+	now := time.Now().UTC()
+	if err := accountRepo.SaveBilling(context.Background(), account.Billing{AccountID: accounts[0].ID, PlanName: "SuperGrok", MonthlyLimit: 15000, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	job := testVideoFailoverJob(accounts[0])
+	jobs.job = job
+	_, lease, err := service.generateVideoWithFailover(context.Background(), &job, testBuildVideoRoute(), adapter, nil)
+	if lease != nil {
+		lease.Release()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.refreshCalls != 1 || len(adapter.generateAccountIDs) != 2 || adapter.generateAccountIDs[0] != accounts[0].ID || adapter.generateAccountIDs[1] != accounts[0].ID {
+		t.Fatalf("refresh=%d generate accounts=%v", adapter.refreshCalls, adapter.generateAccountIDs)
+	}
+}
+
+func TestVideoExplicitCreateForbiddenSwitchesAccount(t *testing.T) {
+	adapter := &videoFailoverAdapter{generate: func(_ provider.VideoRequest, call int) (provider.VideoResult, error) {
+		if call == 1 {
+			return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailureCreate, true, videoTestHTTPError(http.StatusForbidden))
+		}
+		return provider.VideoResult{AssetID: "generated", ContentType: "video/mp4"}, nil
+	}}
+	service, accountRepo, jobs, accounts := newVideoFailoverTestService(t, adapter, 3, 2)
+	now := time.Now().UTC()
+	for _, credential := range accounts {
+		if err := accountRepo.SaveBilling(context.Background(), account.Billing{AccountID: credential.ID, PlanName: "SuperGrok", MonthlyLimit: 15000, SyncedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	adapter.billings = map[uint64]account.Billing{accounts[0].ID: {PlanName: "SuperGrok", MonthlyLimit: 15000, SyncedAt: now}}
+
+	job := testVideoFailoverJob(accounts[0])
+	jobs.job = job
+	_, lease, err := service.generateVideoWithFailover(context.Background(), &job, testBuildVideoRoute(), adapter, nil)
+	if lease != nil {
+		lease.Release()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adapter.generateAccountIDs) != 2 || adapter.generateAccountIDs[0] != accounts[0].ID || adapter.generateAccountIDs[1] != accounts[1].ID {
+		t.Fatalf("generate accounts=%v", adapter.generateAccountIDs)
+	}
+}
+
+func TestVideoPollFailureNeverSwitchesAccount(t *testing.T) {
+	adapter := &videoFailoverAdapter{generate: func(provider.VideoRequest, int) (provider.VideoResult, error) {
+		return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailurePoll, false, videoTestHTTPError(http.StatusForbidden))
+	}}
+	service, accountRepo, jobs, accounts := newVideoFailoverTestService(t, adapter, 3, 2)
+	now := time.Now().UTC()
+	for _, credential := range accounts {
+		if err := accountRepo.SaveBilling(context.Background(), account.Billing{AccountID: credential.ID, PlanName: "SuperGrok", MonthlyLimit: 15000, SyncedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	job := testVideoFailoverJob(accounts[0])
+	jobs.job = job
+	_, lease, err := service.generateVideoWithFailover(context.Background(), &job, testBuildVideoRoute(), adapter, nil)
+	if lease != nil {
+		lease.Release()
+	}
+	if err == nil {
+		t.Fatal("poll failure was ignored")
+	}
+	if len(adapter.generateAccountIDs) != 1 || adapter.generateAccountIDs[0] != accounts[0].ID {
+		t.Fatalf("generate accounts=%v", adapter.generateAccountIDs)
+	}
+}
+
+func TestVideoAccountFailoverHonorsAttemptLimit(t *testing.T) {
+	adapter := &videoFailoverAdapter{generate: func(provider.VideoRequest, int) (provider.VideoResult, error) {
+		return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailureCreate, true, videoTestHTTPError(http.StatusTooManyRequests))
+	}}
+	service, accountRepo, jobs, accounts := newVideoFailoverTestService(t, adapter, 2, 3)
+	now := time.Now().UTC()
+	for _, credential := range accounts {
+		if err := accountRepo.SaveBilling(context.Background(), account.Billing{AccountID: credential.ID, PlanName: "SuperGrok", MonthlyLimit: 15000, SyncedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	job := testVideoFailoverJob(accounts[0])
+	jobs.job = job
+	_, lease, err := service.generateVideoWithFailover(context.Background(), &job, testBuildVideoRoute(), adapter, nil)
+	if lease != nil {
+		lease.Release()
+	}
+	if err == nil {
+		t.Fatal("retry limit failure was ignored")
+	}
+	if len(adapter.generateAccountIDs) != 2 || adapter.generateAccountIDs[0] == adapter.generateAccountIDs[1] {
+		t.Fatalf("generate accounts=%v", adapter.generateAccountIDs)
+	}
+}
+
+type videoFailoverAdapter struct {
+	billings           map[uint64]account.Billing
+	billingAccountIDs  []uint64
+	generateAccountIDs []uint64
+	refreshCalls       int
+	generate           func(provider.VideoRequest, int) (provider.VideoResult, error)
+}
+
+func (a *videoFailoverAdapter) Provider() account.Provider { return account.ProviderBuild }
+
+func (a *videoFailoverAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider: account.ProviderBuild,
+		Credential: provider.CredentialSurface{
+			Refresh: true,
+		},
+		Media: provider.MediaSurface{VideoGeneration: true},
+	}
+}
+
+func (a *videoFailoverAdapter) GenerateVideo(_ context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
+	a.generateAccountIDs = append(a.generateAccountIDs, request.Credential.ID)
+	if a.generate != nil {
+		return a.generate(request, len(a.generateAccountIDs))
+	}
+	return provider.VideoResult{AssetID: "generated", ContentType: "video/mp4"}, nil
+}
+
+func (a *videoFailoverAdapter) GetBilling(_ context.Context, credential account.Credential) (account.Billing, error) {
+	a.billingAccountIDs = append(a.billingAccountIDs, credential.ID)
+	billing, ok := a.billings[credential.ID]
+	if !ok {
+		billing = account.Billing{PlanName: "SuperGrok", MonthlyLimit: 15000}
+	}
+	billing.AccountID = credential.ID
+	if billing.SyncedAt.IsZero() {
+		billing.SyncedAt = time.Now().UTC()
+	}
+	return billing, nil
+}
+
+func (a *videoFailoverAdapter) RefreshCredential(_ context.Context, credential account.Credential) (provider.RefreshedCredential, error) {
+	a.refreshCalls++
+	return provider.RefreshedCredential{
+		EncryptedAccessToken:  fmt.Sprintf("refreshed-access-%d", a.refreshCalls),
+		EncryptedRefreshToken: credential.EncryptedRefreshToken,
+		ExpiresAt:             time.Now().UTC().Add(time.Hour),
+	}, nil
+}
+
+type videoTestHTTPError int
+
+func (e videoTestHTTPError) Error() string       { return fmt.Sprintf("upstream status %d", int(e)) }
+func (e videoTestHTTPError) HTTPStatusCode() int { return int(e) }
+
+func newVideoFailoverTestService(t *testing.T, adapter *videoFailoverAdapter, attempts, accountCount int) (*Service, *relational.AccountRepository, *videoUsageRepository, []account.Credential) {
+	t.Helper()
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, t.TempDir()+"/video-failover.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	credentials := make([]account.Credential, 0, accountCount)
+	for index := 0; index < accountCount; index++ {
+		credential, _, upsertErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth,
+			Name: fmt.Sprintf("video-account-%d", index+1), SourceKey: fmt.Sprintf("video-source-%d", index+1),
+			EncryptedAccessToken: fmt.Sprintf("access-%d", index+1), EncryptedRefreshToken: fmt.Sprintf("refresh-%d", index+1),
+			ExpiresAt: time.Now().UTC().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index*50, MaxConcurrent: 1,
+		})
+		if upsertErr != nil {
+			t.Fatal(upsertErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, nil, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	jobs := &videoUsageRepository{}
+	service := &Service{
+		accounts: accountService, providers: registry, selector: selector, mediaJobs: jobs,
+		logger: slog.Default(), modelSyncing: make(map[uint64]struct{}),
+	}
+	service.UpdateMaxAttempts(attempts)
+	return service, accountRepo, jobs, credentials
+}
+
+func testVideoFailoverJob(credential account.Credential) media.Job {
+	now := time.Now().UTC()
+	return media.Job{
+		ID: "video_failover", AccountID: credential.ID, AccountName: credential.Name,
+		Provider: string(account.ProviderBuild), Model: "grok-imagine-video-1.5", UpstreamModel: "Build/grok-imagine-video-1.5",
+		Prompt: "test", Seconds: 6, Size: "16:9", Quality: "720p", Status: media.StatusInProgress,
+		InputJSON: `{}`, CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func testBuildVideoRoute() model.Route {
+	return model.Route{Provider: account.ProviderBuild, UpstreamModel: "grok-imagine-video-1.5"}
+}
+
 type videoPersistAdapter struct {
 	failures         int
 	generateCalls    int
@@ -177,7 +434,10 @@ func (r *videoUsageRepository) GetMediaJobsByIDs(context.Context, []string) ([]m
 	return []media.Job{r.job}, nil
 }
 
-func (r *videoUsageRepository) UpdateMediaJob(context.Context, media.Job) error { return nil }
+func (r *videoUsageRepository) UpdateMediaJob(_ context.Context, value media.Job) error {
+	r.job = value
+	return nil
+}
 
 func (r *videoUsageRepository) DeleteMediaJob(context.Context, string) error { return nil }
 

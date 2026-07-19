@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -155,7 +156,8 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	}
 	accessToken, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
-		return provider.VideoResult{}, err
+		// 本地凭据无法解密时确认没有请求上游，可安全切换账号。
+		return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailureCreate, true, err)
 	}
 	credential := request.Credential
 	routeMode := normalizedBuildRouteMode(credential)
@@ -177,7 +179,8 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if createErr == nil {
 		jobID, parseErr := parseVideoCreateResponse(createResp)
 		if parseErr != nil {
-			return provider.VideoResult{}, parseErr
+			// 2xx 但缺少任务 ID 时无法确认上游是否已经受理，禁止换号。
+			return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailureCreate, false, parseErr)
 		}
 		if request.Progress != nil {
 			request.Progress(1)
@@ -186,10 +189,10 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	}
 	var upstream *videoUpstreamError
 	if !asVideoUpstreamError(createErr, &upstream) || !isHTTPForbidden(upstream.status) {
-		return provider.VideoResult{}, createErr
+		return provider.VideoResult{}, buildVideoCreateFailure(createErr)
 	}
 	if routeMode == account.BuildRouteBuild || !xaiEligible {
-		return provider.VideoResult{}, createErr
+		return provider.VideoResult{}, buildVideoCreateFailure(createErr)
 	}
 	// 已确认 Super 的主地址 403：签发 upload_url 后探测 XAI；创建成功才标记降级。
 	return a.generateVideoOnXAI(ctx, request, credential, accessToken, true)
@@ -220,12 +223,12 @@ func (a *Adapter) generateVideoOnXAI(ctx context.Context, request provider.Video
 	base := a.fallbackBaseURL()
 	createResp, err := a.doVideoJSON(ctx, credential, accessToken, http.MethodPost, base, "/videos/generations", body, xaiVideoRequestProfile, true)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, buildVideoCreateFailure(err)
 	}
 	// 必须先解析到可用 job ID，再标记降级；畸形 2xx 不得激活或本地置位。
 	jobID, err := parseVideoCreateResponse(createResp)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailureCreate, false, err)
 	}
 	if recordFallback {
 		a.activateBuildAPIFallback(ctx, &credential)
@@ -312,17 +315,17 @@ func (a *Adapter) pollVideoJob(ctx context.Context, credential account.Credentia
 	for {
 		statusBody, err := a.doVideoJSON(ctx, credential, accessToken, http.MethodGet, base, "/videos/"+url.PathEscape(jobID), nil, profile, false)
 		if err != nil {
-			return provider.VideoResult{}, err
+			return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailurePoll, false, err)
 		}
 		result, done, pollErr := parseVideoStatusResponse(statusBody, progress, assetID != "")
 		if pollErr != nil {
-			return provider.VideoResult{}, pollErr
+			return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailurePoll, false, pollErr)
 		}
 		if done {
 			if assetID != "" {
 				issuer := a.uploadIssuerRef()
 				if issuer == nil {
-					return provider.VideoResult{}, fmt.Errorf("XAI 视频需要媒体上传接收服务")
+					return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailurePoll, false, fmt.Errorf("XAI 视频需要媒体上传接收服务"))
 				}
 				contentType, waitErr := issuer.WaitVideoUpload(ctx, assetID)
 				if waitErr != nil {
@@ -330,7 +333,7 @@ func (a *Adapter) pollVideoJob(ctx context.Context, credential account.Credentia
 					if result.URL != "" {
 						return result, nil
 					}
-					return provider.VideoResult{}, waitErr
+					return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailurePoll, false, waitErr)
 				}
 				if contentType == "" {
 					contentType = "video/mp4"
@@ -341,10 +344,21 @@ func (a *Adapter) pollVideoJob(ctx context.Context, credential account.Credentia
 		}
 		select {
 		case <-ctx.Done():
-			return provider.VideoResult{}, ctx.Err()
+			return provider.VideoResult{}, provider.NewVideoFailureError(provider.VideoFailurePoll, false, ctx.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+func buildVideoCreateFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	retrySafe := errors.Is(err, provider.ErrUnauthorized)
+	if status, ok := provider.ErrorHTTPStatus(err); ok {
+		retrySafe = status == http.StatusUnauthorized || status == http.StatusPaymentRequired || status == http.StatusForbidden || status == http.StatusTooManyRequests
+	}
+	return provider.NewVideoFailureError(provider.VideoFailureCreate, retrySafe, err)
 }
 
 func (a *Adapter) doVideoJSON(ctx context.Context, credential account.Credential, accessToken, method, base, path string, body []byte, profile videoRequestProfile, withTrace bool) ([]byte, error) {
