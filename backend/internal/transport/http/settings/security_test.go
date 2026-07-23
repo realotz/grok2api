@@ -47,9 +47,9 @@ func TestSettingsResponseIncludesBuildTokenAuth(t *testing.T) {
 
 func TestSettingsResponseIncludesRecommendedBuildBaseline(t *testing.T) {
 	response := newSettingsResponse(settingsapp.Snapshot{RecommendedProviderBuild: settingsapp.ProviderBuildRecommendation{
-		ClientVersion: "0.2.106", UserAgent: "grok-shell/0.2.106 (linux; x86_64)",
+		ClientVersion: "0.2.110", UserAgent: "grok-shell/0.2.110 (linux; x86_64)",
 	}})
-	if response.RecommendedProviderBuild.ClientVersion != "0.2.106" || response.RecommendedProviderBuild.UserAgent == "" {
+	if response.RecommendedProviderBuild.ClientVersion != "0.2.110" || response.RecommendedProviderBuild.UserAgent == "" {
 		t.Fatalf("recommended build = %#v", response.RecommendedProviderBuild)
 	}
 }
@@ -71,6 +71,29 @@ func TestLegacySettingsRequestMayOmitAccounts(t *testing.T) {
 	input := dto.toApplication()
 	if input.AccountsProvided {
 		t.Fatal("missing accounts field was treated as an explicit update")
+	}
+}
+
+func TestLegacySettingsRequestMayOmitSegmentedSelector(t *testing.T) {
+	var dto settingsConfigDTO
+	if err := json.Unmarshal([]byte(`{"routing":{"stickyTTL":"1h"}}`), &dto); err != nil {
+		t.Fatal(err)
+	}
+	input := dto.toApplication()
+	if input.Routing.SegmentedSelectorProvided {
+		t.Fatal("missing segmented selector was treated as an explicit update")
+	}
+}
+
+func TestSettingsResponseIncludesSegmentedSelector(t *testing.T) {
+	response := newSettingsResponse(settingsapp.Snapshot{Config: settingsapp.EditableConfig{
+		Routing: settingsapp.RoutingConfig{SegmentedSelector: settingsapp.SegmentedSelectorConfig{
+			Enabled: true, MinCandidates: 3000, WindowSize: 64,
+		}},
+	}})
+	selector := response.Config.Routing.SegmentedSelector
+	if selector == nil || !selector.Enabled || selector.MinCandidates != 3000 || selector.WindowSize != 64 {
+		t.Fatalf("segmented selector = %#v", selector)
 	}
 }
 
