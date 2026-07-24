@@ -57,6 +57,9 @@ bootstrapAdmin:
 	if cfg.Accounts.AutoCleanReauthEnabled || cfg.Accounts.AutoCleanIncludeDisabled {
 		t.Fatal("accounts auto-clean flags should default to false")
 	}
+	if cfg.Accounts.MarkBuildForbiddenReauth || len(cfg.Accounts.BuildForbiddenReauthCodes) != 1 || cfg.Accounts.BuildForbiddenReauthCodes[0] != "permission-denied" {
+		t.Fatalf("Build forbidden-account defaults = %#v", cfg.Accounts)
+	}
 	if cfg.Accounts.AutoCleanReauthInterval.Value() != 10*time.Minute || cfg.Accounts.AutoCleanReauthMinAge.Value() != time.Hour {
 		t.Fatalf("accounts auto-clean defaults = %#v", cfg.Accounts)
 	}
@@ -98,13 +101,13 @@ func TestBuildResponseHeaderTimeoutIsRuntimeOnly(t *testing.T) {
 
 func TestDefaultGrokBuildClientVersionMatchesLocalBaseline(t *testing.T) {
 	build := defaultConfig().Provider.Build
-	if RecommendedBuildClientVersion != "0.2.110" {
+	if RecommendedBuildClientVersion != "0.2.111" {
 		t.Fatalf("recommended clientVersion = %q", RecommendedBuildClientVersion)
 	}
 	if build.ClientVersion != RecommendedBuildClientVersion {
 		t.Fatalf("clientVersion = %q", build.ClientVersion)
 	}
-	if RecommendedBuildUserAgent != "grok-shell/0.2.110 (linux; x86_64)" {
+	if RecommendedBuildUserAgent != "grok-shell/0.2.111 (linux; x86_64)" {
 		t.Fatalf("recommended userAgent = %q", RecommendedBuildUserAgent)
 	}
 	if build.UserAgent != RecommendedBuildUserAgent {
