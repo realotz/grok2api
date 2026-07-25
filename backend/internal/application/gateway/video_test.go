@@ -323,7 +323,7 @@ func TestVideoExplicitCreateForbiddenSwitchesAccount(t *testing.T) {
 	if err != nil || updated.FailureCount != 0 || updated.CooldownUntil != nil {
 		t.Fatalf("403 changed account-wide health: credential=%#v err=%v", updated, err)
 	}
-	blocked, blockErr := service.selector.AcquirePinned(context.Background(), account.ProviderBuild, accounts[0].ID, testBuildVideoRoute().UpstreamModel, "", true)
+	blocked, blockErr := service.selector.AcquirePinned(context.Background(), account.ProviderBuild, accounts[0].ID, testBuildVideoRoute().ID, testBuildVideoRoute().UpstreamModel, "", true)
 	if blocked != nil {
 		blocked.Release()
 	}

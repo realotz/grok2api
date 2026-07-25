@@ -73,7 +73,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	}
 	externalModel := model.ExternalPublicID(route.Provider, route.PublicID)
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
-	lease, err := s.selector.AcquireEligible(ctx, route.Provider, route.UpstreamModel, quotaMode, "", nil, false, s.videoCredentialEligible)
+	lease, err := s.selector.AcquireEligible(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", nil, false, s.videoCredentialEligible)
 	if err != nil {
 		return media.Job{}, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
 	}
@@ -426,7 +426,7 @@ func (s *Service) generateVideoWithFailover(ctx context.Context, job *media.Job,
 		var err error
 		if firstPinned {
 			firstPinned = false
-			lease, err = s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.UpstreamModel, quotaMode, true)
+			lease, err = s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.ID, route.UpstreamModel, quotaMode, true)
 			if err == nil && lease != nil && !s.videoCredentialEligible(lease.Credential) {
 				excluded[lease.Credential.ID] = true
 				lease.Release()
@@ -436,7 +436,7 @@ func (s *Service) generateVideoWithFailover(ctx context.Context, job *media.Job,
 			}
 		}
 		if lease == nil {
-			lease, err = s.selector.AcquireEligible(ctx, route.Provider, route.UpstreamModel, quotaMode, "", excluded, false, s.videoCredentialEligible)
+			lease, err = s.selector.AcquireEligible(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, s.videoCredentialEligible)
 		}
 		if err != nil {
 			lastErr = err
