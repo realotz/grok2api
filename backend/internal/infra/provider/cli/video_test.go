@@ -38,7 +38,7 @@ func TestBuildVideoCreatePayloadNoImageAndSingleR2URL(t *testing.T) {
 
 	withImage, err := videoCreatePayload(provider.VideoRequest{
 		Prompt: "animate", Duration: 6, AspectRatio: "16:9", Resolution: "720p",
-		ReferenceURLs: []string{"https://cdn.example.com/r2/first.png"},
+		ImageURL: "https://cdn.example.com/r2/first.png",
 	}, "", buildVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
@@ -63,11 +63,11 @@ func TestBuildVideoCreatePayloadNoImageAndSingleR2URL(t *testing.T) {
 
 func TestBuildVideoCreatePayloadImageOnlyEmptyPrompt(t *testing.T) {
 	payload, err := videoCreatePayload(provider.VideoRequest{
-		Prompt:        "   ",
-		Duration:      6,
-		AspectRatio:   "16:9",
-		Resolution:    "720p",
-		ReferenceURLs: []string{"https://r2.example.com/first.png"},
+		Prompt:      "   ",
+		Duration:    6,
+		AspectRatio: "16:9",
+		Resolution:  "720p",
+		ImageURL:    "https://r2.example.com/first.png",
 	}, "", buildVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
@@ -83,11 +83,11 @@ func TestBuildVideoCreatePayloadImageOnlyEmptyPrompt(t *testing.T) {
 
 func TestXAIVideoCreatePayloadMatchesOfficialSchema(t *testing.T) {
 	payload, err := videoCreatePayload(provider.VideoRequest{
-		Prompt:        "animate",
-		Duration:      6,
-		AspectRatio:   "16:9",
-		Resolution:    "720p",
-		ReferenceURLs: []string{"https://cdn.example.com/r2/first.png"},
+		Prompt:      "animate",
+		Duration:    6,
+		AspectRatio: "16:9",
+		Resolution:  "720p",
+		ImageURL:    "https://cdn.example.com/r2/first.png",
 	}, "https://api.example/v1/media/uploads/tok", xaiVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
@@ -108,27 +108,53 @@ func TestXAIVideoCreatePayloadMatchesOfficialSchema(t *testing.T) {
 	}
 }
 
-func TestGenerateVideoRejectsTwoImagesBeforeUpstream(t *testing.T) {
-	adapter, encrypted := newTestBuildVideoAdapter(t)
-	var hits atomic.Int32
-	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		hits.Add(1)
-		t.Fatalf("two-image request must not reach upstream: %s %s", request.Method, request.URL)
-		return nil, nil
-	})
-	_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
-		Credential: account.Credential{ID: 1, EncryptedAccessToken: encrypted},
-		Prompt:     "animate",
+func TestBuildVideoCreatePayloadForwardsMultipleReferences(t *testing.T) {
+	payload, err := videoCreatePayload(provider.VideoRequest{
+		Prompt:   "animate",
+		ImageURL: "https://cdn.example.com/first.png",
 		ReferenceURLs: []string{
 			"https://cdn.example.com/one.png",
 			"https://cdn.example.com/two.png",
 		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "最多支持 1 张首图") {
-		t.Fatalf("error = %v", err)
+	}, "", buildVideoRequestProfile)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if hits.Load() != 0 {
-		t.Fatalf("upstream hits = %d", hits.Load())
+	image, _ := payload["image"].(map[string]any)
+	references, _ := payload["reference_images"].([]map[string]any)
+	if image["image_url"] != "https://cdn.example.com/first.png" || len(references) != 2 || references[0]["image_url"] != "https://cdn.example.com/one.png" || references[1]["image_url"] != "https://cdn.example.com/two.png" {
+		t.Fatalf("multi-reference payload = %#v", payload)
+	}
+}
+
+func TestVideoCreatePayloadReferenceFieldsFollowUpstreamProfile(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		profile videoRequestProfile
+		field   string
+	}{
+		{name: "build", profile: buildVideoRequestProfile, field: "image_url"},
+		{name: "xai", profile: xaiVideoRequestProfile, field: "url"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := videoCreatePayload(provider.VideoRequest{
+				ReferenceURLs: []string{"https://cdn.example.com/one.png", "https://cdn.example.com/two.png"},
+			}, "", test.profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			references, _ := payload["reference_images"].([]map[string]any)
+			if len(references) != 2 || references[0][test.field] != "https://cdn.example.com/one.png" || references[1][test.field] != "https://cdn.example.com/two.png" {
+				t.Fatalf("%s references = %#v", test.name, payload)
+			}
+			otherField := "url"
+			if test.field == "url" {
+				otherField = "image_url"
+			}
+			if references[0][otherField] != nil {
+				t.Fatalf("%s leaked %s: %#v", test.name, otherField, payload)
+			}
+		})
 	}
 }
 
@@ -169,12 +195,12 @@ func TestGenerateVideoPostsSingleImageAndPollsUntilReady(t *testing.T) {
 
 	var progressValues []int
 	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
-		Credential:    account.Credential{ID: 9, UserID: "user-1", EncryptedAccessToken: encrypted},
-		Prompt:        "animate knife",
-		Duration:      6,
-		AspectRatio:   "16:9",
-		Resolution:    "720p",
-		ReferenceURLs: []string{"https://r2.example.com/first.png"},
+		Credential:  account.Credential{ID: 9, UserID: "user-1", EncryptedAccessToken: encrypted},
+		Prompt:      "animate knife",
+		Duration:    6,
+		AspectRatio: "16:9",
+		Resolution:  "720p",
+		ImageURL:    "https://r2.example.com/first.png",
 		Progress: func(value int) {
 			progressValues = append(progressValues, value)
 		},

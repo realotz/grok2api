@@ -651,28 +651,43 @@ func (h *Handler) generateVideo(c *gin.Context) {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "resolution 必须是 480p、720p 或 1080p")
 		return
 	}
-	inputs := append([]videoGenerationImage(nil), request.ReferenceImages...)
+	inputCount := len(request.ReferenceImages)
 	if request.Image != nil {
-		inputs = append([]videoGenerationImage{*request.Image}, inputs...)
+		inputCount++
 	}
-	if len(inputs) > mediadomain.MaxInputImages {
+	if inputCount > mediadomain.MaxInputImages {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("image 与 reference_images 合计不能超过 %d 张", mediadomain.MaxInputImages))
 		return
 	}
-	referenceURLs := make([]string, 0, len(inputs))
-	for _, input := range inputs {
+	parseImageURL := func(input videoGenerationImage) (string, bool) {
 		if strings.TrimSpace(input.FileID) != "" {
 			writeOpenAIError(c, http.StatusBadRequest, "unsupported_parameter", "当前暂不支持 image.file_id，请使用 image.url")
-			return
+			return "", false
 		}
 		urlValue := strings.TrimSpace(input.URL)
 		if urlValue == "" {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "每个 image 都必须提供有效 url")
+			return "", false
+		}
+		return urlValue, true
+	}
+	imageURL := ""
+	if request.Image != nil {
+		var ok bool
+		imageURL, ok = parseImageURL(*request.Image)
+		if !ok {
+			return
+		}
+	}
+	referenceURLs := make([]string, 0, len(request.ReferenceImages))
+	for _, input := range request.ReferenceImages {
+		urlValue, ok := parseImageURL(input)
+		if !ok {
 			return
 		}
 		referenceURLs = append(referenceURLs, urlValue)
 	}
-	if prompt == "" && len(referenceURLs) == 0 {
+	if prompt == "" && imageURL == "" && len(referenceURLs) == 0 {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "文本生视频必须提供 prompt；图片生视频可以省略 prompt")
 		return
 	}
@@ -683,7 +698,7 @@ func (h *Handler) generateVideo(c *gin.Context) {
 	job, err := h.gateway.CreateVideo(c.Request.Context(), gateway.VideoInput{
 		RequestID: requestID, ClientKey: clientKey, PublicModel: model,
 		Prompt: prompt, Duration: duration, AspectRatio: aspectRatio, Resolution: resolution,
-		ReferenceURLs: referenceURLs,
+		ImageURL: imageURL, ReferenceURLs: referenceURLs,
 	})
 	if err != nil {
 		writeGatewayError(c, err)

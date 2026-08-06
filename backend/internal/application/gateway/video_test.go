@@ -47,14 +47,35 @@ func TestRecoverVideoJobsRetriesUsageWithoutRegeneratingVideo(t *testing.T) {
 }
 
 func TestEncodeVideoInputEnforcesPersistedLimit(t *testing.T) {
-	overhead := len(`{"image_urls":[""]}`)
+	overhead := len(`{"image_url":""}`)
 	atLimit := strings.Repeat("A", media.MaxInputJSONBytes-overhead)
-	encoded, err := encodeVideoInput([]string{atLimit})
+	encoded, err := encodeVideoInput(atLimit, nil)
 	if err != nil || len(encoded) != media.MaxInputJSONBytes {
 		t.Fatalf("encoded len=%d err=%v", len(encoded), err)
 	}
-	if _, err := encodeVideoInput([]string{atLimit + "A"}); !errors.Is(err, ErrVideoInputTooLarge) {
+	if _, err := encodeVideoInput(atLimit+"A", nil); !errors.Is(err, ErrVideoInputTooLarge) {
 		t.Fatalf("oversized input error = %v", err)
+	}
+}
+
+func TestVideoInputRoundTripPreservesImageAndReferences(t *testing.T) {
+	encoded, err := encodeVideoInput("https://example.com/image.png", []string{"https://example.com/ref-1.png", "https://example.com/ref-2.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageURL, references := decodeVideoInput(encoded)
+	if imageURL != "https://example.com/image.png" || len(references) != 2 || references[0] != "https://example.com/ref-1.png" || references[1] != "https://example.com/ref-2.png" {
+		t.Fatalf("decoded image=%q references=%#v", imageURL, references)
+	}
+	if videoInputImageCount(imageURL, references) != 3 {
+		t.Fatalf("input image count = %d", videoInputImageCount(imageURL, references))
+	}
+}
+
+func TestDecodeVideoInputPreservesLegacyMergedOrder(t *testing.T) {
+	imageURL, references := decodeVideoInput(`{"image_urls":["https://example.com/first.png","https://example.com/second.png"]}`)
+	if imageURL != "https://example.com/first.png" || len(references) != 1 || references[0] != "https://example.com/second.png" {
+		t.Fatalf("decoded legacy image=%q references=%#v", imageURL, references)
 	}
 }
 

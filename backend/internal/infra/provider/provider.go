@@ -329,6 +329,7 @@ type VideoRequest struct {
 	Duration      int
 	AspectRatio   string
 	Resolution    string
+	ImageURL      string
 	ReferenceURLs []string
 	Progress      func(int)
 }

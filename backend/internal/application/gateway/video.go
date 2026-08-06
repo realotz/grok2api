@@ -37,6 +37,7 @@ type VideoInput struct {
 	Duration      int
 	AspectRatio   string
 	Resolution    string
+	ImageURL      string
 	ReferenceURLs []string
 }
 
@@ -44,10 +45,10 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if s.mediaJobs == nil || s.mediaQueue == nil {
 		return media.Job{}, fmt.Errorf("视频任务服务未配置")
 	}
-	if len(input.Prompt) > 100000 || (len(input.Prompt) == 0 && len(input.ReferenceURLs) == 0) {
+	if len(input.Prompt) > 100000 || (len(input.Prompt) == 0 && input.ImageURL == "" && len(input.ReferenceURLs) == 0) {
 		return media.Job{}, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
 	}
-	inputJSON, err := encodeVideoInput(input.ReferenceURLs)
+	inputJSON, err := encodeVideoInput(input.ImageURL, input.ReferenceURLs)
 	if err != nil {
 		return media.Job{}, err
 	}
@@ -84,7 +85,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 		AccountID: accountID, AccountName: lease.Credential.Name,
 		Provider: string(route.Provider), Model: externalModel, ModelRouteID: route.ID, UpstreamModel: model.DisplayUpstreamModel(route.Provider, route.UpstreamModel), Prompt: input.Prompt,
 		Seconds: input.Duration, Size: input.AspectRatio, Quality: input.Resolution,
-		Status: media.StatusQueued, Progress: 0, InputJSON: inputJSON, InputImageCount: len(input.ReferenceURLs), CreatedAt: now, UpdatedAt: now,
+		Status: media.StatusQueued, Progress: 0, InputJSON: inputJSON, InputImageCount: videoInputImageCount(input.ImageURL, input.ReferenceURLs), CreatedAt: now, UpdatedAt: now,
 	}
 	reserved := false
 	if pricing, ok := audit.EstimateOfficialVideoCost(externalModel, input.Resolution, input.Duration); ok {
@@ -314,9 +315,10 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		return
 	}
 	lastProgress := job.Progress
+	imageURL, referenceURLs := decodeVideoInput(job.InputJSON)
 	result, err := adapter.GenerateVideo(ctx, provider.VideoRequest{
 		Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
-		ReferenceURLs: decodeVideoInput(job.InputJSON),
+		ImageURL: imageURL, ReferenceURLs: referenceURLs,
 		Progress: func(value int) {
 			value = min(99, max(1, value))
 			if value-lastProgress < 5 {
@@ -539,8 +541,14 @@ func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationM
 	return s.mediaJobs.MarkMediaJobUsageRecorded(markCtx, job.ID, time.Now().UTC())
 }
 
-func encodeVideoInput(referenceURLs []string) (string, error) {
-	data, err := json.Marshal(map[string][]string{"image_urls": referenceURLs})
+type persistedVideoInput struct {
+	ImageURL        string   `json:"image_url,omitempty"`
+	ReferenceURLs   []string `json:"reference_image_urls,omitempty"`
+	LegacyImageURLs []string `json:"image_urls,omitempty"`
+}
+
+func encodeVideoInput(imageURL string, referenceURLs []string) (string, error) {
+	data, err := json.Marshal(persistedVideoInput{ImageURL: imageURL, ReferenceURLs: referenceURLs})
 	if err != nil {
 		return "", fmt.Errorf("编码视频输入: %w", err)
 	}
@@ -550,10 +558,22 @@ func encodeVideoInput(referenceURLs []string) (string, error) {
 	return string(data), nil
 }
 
-func decodeVideoInput(value string) []string {
-	var input map[string][]string
+func decodeVideoInput(value string) (string, []string) {
+	var input persistedVideoInput
 	_ = json.Unmarshal([]byte(value), &input)
-	return input["image_urls"]
+	if input.ImageURL == "" && len(input.ReferenceURLs) == 0 && len(input.LegacyImageURLs) > 0 {
+		input.ImageURL = input.LegacyImageURLs[0]
+		input.ReferenceURLs = append([]string(nil), input.LegacyImageURLs[1:]...)
+	}
+	return input.ImageURL, input.ReferenceURLs
+}
+
+func videoInputImageCount(imageURL string, referenceURLs []string) int {
+	count := len(referenceURLs)
+	if imageURL != "" {
+		count++
+	}
+	return count
 }
 
 func (s *Service) failVideoJob(ctx context.Context, job media.Job, code string, err error) {
