@@ -58,10 +58,11 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if len(input.Prompt) > 100000 || (len(input.Prompt) == 0 && input.ImageURL == "" && len(input.ReferenceURLs) == 0) {
 		return media.Job{}, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
 	}
-	if err := s.validateVideoInputReferences(ctx, input.ReferenceURLs); err != nil {
+	inputReferences := videoInputReferences(input.ImageURL, input.ReferenceURLs)
+	if err := s.validateVideoInputReferences(ctx, inputReferences); err != nil {
 		return media.Job{}, err
 	}
-	inputJSON, err := encodeVideoInput(input.ReferenceURLs)
+	inputJSON, err := encodeVideoInput(input.ImageURL, input.ReferenceURLs)
 	if err != nil {
 		return media.Job{}, err
 	}
@@ -303,7 +304,8 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	if err := s.mediaJobs.UpdateMediaJob(ctx, job); err != nil {
 		s.logger.Warn("video_job_progress_write_failed", "job_id", job.ID, "error", err)
 	}
-	inputReferences := decodeVideoInput(job.InputJSON)
+	imageReference, referenceInputs := decodeVideoInput(job.InputJSON)
+	inputReferences := videoInputReferences(imageReference, referenceInputs)
 	releaseInputSlot, err := s.acquireVideoInputSlot(ctx, inputReferences)
 	if err != nil {
 		s.deferVideoJob(parent, job)
@@ -334,16 +336,21 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		s.failVideoJob(parent, job, "provider_unavailable", ErrNoAvailableAccount)
 		return
 	}
-	referenceURLs, err := s.resolveVideoInputReferences(ctx, inputReferences)
+	resolvedInputs, err := s.resolveVideoInputReferences(ctx, inputReferences)
 	if err != nil {
 		s.failVideoJob(parent, job, "input_unavailable", err)
 		return
 	}
+	imageURL := ""
+	referenceURLs := resolvedInputs
+	if imageReference != "" {
+		imageURL = resolvedInputs[0]
+		referenceURLs = resolvedInputs[1:]
+	}
 	lastProgress := job.Progress
-	imageURL, referenceURLs := decodeVideoInput(job.InputJSON)
 	result, err := adapter.GenerateVideo(ctx, provider.VideoRequest{
 		Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
-		ReferenceURLs: referenceURLs,
+		ImageURL: imageURL, ReferenceURLs: referenceURLs,
 		Progress: func(value int) {
 			value = min(99, max(1, value))
 			if value-lastProgress < 5 {
@@ -708,6 +715,14 @@ func videoInputImageCount(imageURL string, referenceURLs []string) int {
 	return count
 }
 
+func videoInputReferences(imageURL string, referenceURLs []string) []string {
+	references := make([]string, 0, videoInputImageCount(imageURL, referenceURLs))
+	if imageURL != "" {
+		references = append(references, imageURL)
+	}
+	return append(references, referenceURLs...)
+}
+
 func (s *Service) failVideoJob(ctx context.Context, job media.Job, code string, err error) {
 	now := time.Now().UTC()
 	job.Status, job.ErrorCode, job.ErrorMessage = media.StatusFailed, code, err.Error()
@@ -730,7 +745,8 @@ func (s *Service) releaseVideoInputs(job media.Job) {
 	if s.mediaAssets == nil {
 		return
 	}
-	references := decodeVideoInput(job.InputJSON)
+	imageURL, referenceURLs := decodeVideoInput(job.InputJSON)
+	references := videoInputReferences(imageURL, referenceURLs)
 	if len(references) == 0 {
 		return
 	}

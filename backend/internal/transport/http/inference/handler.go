@@ -660,23 +660,37 @@ func (h *Handler) generateVideo(c *gin.Context) {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("image 与 reference_images 合计不能超过 %d 张", mediadomain.MaxInputImages))
 		return
 	}
-	referenceURLs := make([]string, 0, len(inputs))
-	for _, input := range inputs {
+	parseInput := func(input videoGenerationImage) (string, bool) {
 		urlValue := strings.TrimSpace(input.URL)
 		fileID := strings.TrimSpace(input.FileID)
 		if (urlValue == "") == (fileID == "") {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "每个 image 必须且只能提供 url 或 file_id")
-			return
+			return "", false
 		}
 		if fileID != "" {
 			if !mediadomain.IsInputAssetID(fileID) {
 				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "image.file_id 无效")
-				return
+				return "", false
 			}
-			referenceURLs = append(referenceURLs, gateway.VideoInputFileReference(fileID))
-		} else {
-			referenceURLs = append(referenceURLs, urlValue)
+			return gateway.VideoInputFileReference(fileID), true
 		}
+		return urlValue, true
+	}
+	imageURL := ""
+	if request.Image != nil {
+		var ok bool
+		imageURL, ok = parseInput(*request.Image)
+		if !ok {
+			return
+		}
+	}
+	referenceURLs := make([]string, 0, len(request.ReferenceImages))
+	for _, input := range request.ReferenceImages {
+		value, ok := parseInput(input)
+		if !ok {
+			return
+		}
+		referenceURLs = append(referenceURLs, value)
 	}
 	if prompt == "" && imageURL == "" && len(referenceURLs) == 0 {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "文本生视频必须提供 prompt；图片生视频可以省略 prompt")
