@@ -230,10 +230,8 @@ func TestGenerateVideoRejectsTooManyImagesBeforeUpstream(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "最多支持") {
 		t.Fatalf("error = %v", err)
 	}
-	image, _ := payload["image"].(map[string]any)
-	references, _ := payload["reference_images"].([]map[string]any)
-	if image["image_url"] != "https://cdn.example.com/first.png" || len(references) != 2 || references[0]["image_url"] != "https://cdn.example.com/one.png" || references[1]["image_url"] != "https://cdn.example.com/two.png" {
-		t.Fatalf("multi-reference payload = %#v", payload)
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d", hits.Load())
 	}
 }
 
@@ -248,6 +246,7 @@ func TestVideoCreatePayloadReferenceFieldsFollowUpstreamProfile(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload, err := videoCreatePayload(provider.VideoRequest{
+				Prompt:        "animate",
 				ReferenceURLs: []string{"https://cdn.example.com/one.png", "https://cdn.example.com/two.png"},
 			}, "", test.profile)
 			if err != nil {
@@ -406,8 +405,8 @@ func TestGenerateVideoMapsUnauthorizedAndUpstreamErrors(t *testing.T) {
 	if !errors.Is(err, provider.ErrUnauthorized) {
 		t.Fatalf("401 err = %v", err)
 	}
-	if stage, retrySafe, classified := provider.VideoFailureDetails(err); !classified || stage != provider.VideoFailureCreate || !retrySafe {
-		t.Fatalf("401 video failure = stage %q retrySafe=%v classified=%v", stage, retrySafe, classified)
+	if stage, classified := provider.VideoErrorStage(err); !classified || stage != provider.VideoStageCreate {
+		t.Fatalf("401 video failure = stage %q classified=%v", stage, classified)
 	}
 
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -421,8 +420,8 @@ func TestGenerateVideoMapsUnauthorizedAndUpstreamErrors(t *testing.T) {
 	if !ok || status != http.StatusBadRequest || !strings.Contains(err.Error(), "invalid image") {
 		t.Fatalf("4xx err = %v status=%d ok=%v", err, status, ok)
 	}
-	if stage, retrySafe, classified := provider.VideoFailureDetails(err); !classified || stage != provider.VideoFailureCreate || retrySafe {
-		t.Fatalf("400 video failure = stage %q retrySafe=%v classified=%v", stage, retrySafe, classified)
+	if stage, classified := provider.VideoErrorStage(err); !classified || stage != provider.VideoStageCreate {
+		t.Fatalf("400 video failure = stage %q classified=%v", stage, classified)
 	}
 
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -575,8 +574,8 @@ func TestGenerateVideoFailedStatusAndDownloadTrustedURL(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "moderation") {
 		t.Fatalf("failed status err = %v", err)
 	}
-	if stage, retrySafe, classified := provider.VideoFailureDetails(err); !classified || stage != provider.VideoFailurePoll || retrySafe {
-		t.Fatalf("poll video failure = stage %q retrySafe=%v classified=%v", stage, retrySafe, classified)
+	if stage, classified := provider.VideoErrorStage(err); !classified || stage != provider.VideoStagePoll {
+		t.Fatalf("poll video failure = stage %q classified=%v", stage, classified)
 	}
 
 	const assetURL = "https://vidgen.x.ai/videos/done.mp4"

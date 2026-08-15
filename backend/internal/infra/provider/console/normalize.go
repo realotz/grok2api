@@ -255,7 +255,7 @@ func normalizeConsoleTools(payload map[string]any, disallowsClientTools bool) co
 				clean["enable_image_search"] = enabled
 			}
 			result = append(result, clean)
-			retainedClientTools = true
+			summary.retainedClientTools = true
 		case "x_search":
 			if disallowsClientTools {
 				if _, exists := seenServerTools["x_search"]; exists {
@@ -290,7 +290,7 @@ func normalizeConsoleTools(payload map[string]any, disallowsClientTools bool) co
 				}
 			}
 			result = append(result, clean)
-			retainedClientTools = true
+			summary.retainedClientTools = true
 		case "function":
 			name, _ := tool["name"].(string)
 			if strings.TrimSpace(name) == "" {

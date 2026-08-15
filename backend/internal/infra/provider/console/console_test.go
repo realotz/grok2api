@@ -1566,9 +1566,8 @@ func TestConsoleVideoCreatesAndPollsStandardResources(t *testing.T) {
 			if payload["model"] != "grok-imagine-video" || payload["duration"] != float64(6) || payload["resolution"] != "720p" {
 				t.Errorf("video payload = %#v", payload)
 			}
-			image, _ := payload["image"].(map[string]any)
 			references, _ := payload["reference_images"].([]any)
-			if image["url"] != "https://example.com/first.png" || len(references) != 2 || references[0].(map[string]any)["url"] != "https://example.com/ref-1.png" || references[1].(map[string]any)["url"] != "data:image/png;base64,AAAA" {
+			if payload["image"] != nil || len(references) != 2 || references[0].(map[string]any)["url"] != "https://example.com/ref-1.png" || references[1].(map[string]any)["url"] != "data:image/png;base64,AAAA" {
 				t.Errorf("video references = %#v", payload)
 			}
 			_, _ = writer.Write([]byte(`{"request_id":"upstream-video-1"}`))
@@ -1583,8 +1582,8 @@ func TestConsoleVideoCreatesAndPollsStandardResources(t *testing.T) {
 	progress := 0
 	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
 		Credential: credential, Prompt: "animate", Duration: 6, AspectRatio: "16:9", Resolution: "720p",
-		ImageURL: "https://example.com/first.png", ReferenceURLs: []string{"https://example.com/ref-1.png", "data:image/png;base64,AAAA"},
-		Progress: func(value int) { progress = value },
+		ReferenceURLs: []string{"https://example.com/ref-1.png", "data:image/png;base64,AAAA"},
+		Progress:      func(value int) { progress = value },
 	})
 	if err != nil {
 		t.Fatal(err)

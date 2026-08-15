@@ -476,7 +476,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	if err := s.mediaJobs.UpdateMediaJob(ctx, job); err != nil {
 		s.logger.Warn("video_job_progress_write_failed", "job_id", job.ID, "error", err)
 	}
-	imageReference, referenceInputs := decodeVideoInput(job.InputJSON)
+	imageReference, referenceInputs := decodeVideoInputParts(job.InputJSON)
 	inputReferences := videoInputReferences(imageReference, referenceInputs)
 	releaseInputSlot, err := s.acquireVideoInputSlot(ctx, inputReferences)
 	if err != nil {
@@ -1309,7 +1309,7 @@ func (s *Service) releaseVideoInputs(job media.Job) {
 	if s.mediaAssets == nil {
 		return
 	}
-	imageURL, referenceURLs := decodeVideoInput(job.InputJSON)
+	imageURL, referenceURLs := decodeVideoInputParts(job.InputJSON)
 	references := videoInputReferences(imageURL, referenceURLs)
 	if len(references) == 0 {
 		return
