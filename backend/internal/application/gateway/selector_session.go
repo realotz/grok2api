@@ -35,6 +35,10 @@ func (s *Selector) beginSelectionSession(ctx context.Context, provider account.P
 }
 
 func (s *Selector) beginSelectionSessionForKey(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool, requestedScope clientkeydomain.AccountScope) (session *selectionSession, err error) {
+	return s.beginSelectionSessionForKeyAndTier(ctx, provider, modelRouteID, upstreamModel, quotaMode, affinityKey, excluded, allowQuotaProbe, requestedScope, "")
+}
+
+func (s *Selector) beginSelectionSessionForKeyAndTier(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool, requestedScope clientkeydomain.AccountScope, requiredWebTier account.WebTier) (session *selectionSession, err error) {
 	accountScope, scopeValid := clientkeydomain.NormalizeAccountScope(requestedScope)
 	defer annotateSelectionAccountScope(&err, accountScope)
 	if !scopeValid || !accountScope.AllowsProvider(provider) {
@@ -68,6 +72,9 @@ func (s *Selector) beginSelectionSessionForKey(ctx context.Context, provider acc
 
 	for index, candidate := range values {
 		value := applyHealthSnapshot(candidate.Credential, healthOverrides)
+		if provider == account.ProviderWeb && requiredWebTier != "" && value.WebTier != requiredWebTier {
+			continue
+		}
 		if !accountScopeAllowsCandidate(provider, accountScope, candidate) {
 			continue
 		}

@@ -447,7 +447,9 @@ func (s *Service) UpdateMaxAttempts(maxAttempts int) { s.maxAttempts.Store(int64
 
 // UpdateVideoMaxAttempts configures create-phase account failover for video jobs.
 // 0 is treated as the general default pool size for legacy configs.
-func (s *Service) UpdateVideoMaxAttempts(maxAttempts int) { s.videoMaxAttempts.Store(int64(maxAttempts)) }
+func (s *Service) UpdateVideoMaxAttempts(maxAttempts int) {
+	s.videoMaxAttempts.Store(int64(maxAttempts))
+}
 
 // UpdateMarkBuildChatDeniedAsReauth 热更新 Build chat 永久拒绝是否标 reauthRequired。
 // 默认 false：仅模型级冷却；true 时按旧逻辑将账号标为失效并出池。
@@ -842,6 +844,10 @@ func (s *Service) selectSchedulableMediaRoute(ctx context.Context, routes []mode
 }
 
 func (s *Service) selectSchedulableMediaRouteWithQuotaMode(ctx context.Context, routes []modeldomain.Route, key clientkey.Key, capability modeldomain.Capability, consumesQuota bool, providerSupported func(accountdomain.Provider) bool, resolveQuotaMode func(modeldomain.Route) string) (modeldomain.Route, *selectionSession, error) {
+	return s.selectSchedulableMediaRouteWithQuotaModeAndTier(ctx, routes, key, capability, consumesQuota, providerSupported, resolveQuotaMode, nil)
+}
+
+func (s *Service) selectSchedulableMediaRouteWithQuotaModeAndTier(ctx context.Context, routes []modeldomain.Route, key clientkey.Key, capability modeldomain.Capability, consumesQuota bool, providerSupported func(accountdomain.Provider) bool, resolveQuotaMode func(modeldomain.Route) string, resolveRequiredWebTier func(modeldomain.Route) accountdomain.WebTier) (modeldomain.Route, *selectionSession, error) {
 	eligible, fallback, err := s.eligibleMediaRoutes(routes, key, capability, providerSupported)
 	if err != nil {
 		return fallback, nil, err
@@ -856,7 +862,11 @@ func (s *Service) selectSchedulableMediaRouteWithQuotaMode(ctx context.Context, 
 				quotaMode = s.providers.QuotaMode(route.Provider, route.UpstreamModel)
 			}
 		}
-		session, selectionErr := s.selector.beginSelectionSessionForKey(
+		requiredWebTier := accountdomain.WebTier("")
+		if resolveRequiredWebTier != nil {
+			requiredWebTier = resolveRequiredWebTier(route)
+		}
+		session, selectionErr := s.selector.beginSelectionSessionForKeyAndTier(
 			ctx,
 			route.Provider,
 			route.ID,
@@ -866,6 +876,7 @@ func (s *Service) selectSchedulableMediaRouteWithQuotaMode(ctx context.Context, 
 			nil,
 			false,
 			key.AccountScope(),
+			requiredWebTier,
 		)
 		if selectionErr == nil {
 			return route, session, nil

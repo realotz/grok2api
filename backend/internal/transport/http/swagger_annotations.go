@@ -50,7 +50,7 @@ type SwaggerImageReference struct {
 
 // SwaggerImageEditRequest 表示图片编辑请求。
 type SwaggerImageEditRequest struct {
-	Model          string                `json:"model" example:"grok-imagine-image-edit"`
+	Model          string                `json:"model" example:"grok-imagine-image-2.0-web"`
 	Prompt         string                `json:"prompt" example:"Change the background to black"`
 	Image          SwaggerImageReference `json:"image"`
 	N              int                   `json:"n" example:"1"`
@@ -63,17 +63,18 @@ type SwaggerImageEditRequest struct {
 }
 
 // SwaggerVideoGenerationRequest 表示视频生成请求。
-// image 与 reference_images/reference_audios 互斥；参考图模式 resolution 最高 720p。
+// image 与 reference_images 互斥；参考模式 resolution 最高 720p。reference_audios 暂不支持。
 type SwaggerVideoGenerationRequest struct {
-	Model            string                    `json:"model" example:"grok-imagine-video"`
-	Prompt           string                    `json:"prompt" example:"A cinematic tracking shot in the rain"`
-	Duration         int                       `json:"duration" example:"8"`
-	AspectRatio      string                    `json:"aspect_ratio,omitempty" example:"16:9"`
-	Resolution       string                    `json:"resolution,omitempty" example:"720p"`
-	Image            *SwaggerVideoMediaInput   `json:"image,omitempty"`
-	ReferenceImages  []SwaggerVideoMediaInput  `json:"reference_images,omitempty"`
-	ReferenceAudios  []SwaggerVideoAudioInput  `json:"reference_audios,omitempty"`
-	Video            *SwaggerVideoMediaInput   `json:"video,omitempty"`
+	Model                   string                   `json:"model" example:"grok-imagine-video-1.5"`
+	Prompt                  string                   `json:"prompt" example:"A cinematic tracking shot in the rain"`
+	Duration                int                      `json:"duration" example:"8"`
+	AspectRatio             string                   `json:"aspect_ratio,omitempty" example:"16:9"`
+	Resolution              string                   `json:"resolution,omitempty" example:"720p"`
+	Image                   *SwaggerVideoMediaInput  `json:"image,omitempty"`
+	ReferenceImages         []SwaggerVideoMediaInput `json:"reference_images,omitempty"`
+	ReferenceAudios         []SwaggerVideoAudioInput `json:"reference_audios,omitempty"`
+	Video                   *SwaggerVideoMediaInput  `json:"video,omitempty"`
+	VideoExtensionStartTime float64                  `json:"video_extension_start_time,omitempty" example:"6.041667"`
 }
 
 // SwaggerVideoMediaInput 表示视频相关的图片/视频输入。
@@ -82,9 +83,11 @@ type SwaggerVideoMediaInput struct {
 	FileID string `json:"file_id,omitempty" example:"file_123"`
 }
 
-// SwaggerVideoAudioInput 表示参考音频（内置 voice_id）。
+// SwaggerVideoAudioInput 表示暂不支持的参考音频输入格式。
 type SwaggerVideoAudioInput struct {
-	VoiceID string `json:"voice_id" example:"eve"`
+	URL    string `json:"url,omitempty" example:"https://example.com/reference.mp3"`
+	Data   string `json:"data,omitempty" example:"SUQzBAAAAAAA..."`
+	Format string `json:"format,omitempty" example:"mp3"`
 }
 
 // swaggerHealth godoc

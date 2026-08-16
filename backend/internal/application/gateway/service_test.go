@@ -23,6 +23,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
+	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
@@ -49,6 +50,39 @@ func TestQueueAccountModelSyncDeduplicatesConcurrentETagRefresh(t *testing.T) {
 		t.Fatalf("concurrent sync calls = %d", calls)
 	}
 	close(resolver.release)
+}
+
+func TestMaterializeLocalImageInputs(t *testing.T) {
+	store := &videoAssetStoreStub{
+		imageAsset: media.Asset{ID: "img_local", Kind: "image", MIMEType: "image/png"},
+		imageData:  []byte("png"),
+		publicBase: "http://127.0.0.1:8000",
+	}
+	service := &Service{mediaAssets: store}
+	values, err := service.materializeLocalImageInputs(context.Background(), []string{
+		"/v1/media/images/img_local",
+		"http://127.0.0.1:8000/v1/media/images/img_local",
+		"https://example.com/v1/media/images/img_remote",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantData := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("png"))
+	if values[0] != wantData || values[1] != wantData {
+		t.Fatalf("local values = %#v", values[:2])
+	}
+	if values[2] != "https://example.com/v1/media/images/img_remote" {
+		t.Fatalf("remote value = %q", values[2])
+	}
+}
+
+func TestCloneImageSelectionRegionsIsAccountIndependent(t *testing.T) {
+	source := []provider.ImageSelectionRegion{{Points: []float64{0.1, 0.2, 0.8, 0.2, 0.8, 0.9}}}
+	cloned := cloneImageSelectionRegions(source)
+	source[0].Points[0] = 0.5
+	if len(cloned) != 1 || cloned[0].Points[0] != 0.1 {
+		t.Fatalf("cloned selection regions = %#v", cloned)
+	}
 }
 
 func TestVoiceWebSocketAuditOutcomeUsesLogicalSuccessStatus(t *testing.T) {

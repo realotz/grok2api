@@ -736,12 +736,10 @@ func discoveredRouteDefaults(provider account.Provider, upstreamModel string) (s
 	switch provider {
 	case account.ProviderWeb:
 		switch upstreamModel {
-		case "grok-imagine-image":
-			return "grok-imagine-image-lite", model.CapabilityImage
-		case "grok-imagine-image-quality":
-			return "grok-imagine-image-quality-lite", model.CapabilityImage
+		case "grok-imagine-image-2.0":
+			return "grok-imagine-image-2.0-web", model.CapabilityImage
 		case "imagine-image-edit":
-			return "grok-imagine-image-edit", model.CapabilityImageEdit
+			return "grok-imagine-image-2.0-web", model.CapabilityImageEdit
 		case "grok-imagine-video":
 			return upstreamModel, model.CapabilityVideo
 		default:
@@ -883,6 +881,19 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 			if found {
 				matched[index] = chosen
 				usedIDs[chosen.ID] = true
+				continue
+			}
+			// Web Image 2.0 replaces the previous quality-lite catalog route.
+			// Preserve that route ID so restricted client keys keep their grant.
+			if provider == account.ProviderWeb && value.PublicID == "Web/grok-imagine-image-2.0-web" && value.UpstreamModel == "grok-imagine-image-2.0" {
+				legacy := byUpstreamNonManual[catalogRouteKey{value: "grok-imagine-image-quality", capability: value.Capability}]
+				for _, candidate := range legacy {
+					if !usedIDs[candidate.ID] {
+						matched[index] = candidate
+						usedIDs[candidate.ID] = true
+						break
+					}
+				}
 			}
 		}
 		for _, row := range existing {

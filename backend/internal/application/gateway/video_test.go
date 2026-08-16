@@ -140,15 +140,35 @@ func TestVideoEditRouteUsesResolvedUpstreamInsteadOfPublicName(t *testing.T) {
 		{ID: 2, PublicID: "company-video-editor", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video"},
 		{ID: 3, PublicID: "company-video-editor", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video-1.5"},
 	}
-	compatible, err := routesForVideoOperation(routes, provider.VideoOperationEdit)
+	compatible, err := routesForVideoOperation(routes, provider.VideoOperationEdit, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(compatible) != 1 || compatible[0].ID != 2 {
 		t.Fatalf("compatible routes = %#v", compatible)
 	}
-	if _, err := routesForVideoOperation(routes[:1], provider.VideoOperationExtend); !errors.Is(err, ErrVideoOperationUnsupported) {
+	if _, err := routesForVideoOperation(routes[:1], provider.VideoOperationExtend, 0); !errors.Is(err, ErrVideoOperationUnsupported) {
 		t.Fatalf("unsupported route error = %v", err)
+	}
+}
+
+func TestVideoExtensionRouteUsesWeb15WhenStartTimeProvided(t *testing.T) {
+	routes := []model.Route{
+		{ID: 1, Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video"},
+		{ID: 2, Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-video-1.5"},
+	}
+	compatible, err := routesForVideoOperation(routes, provider.VideoOperationExtend, 16.031666)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compatible) != 1 || compatible[0].ID != 2 {
+		t.Fatalf("compatible routes = %#v", compatible)
+	}
+	if err := validateVideoExtensionRoute(provider.VideoOperationExtend, compatible[0], 10, 16.031666); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateVideoExtensionRoute(provider.VideoOperationExtend, compatible[0], 5, 6.041667); !errors.Is(err, ErrVideoOperationUnsupported) {
+		t.Fatalf("invalid duration error = %v", err)
 	}
 }
 
@@ -169,42 +189,57 @@ func TestVideoPricingLeavesUnmeasurableOperationsUnpriced(t *testing.T) {
 // 客户端会先拿到 request_id 再从轮询里读到失败任务。入队前校验让错误立刻可见。
 func TestVideoRouteParametersRejectConsoleReferenceLimits(t *testing.T) {
 	// 实测：8 张 reference_images 上游回 400 "Too many reference images: 8. Maximum allowed is 7."
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "720p", 8, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video-1.5", "720p", 8, 0, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
 		t.Fatalf("8 references error = %v", err)
 	}
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "720p", 7, 6); err != nil {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video-1.5", "720p", 7, 0, 6); err != nil {
 		t.Fatalf("7 references error = %v", err)
 	}
 	// 实测：grok-imagine-video 的 reference-to-video 回 400
 	// "Duration 15s exceeds the maximum allowed for reference-to-video, which is 10s."
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video", "720p", 1, 15); !errors.Is(err, ErrVideoOperationUnsupported) {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video", "720p", 1, 0, 15); !errors.Is(err, ErrVideoOperationUnsupported) {
 		t.Fatalf("base model reference duration error = %v", err)
 	}
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video", "720p", 1, 10); err != nil {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video", "720p", 1, 0, 10); err != nil {
 		t.Fatalf("base model 10s reference error = %v", err)
 	}
 	// image-to-video（无 reference_images）与 1.5 都保持 15s。
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video", "720p", 0, 15); err != nil {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video", "720p", 0, 0, 15); err != nil {
 		t.Fatalf("base model text/first-frame 15s error = %v", err)
 	}
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "720p", 2, 15); err != nil {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video-1.5", "720p", 2, 0, 15); err != nil {
 		t.Fatalf("1.5 multi-reference 15s error = %v", err)
 	}
 	// 非 Console 视频模型不受这套 Console 专属限制影响。
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "some-other-video", "720p", 9, 15); err != nil {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderWeb, "some-other-video", "720p", 9, 0, 15); err != nil {
 		t.Fatalf("non-console model error = %v", err)
 	}
 }
 
 func TestVideo1080pValidationUsesResolvedUpstreamModel(t *testing.T) {
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "1080P", 0, 6); err != nil {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video-1.5", "1080P", 0, 0, 6); err != nil {
 		t.Fatalf("1.5 text/image 1080p rejected: %v", err)
 	}
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video", "1080p", 0, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video", "1080p", 0, 0, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
 		t.Fatalf("legacy 1080p error = %v", err)
 	}
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "1080p", 1, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video-1.5", "1080p", 1, 0, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
 		t.Fatalf("reference 1080p error = %v", err)
+	}
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderWeb, "grok-imagine-video-1.5", "1080p", 0, 0, 6); err != nil {
+		t.Fatalf("web 1.5 1080p error = %v", err)
+	}
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderWeb, "grok-imagine-video-1.5", "720p", 0, 1, 6); err != nil {
+		t.Fatalf("web 1.5 reference audio error = %v", err)
+	}
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderWeb, "grok-imagine-video-1.5", "720p", 0, 0, 5); !errors.Is(err, ErrVideoOperationUnsupported) {
+		t.Fatalf("web 1.5 short duration error = %v", err)
+	}
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderWeb, "grok-imagine-video-1.5", "720p", 8, 0, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
+		t.Fatalf("web 1.5 reference limit error = %v", err)
+	}
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderWeb, "grok-imagine-video-1.5", "1080p", 0, 1, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
+		t.Fatalf("web 1.5 reference audio 1080p error = %v", err)
 	}
 }
 
@@ -262,6 +297,7 @@ func TestEncodeDecodeVideoInputPreservesOperationAndReferenceAudio(t *testing.T)
 		[]string{"https://example.com/ref.png"},
 		[]string{"eve", " ara "},
 		"",
+		0,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -274,7 +310,7 @@ func TestEncodeDecodeVideoInputPreservesOperationAndReferenceAudio(t *testing.T)
 		t.Fatalf("generation operation = %q", operation)
 	}
 
-	encoded, err = encodeVideoInputFull(provider.VideoOperationExtend, "", nil, nil, media.InputReference("source-video"))
+	encoded, err = encodeVideoInputFull(provider.VideoOperationExtend, "", nil, nil, media.InputReference("source-video"), 16.031666)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,12 +321,18 @@ func TestEncodeDecodeVideoInputPreservesOperationAndReferenceAudio(t *testing.T)
 	if videoURL != media.InputReference("source-video") {
 		t.Fatalf("extension video = %q", videoURL)
 	}
+	if startTime := decodeVideoExtensionStartTime(encoded); startTime != 16.031666 {
+		t.Fatalf("extension start time = %f from %s", startTime, encoded)
+	}
 
-	if err := validateVideoReferenceAudios([]string{"eve", ""}); err == nil {
-		t.Fatal("blank reference voice was accepted")
+	if err := validateVideoReferenceAudios([]string{"eve"}); err == nil {
+		t.Fatal("reference voice id was accepted")
+	}
+	if err := validateVideoReferenceAudios([]string{"https://example.com/reference.mp3", "data:audio/mpeg;base64,SUQz"}); err != nil {
+		t.Fatalf("OpenAI-style reference audio was rejected: %v", err)
 	}
 	if err := validateVideoReferenceAudios([]string{"a", "b", "c", "d"}); err == nil {
-		t.Fatal("too many reference voices were accepted")
+		t.Fatal("too many reference audios were accepted")
 	}
 }
 
@@ -491,15 +533,18 @@ func (a *videoPersistAdapter) DownloadVideo(_ context.Context, credential accoun
 }
 
 type videoAssetStoreStub struct {
-	saveCalls int
-	openAsset media.Asset
-	openData  []byte
-	openErr   error
-	inputID   string
-	inputData []byte
-	inputSize int64
-	inputKind string
-	inputMIME string
+	saveCalls  int
+	openAsset  media.Asset
+	openData   []byte
+	openErr    error
+	inputID    string
+	inputData  []byte
+	inputSize  int64
+	inputKind  string
+	inputMIME  string
+	imageAsset media.Asset
+	imageData  []byte
+	publicBase string
 }
 
 func (s *videoAssetStoreStub) SaveVideo(_ context.Context, jobID, contentType string, body io.Reader) (media.Asset, error) {
@@ -547,6 +592,17 @@ func (s *videoAssetStoreStub) OpenInputAsset(_ context.Context, id string) (medi
 }
 
 func (*videoAssetStoreStub) ReleaseInputAssets(context.Context, []string) error { return nil }
+
+func (s *videoAssetStoreStub) OpenImage(_ context.Context, id string) (media.Asset, io.ReadCloser, error) {
+	if s.imageAsset.ID == "" || id != s.imageAsset.ID {
+		return media.Asset{}, nil, errors.New("image not found")
+	}
+	return s.imageAsset, io.NopCloser(bytes.NewReader(s.imageData)), nil
+}
+
+func (s *videoAssetStoreStub) PublicImageURL(id string) string {
+	return strings.TrimSuffix(s.publicBase, "/") + "/v1/media/images/" + id
+}
 
 type durableVideoAuditRecorder struct {
 	failures int

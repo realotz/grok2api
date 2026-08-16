@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowUp, AudioLines, BrainCircuit, Check, CheckCircle2, Clock3, ExternalLink, Globe, History, ImageIcon, ImagePlus, ImageUpscale, Images, Loader2, MessageSquareText, Mic, Pencil, RefreshCw, Sparkle, Square, SquarePen, Trash2, TriangleAlert, TvMinimal, Upload, Video, Wrench, X } from "lucide-react";
+import { ArrowUp, AudioLines, BrainCircuit, Check, CheckCircle2, ChevronDown, Clock3, Download, ExternalLink, Eye, EyeOff, Globe, History, ImageIcon, ImagePlus, ImageUpscale, Images, Loader2, MessageSquareText, Mic, PanelRight, Pencil, RefreshCw, Sparkle, Square, SquarePen, Trash2, TriangleAlert, TvMinimal, Upload, Video, Wrench, X } from "lucide-react";
 import { marked } from "marked";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
@@ -23,6 +23,7 @@ import {
   createChatResponse,
   createVideo,
   editVideo,
+  editImage,
   extendVideo,
   generateImage,
   getVideo,
@@ -33,6 +34,7 @@ import {
   type ChatStreamSnapshot,
   type ChatToolActivity,
   type ImageResult,
+  type ImageSegment,
   type ReasoningEffort,
   type STTResult,
   type TTSResult,
@@ -88,11 +90,15 @@ type ChatSession = {
 
 const imageAspectRatios = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"] as const;
 const videoAspectRatios = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"] as const;
-const imageResolutions = ["1k", "2k"] as const;
+const imageResolutions = ["1k"] as const;
 const videoResolutions = ["480p", "720p", "1080p"] as const;
 const videoDurations = ["6", "10", "15"] as const;
 const videoExtendDurations = ["2", "4", "6", "8", "10"] as const;
 type VideoAction = "generate" | "edit" | "extend";
+type ImageDimensions = { width: number; height: number };
+type ImageRenderBox = ImageDimensions & { left: number; top: number };
+type IndexedImageSegment = { segment: ImageSegment; index: number };
+type ImageSegmentGroup = { parent: IndexedImageSegment; children: IndexedImageSegment[] };
 const chatHistoryStoragePrefix = "grok2api:creative-console:chat-history:";
 const chatHistoryMaxSessions = 50;
 const chatHistoryMaxBytes = 4 * 1024 * 1024;
@@ -132,7 +138,7 @@ export function CreativeConsolePage() {
   }, [availableModels, selectedKey]);
   const modelGroups = useMemo(() => ({
     chat: uniqueModelsByPublicID(permittedModels.filter((model) => model.capability === "chat" || model.capability === "responses")),
-    image: uniqueModelsByPublicID(permittedModels.filter((model) => model.capability === "image")),
+    image: permittedModels.filter((model) => model.capability === "image" || model.capability === "image_edit"),
     // Keep every route target for VideoPanel. It presents one row per public ID,
     // but edit/extend eligibility depends on whether any aggregated target is
     // Console/grok-imagine-video, not on the public name chosen by the operator.
@@ -869,28 +875,213 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
 function ImagePanel({ apiKey, model, modelOptions, onModelChange }: CreativePanelProps) {
   const { t } = useTranslation();
   const [prompt, setPrompt] = useState("");
-  const [count, setCount] = useState("1");
   const [aspectRatio, setAspectRatio] = useState("1:1");
   const [resolution, setResolution] = useState("1k");
-  const [quality, setQuality] = useState<"low" | "medium">("medium");
   const [images, setImages] = useState<ImageResult[]>([]);
-  const supportsQuality = model.toLowerCase().endsWith("grok-imagine-image-2.0");
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editPrompt, setEditPrompt] = useState("");
+  const [editPreviewURL, setEditPreviewURL] = useState("");
+  const [hoveredSegment, setHoveredSegment] = useState<number | null>(null);
+  const [editTarget, setEditTarget] = useState<number | "full" | null>(null);
+  const [imageDimensions, setImageDimensions] = useState<ImageDimensions | null>(null);
+  const [imageRenderBox, setImageRenderBox] = useState<ImageRenderBox | null>(null);
+  const [hiddenSegments, setHiddenSegments] = useState<Set<number>>(() => new Set());
+  const [deletedSegments, setDeletedSegments] = useState<Set<number>>(() => new Set());
+  const [segmentsVisible, setSegmentsVisible] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [collapsedSegmentGroups, setCollapsedSegmentGroups] = useState<Set<number>>(() => new Set());
+  const imageCanvasRef = useRef<HTMLDivElement | null>(null);
+  const editingImageRef = useRef<HTMLImageElement | null>(null);
+  const generationModels = useMemo(() => uniqueModelsByPublicID(modelOptions.filter((item) => item.capability === "image")), [modelOptions]);
+  const editModels = useMemo(() => uniqueModelsByPublicID(modelOptions.filter((item) => item.capability === "image_edit")), [modelOptions]);
+  const generationModel = generationModels.some((item) => item.publicId === model) ? model : generationModels[0]?.publicId ?? "";
+  const editModel = editModels.some((item) => item.publicId === model) ? model : editModels[0]?.publicId ?? "";
+  const editingImage = editingIndex === null ? null : images[editingIndex] ?? null;
+  const segments = editingImage?.segmentation?.map.objects ?? [];
+  const visibleSegments = segments.map((segment, index) => ({ segment, index })).filter(({ index }) => !deletedSegments.has(index));
+  const canvasSegments = [...visibleSegments].sort((left, right) => segmentArea(right.segment) - segmentArea(left.segment));
+  const segmentGroups = groupImageSegments(visibleSegments);
+
+  useEffect(() => {
+    if (generationModel && generationModel !== model && editingIndex === null) onModelChange(generationModel);
+  }, [editingIndex, generationModel, model, onModelChange]);
+
+  useEffect(() => {
+    const image = editingImageRef.current;
+    const canvas = imageCanvasRef.current;
+    if (!editingImage || !image || !canvas) return;
+    const measure = () => {
+      const imageRect = image.getBoundingClientRect();
+      const canvasRect = canvas.getBoundingClientRect();
+      if (imageRect.width <= 0 || imageRect.height <= 0) return;
+      setImageRenderBox({ left: imageRect.left - canvasRect.left, top: imageRect.top - canvasRect.top, width: imageRect.width, height: imageRect.height });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(image);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [editPreviewURL, editingImage]);
 
   const mutation = useMutation({
     mutationFn: (request: Parameters<typeof generateImage>[0]) => generateImage(request),
-    onSuccess: setImages,
+    onSuccess: (result) => {
+      setImages(result);
+      setEditingIndex(null);
+    },
+  });
+  const editMutation = useMutation({
+    mutationFn: (request: Parameters<typeof editImage>[0]) => editImage(request),
+    onSuccess: (result) => {
+      const edited = result[0];
+      if (!edited) return;
+      setEditPreviewURL(edited.url);
+      setEditPrompt("");
+      setEditTarget(null);
+      setImages((current) => current.some((item) => item.url === edited.url) ? current : [...current, edited]);
+    },
   });
 
   function submit(event: FormEvent): void {
     event.preventDefault();
-    if (!apiKey || !model || !prompt.trim() || mutation.isPending) return;
+    if (!apiKey || !generationModel || !prompt.trim() || mutation.isPending) return;
     mutation.reset();
-    mutation.mutate({ apiKey, model, prompt: prompt.trim(), count: Number(count), aspectRatio, resolution, quality: supportsQuality ? quality : undefined });
+    mutation.mutate({ apiKey, model: generationModel, prompt: prompt.trim(), count: 1, aspectRatio, resolution });
+  }
+
+  function beginEdit(index: number): void {
+    setEditingIndex(index);
+    setEditPreviewURL("");
+    setHoveredSegment(null);
+    setEditTarget(null);
+    setImageDimensions(null);
+    setImageRenderBox(null);
+    setHiddenSegments(new Set());
+    setDeletedSegments(new Set());
+    setSegmentsVisible(true);
+    setSidebarOpen(true);
+    setCollapsedSegmentGroups(new Set());
+    editMutation.reset();
+  }
+
+  function submitEdit(event: FormEvent): void {
+    event.preventDefault();
+    if (!apiKey || !editModel || !editingImage || !editPrompt.trim() || editMutation.isPending) return;
+    const segment = typeof editTarget === "number" ? segments[editTarget] : null;
+    editMutation.reset();
+    editMutation.mutate({
+      apiKey,
+      model: editModel,
+      prompt: editPrompt.trim(),
+      imageURL: editingImage.url,
+      selectionRegions: segment ? [{ outer: { points: segmentSelectionPoints(segment, segments, imageDimensions) } }] : undefined,
+    });
+  }
+
+  function closeEditor(): void {
+    setEditingIndex(null);
+    setEditPreviewURL("");
+    setEditTarget(null);
+    editMutation.reset();
+  }
+
+  function toggleSegment(index: number): void {
+    setHiddenSegments((current) => {
+      const next = new Set(current);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }
+
+  function deleteSegment(index: number): void {
+    setDeletedSegments((current) => new Set(current).add(index));
+    if (editTarget === index) setEditTarget(null);
+  }
+
+  function renderSegmentRow({ segment, index }: IndexedImageSegment, nested: boolean, childCount = 0): ReactNode {
+    const collapsed = collapsedSegmentGroups.has(index);
+    return <div className={cn("group flex items-center gap-2 rounded-md px-2 py-2", nested && "ml-8", editTarget === index && "bg-secondary/65")} onMouseEnter={() => setHoveredSegment(index)} onMouseLeave={() => setHoveredSegment((current) => current === index ? null : current)}>
+      <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => { setEditTarget(index); setEditPrompt(""); }}>
+        <SelectionMark selected={editTarget === index} />
+        <SegmentThumbnail imageURL={editingImage?.url ?? ""} segment={segment} allSegments={segments} imageDimensions={imageDimensions} />
+        <span className="min-w-0 flex-1 truncate text-sm">{segment.name}</span>
+      </button>
+      {childCount > 0 ? <Button type="button" variant="ghost" size="icon" onClick={() => setCollapsedSegmentGroups((current) => toggleSetValue(current, index))} aria-label={collapsed ? t("common.expand") : t("common.collapse")}><ChevronDown className={cn("transition-transform", collapsed && "-rotate-90")} /></Button> : null}
+      <div className={cn("flex shrink-0 items-center", editTarget === index ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100")}>
+        <Button type="button" variant="ghost" size="icon" onClick={() => toggleSegment(index)} aria-label={t(hiddenSegments.has(index) ? "creativeConsole.showSegment" : "creativeConsole.hideSegment")}>{hiddenSegments.has(index) ? <EyeOff /> : <Eye />}</Button>
+        <Button type="button" variant="ghost" size="icon" onClick={() => void downloadSegment(editingImage?.url ?? "", segment, segments)} aria-label={t("creativeConsole.downloadSegment")}><Download /></Button>
+        <Button type="button" variant="ghost" size="icon" onClick={() => deleteSegment(index)} aria-label={t("creativeConsole.deleteSegment")}><Trash2 /></Button>
+      </div>
+    </div>;
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="min-h-0 flex-1 overflow-y-auto py-6">
+      <div className={cn("min-h-0 flex-1", editingImage ? "overflow-hidden" : "overflow-y-auto py-6")}>
+        {editingImage ? (
+          <div className="relative flex h-full min-h-0 bg-muted/20">
+            <div className="relative flex min-w-0 flex-1 items-center justify-center overflow-auto p-3 sm:p-6">
+              <div className="absolute left-3 top-3 z-20 flex gap-1 sm:left-5 sm:top-5">
+                <Tooltip><TooltipTrigger asChild><Button type="button" variant="secondary" size="icon" onClick={closeEditor} aria-label={t("creativeConsole.closeImageEditor")}><X /></Button></TooltipTrigger><TooltipContent>{t("creativeConsole.closeImageEditor")}</TooltipContent></Tooltip>
+                <Tooltip><TooltipTrigger asChild><Button type="button" variant="secondary" size="icon" onClick={() => setSidebarOpen((value) => !value)} aria-label={t("creativeConsole.toggleSegments")}><PanelRight /></Button></TooltipTrigger><TooltipContent>{t("creativeConsole.toggleSegments")}</TooltipContent></Tooltip>
+              </div>
+              <div ref={imageCanvasRef} className="relative inline-block max-h-full max-w-full leading-none">
+                <img ref={editingImageRef} src={editPreviewURL || editingImage.url} alt={t("creativeConsole.imageEditCanvas")} className="block max-h-[calc(100dvh-10rem)] max-w-full object-contain" onLoad={(event) => {
+                  const image = event.currentTarget;
+                  setImageDimensions({ width: image.naturalWidth, height: image.naturalHeight });
+                  const canvasRect = imageCanvasRef.current?.getBoundingClientRect();
+                  const imageRect = image.getBoundingClientRect();
+                  if (canvasRect) setImageRenderBox({ left: imageRect.left - canvasRect.left, top: imageRect.top - canvasRect.top, width: imageRect.width, height: imageRect.height });
+                }} />
+                {segmentsVisible ? canvasSegments.map(({ segment, index }) => {
+                  if (hiddenSegments.has(index)) return null;
+                  const box = segmentBoxStyle(segment, segments, imageDimensions, imageRenderBox);
+                  const active = editTarget === index || (editTarget === null && hoveredSegment === index);
+                  return <button key={`${segment.name}-${index}`} type="button" style={box} className={cn("absolute", active ? "z-10 border-2 border-white shadow-[0_0_0_1px_rgba(0,0,0,.65)]" : "border-0")} aria-label={segment.name} onMouseEnter={() => setHoveredSegment(index)} onMouseLeave={() => setHoveredSegment((current) => current === index ? null : current)} onClick={() => { setEditTarget(index); setEditPrompt(""); }} />;
+                }) : null}
+                {editTarget !== null ? (
+                  <form className="absolute z-30 flex w-[min(18rem,calc(100%-1rem))] items-center gap-1 rounded-lg border bg-background p-1.5 shadow-lg" style={segmentPromptStyle(editTarget === "full" ? null : segments[editTarget], segments, imageDimensions, imageRenderBox)} onSubmit={submitEdit} onClick={(event) => event.stopPropagation()}>
+                    <Input autoFocus value={editPrompt} onChange={(event) => setEditPrompt(event.target.value)} placeholder={t("creativeConsole.imageEditPlaceholder")} className="h-9 border-0 bg-transparent shadow-none focus-visible:ring-0" />
+                    <Button type="submit" size="icon" className="size-9 shrink-0" aria-label={t("creativeConsole.applyImageEdit")} disabled={!apiKey || !editModel || !editPrompt.trim() || editMutation.isPending}>{editMutation.isPending ? <Loader2 className="animate-spin" /> : <ArrowUp />}</Button>
+                  </form>
+                ) : null}
+                {editMutation.isPending ? <div className="absolute inset-0 flex items-center justify-center bg-background/55 backdrop-blur-[1px]"><Loader2 className="size-7 animate-spin" /></div> : null}
+              </div>
+            </div>
+            {sidebarOpen ? (
+              <aside className="absolute inset-y-0 right-0 z-30 flex w-[min(22rem,92vw)] flex-col border-l bg-background/98 shadow-xl lg:relative lg:z-auto lg:w-80 lg:shadow-none">
+                <div className="flex h-14 shrink-0 items-center justify-between border-b px-4">
+                  <h3 className="text-sm font-medium">{t("creativeConsole.segments")}</h3>
+                  <div className="flex items-center gap-1">
+                    <Button type="button" variant="ghost" size="icon" onClick={() => setSegmentsVisible((value) => !value)} aria-label={t(segmentsVisible ? "creativeConsole.hideSegments" : "creativeConsole.showSegments")}>{segmentsVisible ? <Eye /> : <EyeOff />}</Button>
+                    <Button type="button" variant="ghost" size="icon" className="lg:hidden" onClick={() => setSidebarOpen(false)} aria-label={t("common.close")}><X /></Button>
+                  </div>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+                  <button type="button" className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-secondary/55" onClick={() => { setEditTarget("full"); setEditPrompt(""); }}>
+                    <SelectionMark selected={editTarget === "full"} />
+                    <SegmentThumbnail imageURL={editingImage.url} />
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">{t("creativeConsole.fullImage")}</span>
+                    <ChevronDown className="size-4 text-muted-foreground" />
+                  </button>
+                  <div className="mt-1 space-y-1">
+                    {segmentGroups.map((group) => <div key={`${group.parent.segment.name}-${group.parent.index}`}>
+                      {renderSegmentRow(group.parent, false, group.children.length)}
+                      {group.children.length > 0 && !collapsedSegmentGroups.has(group.parent.index) ? <div className="space-y-1">
+                        {group.children.map((child) => <div key={`${child.segment.name}-${child.index}`}>{renderSegmentRow(child, true)}</div>)}
+                      </div> : null}
+                    </div>)}
+                    {visibleSegments.length === 0 ? <p className="px-3 py-6 text-center text-xs text-muted-foreground">{t("creativeConsole.noSegments")}</p> : null}
+                  </div>
+                </div>
+              </aside>
+            ) : null}
+          </div>
+        ) : (
         <div className="flex min-h-full w-full flex-col justify-center px-3 sm:px-6">
           {images.length === 0 && !mutation.isPending ? <WelcomeState title={t("creativeConsole.welcomeImage")} /> : null}
           {mutation.isPending ? <LoadingResult text={t("creativeConsole.generatingImage")} /> : null}
@@ -901,33 +1092,158 @@ function ImagePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                   <img src={image.url} alt={t("creativeConsole.generatedImageAlt", { index: index + 1 })} className="aspect-square w-full rounded-xl bg-muted object-contain" loading="lazy" />
                   <figcaption className="flex min-w-0 items-center justify-between gap-2 py-1.5">
                     <span className="truncate text-xs text-muted-foreground">{t("creativeConsole.imageNumber", { index: index + 1 })}</span>
-                    <Button variant="ghost" size="icon" asChild><a href={image.url} target="_blank" rel="noreferrer" aria-label={t("creativeConsole.open")}><ExternalLink /></a></Button>
+                    <div className="flex items-center gap-1">
+                      {editModels.length > 0 ? <Button type="button" variant="ghost" size="icon" onClick={() => beginEdit(index)} aria-label={t("creativeConsole.editImage")}><Pencil /></Button> : null}
+                      <Button variant="ghost" size="icon" asChild><a href={image.url} target="_blank" rel="noreferrer" aria-label={t("creativeConsole.open")}><ExternalLink /></a></Button>
+                    </div>
                   </figcaption>
                 </figure>
               ))}
             </div>
           ) : null}
         </div>
+        )}
       </div>
 
-      <form className="w-full shrink-0 px-3 pb-2 sm:px-6 sm:pb-3" onSubmit={submit}>
+      {!editingImage ? <form className="w-full shrink-0 px-3 pb-2 pt-2 sm:px-6 sm:pb-3" onSubmit={submit}>
         <div className={composerClassName}>
           <Textarea id="image-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={t("creativeConsole.imagePlaceholder")} className="min-h-24 resize-none border-0 bg-transparent px-4 py-3 text-sm focus-visible:ring-0" />
           <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3">
             <div className="flex min-w-0 flex-wrap items-center gap-1">
-              <CompactModelSelect value={model} models={modelOptions} onChange={onModelChange} />
-              <CompactSelect value={count} options={["1", "2", "3", "4"]} onChange={setCount} ariaLabel={t("creativeConsole.count")} suffix="×" icon={<Images />} />
-              <CompactSelect value={aspectRatio} options={imageAspectRatios} onChange={setAspectRatio} ariaLabel={t("creativeConsole.aspectRatio")} icon={<TvMinimal />} />
-              <CompactSelect value={resolution} options={imageResolutions} onChange={setResolution} ariaLabel={t("creativeConsole.resolution")} icon={<ImageUpscale />} />
-              {supportsQuality ? <CompactSelect value={quality} options={["low", "medium"]} onChange={(value) => setQuality(value as "low" | "medium")} ariaLabel={t("creativeConsole.quality")} /> : null}
+              <CompactModelSelect value={generationModel} models={generationModels} onChange={onModelChange} />
+              <CompactSelect value={aspectRatio} options={imageAspectRatios} onChange={setAspectRatio} ariaLabel={t("creativeConsole.aspectRatio")} icon={<TvMinimal />} /><CompactSelect value={resolution} options={imageResolutions} onChange={setResolution} ariaLabel={t("creativeConsole.resolution")} icon={<ImageUpscale />} />
             </div>
-            <Button type="submit" size="icon" aria-label={t("creativeConsole.generateImage")} disabled={!apiKey || !model || !prompt.trim() || mutation.isPending}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ArrowUp />}</Button>
+            <Button type="submit" size="icon" aria-label={t("creativeConsole.generateImage")} disabled={!apiKey || !generationModel || !prompt.trim() || mutation.isPending}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ArrowUp />}</Button>
           </div>
         </div>
         {mutation.isError ? <div className="mt-1 px-2 text-[11px] text-destructive">{mutation.error.message}</div> : null}
-      </form>
+      </form> : editMutation.isError ? <div className="shrink-0 px-4 py-2 text-[11px] text-destructive">{editMutation.error.message}</div> : null}
     </div>
   );
+}
+
+function SelectionMark({ selected }: { selected: boolean }) {
+  return <span className={cn("flex size-5 shrink-0 items-center justify-center rounded-full border-2", selected ? "border-foreground bg-foreground text-background" : "border-muted-foreground/75")}>
+    {selected ? <Check className="size-3.5" strokeWidth={3} /> : null}
+  </span>;
+}
+
+function SegmentThumbnail({ imageURL, segment, allSegments = [], imageDimensions = null }: { imageURL: string; segment?: ImageSegment; allSegments?: ImageSegment[]; imageDimensions?: ImageDimensions | null }) {
+  if (!segment) return <img src={imageURL} alt="" className="size-10 shrink-0 rounded-md bg-muted object-cover" />;
+  const dimensions = segmentDimensions(segment, allSegments, imageDimensions);
+  const [x1, y1, x2, y2] = segment.boxXyxy;
+  const boxWidth = Math.max(1, x2 - x1);
+  const boxHeight = Math.max(1, y2 - y1);
+  return <span className="relative size-10 shrink-0 overflow-hidden rounded-md bg-muted">
+    <img src={imageURL} alt="" className="absolute max-w-none" style={{ width: `${dimensions.width / boxWidth * 100}%`, height: `${dimensions.height / boxHeight * 100}%`, left: `${-x1 / boxWidth * 100}%`, top: `${-y1 / boxHeight * 100}%` }} />
+  </span>;
+}
+
+// segmentDimensions 结合原图宽高判断上游 size 使用的是 HW 还是 WH 顺序。
+function segmentDimensions(segment: ImageSegment, allSegments: ImageSegment[], imageDimensions: ImageDimensions | null = null): ImageDimensions {
+  const size = segment.maskRle?.size ?? allSegments.find((item) => item.maskRle?.size)?.maskRle?.size;
+  if (size) {
+    const candidates = [{ width: size[1], height: size[0] }, { width: size[0], height: size[1] }];
+    if (!imageDimensions) return candidates[0];
+    const maxX = Math.max(...allSegments.map((item) => item.boxXyxy[2]), segment.boxXyxy[2]);
+    const maxY = Math.max(...allSegments.map((item) => item.boxXyxy[3]), segment.boxXyxy[3]);
+    const targetAspect = imageDimensions.width / imageDimensions.height;
+    return candidates.reduce((best, candidate) => {
+      const overflow = Math.max(0, maxX - candidate.width) / candidate.width + Math.max(0, maxY - candidate.height) / candidate.height;
+      const aspectError = Math.abs(Math.log(candidate.width / candidate.height / targetAspect));
+      const score = overflow * 10 + aspectError;
+      return score < best.score ? { candidate, score } : best;
+    }, { candidate: candidates[0], score: Number.POSITIVE_INFINITY }).candidate;
+  }
+  return {
+    width: Math.max(1, ...allSegments.map((item) => item.boxXyxy[2]), segment.boxXyxy[2]),
+    height: Math.max(1, ...allSegments.map((item) => item.boxXyxy[3]), segment.boxXyxy[3]),
+  };
+}
+
+function segmentBoxStyle(segment: ImageSegment, allSegments: ImageSegment[], imageDimensions: ImageDimensions | null = null, renderBox: ImageRenderBox | null = null): CSSProperties {
+  const { width, height } = segmentDimensions(segment, allSegments, imageDimensions);
+  const [x1, y1, x2, y2] = segment.boxXyxy;
+  if (renderBox) return {
+    left: renderBox.left + x1 / width * renderBox.width,
+    top: renderBox.top + y1 / height * renderBox.height,
+    width: (x2 - x1) / width * renderBox.width,
+    height: (y2 - y1) / height * renderBox.height,
+  };
+  return { left: `${x1 / width * 100}%`, top: `${y1 / height * 100}%`, width: `${(x2 - x1) / width * 100}%`, height: `${(y2 - y1) / height * 100}%` };
+}
+
+function segmentSelectionPoints(segment: ImageSegment, allSegments: ImageSegment[], imageDimensions: ImageDimensions | null = null): number[] {
+  const { width, height } = segmentDimensions(segment, allSegments, imageDimensions);
+  const [x1, y1, x2, y2] = segment.boxXyxy;
+  return [x1 / width, y1 / height, x2 / width, y1 / height, x2 / width, y2 / height, x1 / width, y2 / height, x1 / width, y1 / height];
+}
+
+function segmentPromptStyle(segment: ImageSegment | null, allSegments: ImageSegment[], imageDimensions: ImageDimensions | null, renderBox: ImageRenderBox | null): CSSProperties {
+  if (!segment) return renderBox
+    ? { left: renderBox.left + renderBox.width / 2, top: renderBox.top + renderBox.height / 2, transform: "translate(-50%, -50%)" }
+    : { left: "50%", top: "50%", transform: "translate(-50%, -50%)" };
+  const { width, height } = segmentDimensions(segment, allSegments, imageDimensions);
+  const [x1, y1, x2, y2] = segment.boxXyxy;
+  if (renderBox) {
+    const left = renderBox.left + Math.min(0.82, Math.max(0.18, (x1 + x2) / 2 / width)) * renderBox.width;
+    if (y2 / height > 0.78) return { left, bottom: renderBox.height - (renderBox.top + y1 / height * renderBox.height), transform: "translateX(-50%)", marginBottom: "0.5rem" };
+    return { left, top: renderBox.top + y2 / height * renderBox.height, transform: "translateX(-50%)", marginTop: "0.5rem" };
+  }
+  const left = Math.min(82, Math.max(18, (x1 + x2) / 2 / width * 100));
+  if (y2 / height > 0.78) return { left: `${left}%`, bottom: `${(height - y1) / height * 100}%`, transform: "translateX(-50%)", marginBottom: "0.5rem" };
+  return { left: `${left}%`, top: `${y2 / height * 100}%`, transform: "translateX(-50%)", marginTop: "0.5rem" };
+}
+
+function segmentArea(segment: ImageSegment): number {
+  const [x1, y1, x2, y2] = segment.boxXyxy;
+  return Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+}
+
+// groupImageSegments 按上游分片名称生成组头，并在组内保留全部独立对象。
+function groupImageSegments(segments: IndexedImageSegment[]): ImageSegmentGroup[] {
+  const grouped = new Map<string, IndexedImageSegment[]>();
+  for (const segment of segments) {
+    const name = segment.segment.name.trim().toLowerCase();
+    const members = grouped.get(name) ?? [];
+    members.push(segment);
+    grouped.set(name, members);
+  }
+  return [...grouped.values()].map((members) => ({
+    parent: members[0],
+    children: members.length > 1 ? members : [],
+  }));
+}
+
+function toggleSetValue(current: Set<number>, value: number): Set<number> {
+  const next = new Set(current);
+  if (next.has(value)) next.delete(value);
+  else next.add(value);
+  return next;
+}
+
+// downloadSegment 按上游检测框裁切当前对象并触发浏览器下载。
+async function downloadSegment(imageURL: string, segment: ImageSegment, allSegments: ImageSegment[]): Promise<void> {
+  const source = new Image();
+  source.src = imageURL;
+  await source.decode();
+  const dimensions = segmentDimensions(segment, allSegments, { width: source.naturalWidth, height: source.naturalHeight });
+  const scaleX = source.naturalWidth / dimensions.width;
+  const scaleY = source.naturalHeight / dimensions.height;
+  const [x1, y1, x2, y2] = segment.boxXyxy;
+  const width = Math.max(1, Math.round((x2 - x1) * scaleX));
+  const height = Math.max(1, Math.round((y2 - y1) * scaleY));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d")?.drawImage(source, x1 * scaleX, y1 * scaleY, width, height, 0, 0, width, height);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) return;
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${segment.name || "segment"}.png`;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(link.href), 0);
 }
 
 function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePanelProps) {
@@ -938,7 +1254,7 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   const [imageFileID, setImageFileID] = useState("");
   const [referenceURL, setReferenceURL] = useState("");
   const [referenceFileID, setReferenceFileID] = useState("");
-  const [referenceVoiceId, setReferenceVoiceId] = useState("");
+  const [referenceAudioURL, setReferenceAudioURL] = useState("");
   const [sourceVideoURL, setSourceVideoURL] = useState("");
   const [sourceVideoFileID, setSourceVideoFileID] = useState("");
   const [duration, setDuration] = useState("6");
@@ -969,16 +1285,9 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
     if (activeModel && activeModel !== model) onModelChange(activeModel);
   }, [activeModel, model, onModelChange]);
 
-  const voicesQuery = useQuery({
-    queryKey: ["creative-console", "video-voices", apiKey],
-    queryFn: ({ signal }) => listVoices({ apiKey, model: "grok-voice-latest", signal }),
-    enabled: Boolean(apiKey && action === "generate"),
-    staleTime: 60_000,
-  });
-  const voices = useMemo(() => voicesQuery.data ?? [], [voicesQuery.data]);
   const hasFirstFrame = Boolean(imageURL.trim() || imageFileID);
   const hasReferenceImage = Boolean(referenceURL.trim() || referenceFileID);
-  const hasReferenceAudio = Boolean(referenceVoiceId.trim());
+  const hasReferenceAudio = Boolean(referenceAudioURL.trim());
   const isReferenceMode = hasReferenceImage || hasReferenceAudio;
   const generateResolutions = isReferenceMode ? videoResolutions.filter((item) => item !== "1080p") : videoResolutions;
   const selectedVideoResolution = isReferenceMode && resolution === "1080p" ? "720p" : resolution;
@@ -991,11 +1300,11 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
         let nextImageFileID = imageFileID || undefined;
         let nextReferenceURL = referenceURL.trim() || undefined;
         let nextReferenceFileID = referenceFileID || undefined;
-        let nextReferenceVoice = referenceVoiceId.trim() || undefined;
+        let nextReferenceAudioURL = referenceAudioURL.trim() || undefined;
         if (nextImageFileID || nextImageURL) {
           nextReferenceURL = undefined;
           nextReferenceFileID = undefined;
-          nextReferenceVoice = undefined;
+          nextReferenceAudioURL = undefined;
         }
         if (!nextImageFileID && nextImageURL && /^https?:\/\//i.test(nextImageURL)) {
           const staged = await importVideoInputFromURL(nextImageURL);
@@ -1018,7 +1327,7 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
             : nextReferenceURL
               ? [{ url: nextReferenceURL }]
               : undefined,
-          referenceVoiceIds: nextReferenceVoice ? [nextReferenceVoice] : undefined,
+          referenceAudios: nextReferenceAudioURL ? [{ url: nextReferenceAudioURL }] : undefined,
           duration: Number(duration),
           aspectRatio,
           resolution: selectedVideoResolution,
@@ -1054,10 +1363,10 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
       if (input.kind === "image") {
         if (input.selectionVersion !== imageSelectionVersionRef.current) return;
         setImageFileID(input.fileId);
-        setImageURL("");
-        setReferenceURL("");
-        setReferenceFileID("");
-        setReferenceVoiceId("");
+		setImageURL("");
+		setReferenceURL("");
+		setReferenceFileID("");
+        setReferenceAudioURL("");
         return;
       }
       if (input.selectionVersion !== referenceSelectionVersionRef.current) return;
@@ -1185,7 +1494,7 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                   <PopoverContent align="start" className="w-80 p-3">
                     <div className="mb-2 text-xs font-medium">{t("creativeConsole.firstFrameImage")}</div>
                     <div className="flex items-center gap-2">
-                      <Input id="video-image" type="url" value={imageURL} onChange={(event) => { imageSelectionVersionRef.current += 1; referenceSelectionVersionRef.current += 1; setImageURL(event.target.value); setImageFileID(""); setReferenceURL(""); setReferenceFileID(""); setReferenceVoiceId(""); }} placeholder={imageFileID ? t("creativeConsole.firstFrameImageAdded") : "https://..."} aria-label={t("creativeConsole.firstFrameImage")} />
+					  <Input id="video-image" type="url" value={imageURL} onChange={(event) => { imageSelectionVersionRef.current += 1; referenceSelectionVersionRef.current += 1; setImageURL(event.target.value); setImageFileID(""); setReferenceURL(""); setReferenceFileID(""); setReferenceAudioURL(""); }} placeholder={imageFileID ? t("creativeConsole.firstFrameImageAdded") : "https://..."} aria-label={t("creativeConsole.firstFrameImage")} />
                       {hasFirstFrame ? <Button type="button" variant="ghost" size="icon" className="shrink-0" aria-label={t("creativeConsole.clearFirstFrameImage")} onClick={() => { imageSelectionVersionRef.current += 1; setImageURL(""); setImageFileID(""); }}><X /></Button> : null}
                     </div>
                     <input
@@ -1200,10 +1509,10 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                           imageSelectionVersionRef.current = selectionVersion;
                           referenceSelectionVersionRef.current += 1;
                           setImageURL("");
-                          setImageFileID("");
-                          setReferenceURL("");
-                          setReferenceFileID("");
-                          setReferenceVoiceId("");
+						  setImageFileID("");
+						  setReferenceURL("");
+						  setReferenceFileID("");
+                          setReferenceAudioURL("");
                           uploadMutation.reset();
                           uploadMutation.mutate({ file, kind: "image", selectionVersion });
                         }
@@ -1257,18 +1566,45 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                     {uploadMutation.isError ? <p className="mt-1 text-[11px] text-destructive">{uploadMutation.error.message}</p> : null}
                   </PopoverContent>
                 </Popover>
-                <Select value={referenceVoiceId || "__none__"} onValueChange={(value) => { setReferenceVoiceId(value === "__none__" ? "" : value); if (value !== "__none__") { imageSelectionVersionRef.current += 1; setImageURL(""); setImageFileID(""); } }} disabled={hasFirstFrame}>
-                  <SelectTrigger className={cn("h-8 w-auto gap-1.5 border-0 bg-transparent px-2 shadow-none", hasReferenceAudio && "bg-secondary/70")} aria-label={t("creativeConsole.referenceVoice")}>
-                    <AudioLines className="size-3.5" />
-                    <SelectValue placeholder={t("creativeConsole.referenceVoiceShort")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">{t("creativeConsole.referenceVoiceNone")}</SelectItem>
-                    {(voices.length > 0 ? voices : [{ voiceId: "eve", name: "Eve" }, { voiceId: "ara", name: "Ara" }] as VoiceInfo[]).map((voice) => (
-                      <SelectItem key={voice.voiceId} value={voice.voiceId}>{voice.name || voice.voiceId}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <span title={t("creativeConsole.referenceVoiceUnavailable")}>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className={cn("h-8 gap-1.5 px-2 font-normal", hasReferenceAudio && "bg-secondary/70 text-foreground")}
+                        aria-label={t("creativeConsole.referenceVoice")}
+                        disabled
+                      >
+                        <AudioLines />{hasReferenceAudio ? t("creativeConsole.referenceVoiceAdded") : t("creativeConsole.referenceVoiceShort")}
+                      </Button>
+                    </span>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-80 p-3">
+                    <div className="mb-2 text-xs font-medium">{t("creativeConsole.referenceVoice")}</div>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        id="video-reference-audio"
+                        type="url"
+                        value={referenceAudioURL}
+                        onChange={(event) => {
+                          setReferenceAudioURL(event.target.value);
+                          imageSelectionVersionRef.current += 1;
+                          setImageURL("");
+                          setImageFileID("");
+                        }}
+                        placeholder="https://..."
+                        aria-label={t("creativeConsole.referenceVoice")}
+                      />
+                      {hasReferenceAudio ? (
+                        <Button type="button" variant="ghost" size="icon" className="shrink-0" aria-label={t("creativeConsole.referenceVoiceNone")} onClick={() => setReferenceAudioURL("")}>
+                          <X />
+                        </Button>
+                      ) : null}
+                    </div>
+                  </PopoverContent>
+                </Popover>
                 </>
               ) : (
                 <Popover>

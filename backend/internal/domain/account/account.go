@@ -290,6 +290,10 @@ func IsWebImagineQuotaMode(mode string) bool {
 	}
 }
 
+func IsWebImageQuotaMode(mode string) bool {
+	return mode == QuotaModeWebImagePro || mode == QuotaModeWebImageEdit
+}
+
 // QuotaWindow 表示 Provider 单个模式的额度窗口。
 type QuotaWindow struct {
 	AccountID     uint64

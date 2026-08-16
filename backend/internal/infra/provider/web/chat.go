@@ -998,6 +998,9 @@ func parseUpstreamFrame(data []byte, parsed *parsedChat) (string, string, error)
 	if errorValue, ok := root["error"].(map[string]any); ok {
 		return "", "", webResponseError(errorValue)
 	}
+	if errorMessage, ok := root["error"].(string); ok && strings.TrimSpace(errorMessage) != "" {
+		return "", "", webResponseError(map[string]any{"message": errorMessage, "code": root["code"]})
+	}
 	result, _ := root["result"].(map[string]any)
 	if conversation, _ := result["conversation"].(map[string]any); conversation != nil {
 		parsed.ConversationID, _ = conversation["conversationId"].(string)
@@ -1005,7 +1008,9 @@ func parseUpstreamFrame(data []byte, parsed *parsedChat) (string, string, error)
 	}
 	response, _ := result["response"].(map[string]any)
 	if response == nil {
-		return "", "", nil
+		// Imagine 的会话续写接口把生成响应直接放在 result 下，
+		// 与新建会话使用的 result.response 包络不同。
+		response = result
 	}
 	if errorValue, ok := response["error"].(map[string]any); ok {
 		return "", "", webResponseError(errorValue)
@@ -1069,6 +1074,9 @@ func parseUpstreamFrame(data []byte, parsed *parsedChat) (string, string, error)
 func collectModelResponse(parsed *parsedChat, modelResponse map[string]any) (string, string, error) {
 	if err := modelResponseStreamError(modelResponse); err != nil {
 		return "", "", err
+	}
+	if responseID, _ := modelResponse["responseId"].(string); responseID != "" {
+		parsed.ResponseID = responseID
 	}
 	if parsed.ParentID == "" {
 		parsed.ParentID, _ = modelResponse["parentResponseId"].(string)
@@ -1134,7 +1142,7 @@ func webResponseError(value map[string]any) error {
 		return fmt.Errorf("%w: %s", errWebAntiBot, message)
 	}
 	normalized := strings.ToLower(message)
-	if strings.Contains(normalized, "usage limit") || strings.Contains(normalized, "usage quota") {
+	if strings.Contains(normalized, "usage limit") || strings.Contains(normalized, "usage quota") || strings.Contains(normalized, "too many requests") || strings.Contains(normalized, "resource-exhausted") {
 		return fmt.Errorf("%w: %s", errWebUsageLimit, message)
 	}
 	return errors.New(message)

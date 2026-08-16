@@ -715,7 +715,7 @@ const docTemplate = `{
                 },
                 "model": {
                     "type": "string",
-                    "example": "grok-imagine-image-edit"
+                    "example": "grok-imagine-image-2.0-web"
                 },
                 "n": {
                     "type": "integer",
@@ -853,9 +853,17 @@ const docTemplate = `{
         "httpserver.SwaggerVideoAudioInput": {
             "type": "object",
             "properties": {
-                "voice_id": {
+                "data": {
                     "type": "string",
-                    "example": "eve"
+                    "example": "SUQzBAAAAAAA..."
+                },
+                "format": {
+                    "type": "string",
+                    "example": "mp3"
+                },
+                "url": {
+                    "type": "string",
+                    "example": "https://example.com/reference.mp3"
                 }
             }
         },
@@ -875,7 +883,7 @@ const docTemplate = `{
                 },
                 "model": {
                     "type": "string",
-                    "example": "grok-imagine-video"
+                    "example": "grok-imagine-video-1.5"
                 },
                 "prompt": {
                     "type": "string",
@@ -899,6 +907,10 @@ const docTemplate = `{
                 },
                 "video": {
                     "$ref": "#/definitions/httpserver.SwaggerVideoMediaInput"
+                },
+                "video_extension_start_time": {
+                    "type": "number",
+                    "example": 6.041667
                 }
             }
         },

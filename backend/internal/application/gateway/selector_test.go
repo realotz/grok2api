@@ -627,6 +627,46 @@ func TestSelectorHonorsWebTierPoolOrderBeforeAccountPriority(t *testing.T) {
 	}
 }
 
+func TestSelectionSessionCanRequireHeavyWebTier(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-required-heavy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	var heavyID uint64
+	for _, tier := range []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy} {
+		created, _, createErr := accounts.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: tier,
+			Name: string(tier), SourceKey: string(tier), EncryptedAccessToken: "encrypted",
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if tier == account.WebTierHeavy {
+			heavyID = created.ID
+		}
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), staticTierOrder{order: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}}, time.Hour, time.Second, time.Minute)
+	session, err := selector.beginSelectionSessionForKeyAndTier(ctx, account.ProviderWeb, 0, "grok-imagine-video-1.5", "video", "", nil, false, clientkeydomain.AccountScope{}, account.WebTierHeavy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := session.Acquire(ctx, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != heavyID || lease.Credential.WebTier != account.WebTierHeavy {
+		t.Fatalf("selected account = %#v", lease.Credential)
+	}
+}
+
 func TestSelectorEnforcesClientKeyAccountScopeAcrossProvidersAndTiers(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-client-key-pool.db"))

@@ -60,6 +60,11 @@ func TestWebMediaUpstreamErrorProviderResponseIsBounded(t *testing.T) {
 func TestGenerateWSImageReacquiresAfterChallengeHandshake(t *testing.T) {
 	var handshakes atomic.Int32
 	server := fhttptest.NewServer(fhttp.HandlerFunc(func(writer fhttp.ResponseWriter, request *fhttp.Request) {
+		if request.URL.Path == "/rest/media/segment" {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"cached":false,"map":{"objects":[]}}`))
+			return
+		}
 		if request.URL.Path != "/ws/imagine/listen" {
 			fhttp.NotFound(writer, request)
 			return
@@ -94,7 +99,7 @@ func TestGenerateWSImageReacquiresAfterChallengeHandshake(t *testing.T) {
 
 	adapter, credential := testMediaAdapter(t, server.URL)
 	response, err := adapter.GenerateImage(context.Background(), provider.ImageGenerationRequest{
-		Credential: credential, Model: "grok-imagine-image-quality", Prompt: "draw a teapot", Count: 1, ResponseFormat: "b64_json",
+		Credential: credential, Model: "grok-imagine-image-2.0", Prompt: "draw a teapot", Count: 1, Resolution: "1k", ResponseFormat: "b64_json",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -103,75 +108,6 @@ func TestGenerateWSImageReacquiresAfterChallengeHandshake(t *testing.T) {
 	body, readErr := io.ReadAll(response.Body)
 	if readErr != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"b64_json"`) {
 		t.Fatalf("status=%d body=%s err=%v", response.StatusCode, body, readErr)
-	}
-	if got := handshakes.Load(); got != 2 {
-		t.Fatalf("handshakes=%d, want 2", got)
-	}
-}
-
-func TestGenerateLiteImageReacquiresAfterChallengeHandshake(t *testing.T) {
-	var handshakes atomic.Int32
-	server := fhttptest.NewServer(fhttp.HandlerFunc(func(writer fhttp.ResponseWriter, request *fhttp.Request) {
-		if request.URL.Path != "/ws/mgw/" {
-			fhttp.NotFound(writer, request)
-			return
-		}
-		if handshakes.Add(1) == 1 {
-			writer.Header().Set("Content-Type", "text/html")
-			writer.WriteHeader(http.StatusForbidden)
-			_, _ = writer.Write([]byte("<!doctype html><title>Just a moment...</title>"))
-			return
-		}
-		connection, err := (&websocket.Upgrader{CheckOrigin: func(*fhttp.Request) bool { return true }}).Upgrade(writer, request, nil)
-		if err != nil {
-			t.Errorf("upgrade Gateway WebSocket: %v", err)
-			return
-		}
-		defer connection.Close()
-		var initial map[string]any
-		if err := connection.ReadJSON(&initial); err != nil {
-			t.Errorf("read Gateway session: %v", err)
-			return
-		}
-		event, _ := initial["event"].(map[string]any)
-		eventID, _ := event["event_id"].(string)
-		_ = connection.WriteJSON(map[string]any{
-			"session_id": "session-1", "event": map[string]any{"type": "session.created", "client_event_id": eventID},
-		})
-		_ = connection.WriteJSON(map[string]any{
-			"session_id": "session-1", "event": map[string]any{"type": "conversation.attached", "conversation": map[string]any{"id": "session-1"}},
-		})
-		for range 2 {
-			var message map[string]any
-			if err := connection.ReadJSON(&message); err != nil {
-				t.Errorf("read Gateway turn: %v", err)
-				return
-			}
-		}
-		_ = connection.WriteJSON(map[string]any{
-			"session_id": "session-1",
-			"event": map[string]any{
-				"type": "response.grok.output",
-				"output": map[string]any{"card_attachment": map[string]any{"jsonData": map[string]any{
-					"id": "card-1", "image_chunk": map[string]any{"progress": 100, "imageUrl": "users/test/generated/image.jpg", "moderated": false},
-				}}},
-			},
-		})
-	}))
-	defer server.Close()
-
-	adapter, credential := testMediaAdapter(t, server.URL)
-	credential.UserID = "497f19f8-49d4-458a-bee4-43ec3dcaf8ca"
-	spec, ok := Resolve("grok-imagine-image")
-	if !ok {
-		t.Fatal("missing Lite image model")
-	}
-	rawURL, err := adapter.generateLiteImageURL(context.Background(), credential, spec, "draw a teapot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rawURL != "https://assets.grok.com/users/test/generated/image.jpg" {
-		t.Fatalf("url=%q", rawURL)
 	}
 	if got := handshakes.Load(); got != 2 {
 		t.Fatalf("handshakes=%d, want 2", got)

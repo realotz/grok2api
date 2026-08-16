@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -74,6 +76,7 @@ const (
 	webMediaDiagnosticBodyLimit    = 64 << 10
 	webMediaDiagnosticSummaryLimit = 256
 	webMediaDiagnosticFieldLimit   = 160
+	maxVideoReferenceAudioBytes    = 20 << 20
 )
 
 var (
@@ -234,6 +237,14 @@ func boundWebMediaDiagnostic(value string, limit int) string {
 }
 
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
+	if strings.TrimSpace(request.Model) == "grok-imagine-video-1.5" {
+		return a.generateVideoV15(ctx, request)
+	}
+	return a.generateLegacyVideo(ctx, request)
+}
+
+// generateLegacyVideo 保留原 grok-imagine-video 的 Web 请求结构。
+func (a *Adapter) generateLegacyVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
@@ -284,7 +295,218 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if err != nil {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
 	}
-	result, _, parseErr := parseVideoStream(response, request.Progress)
+	return a.finishVideoResponse(response, request.Progress)
+}
+
+// generateVideoV15 使用 Imagine Web 的 mediaGenInput 三分支协议。
+func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
+	cfg := a.config()
+	token, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
+	if err != nil {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
+	}
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, request.Credential)
+	if err != nil {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
+	}
+	defer lease.Release()
+	operation := request.Operation
+	if operation == "" {
+		operation = provider.VideoOperationGenerate
+	}
+	if operation == provider.VideoOperationExtend {
+		return a.extendVideoV15(ctx, cfg, lease, token, request)
+	}
+	if operation != provider.VideoOperationGenerate {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Web grok-imagine-video-1.5 不支持视频编辑"))
+	}
+	imageAssetID := ""
+	referenceAssetIDs := make([]string, 0, len(request.ReferenceURLs))
+	parentID := ""
+	prepareReference := func(rawReference string) (string, error) {
+		uploaded, referenceErr := a.prepareVideoAsset(ctx, cfg, lease, token, rawReference)
+		if referenceErr != nil {
+			return "", referenceErr
+		}
+		if uploaded.ID == "" {
+			return "", fmt.Errorf("上传视频参考图片后未返回资产 ID")
+		}
+		postID, postErr := a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_IMAGE", uploaded.URI, "", "video_reference_media_post")
+		if postErr != nil {
+			return "", postErr
+		}
+		if parentID == "" {
+			parentID = postID
+		}
+		return uploaded.ID, nil
+	}
+	if imageURL := strings.TrimSpace(request.ImageURL); imageURL != "" {
+		imageAssetID, err = prepareReference(imageURL)
+		if err != nil {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
+		}
+	}
+	for _, rawReference := range request.ReferenceURLs {
+		if strings.TrimSpace(rawReference) == "" {
+			continue
+		}
+		assetID, referenceErr := prepareReference(rawReference)
+		if referenceErr != nil {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(referenceErr), 0, referenceErr)
+		}
+		referenceAssetIDs = append(referenceAssetIDs, assetID)
+	}
+	audioAssetIDs := make([]string, 0, len(request.ReferenceAudios))
+	for _, rawAudio := range request.ReferenceAudios {
+		assetID, audioErr := a.prepareVideoReferenceAudio(ctx, cfg, lease, token, rawAudio)
+		if audioErr != nil {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(audioErr), 0, audioErr)
+		}
+		audioAssetIDs = append(audioAssetIDs, assetID)
+	}
+	segments := videoSegments(request.Duration)
+	if len(segments) == 0 {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("duration 必须在 1 到 15 秒之间"))
+	}
+	ratio := resolveAspectRatio(request.AspectRatio)
+	resolution := request.Resolution
+	if resolution == "" {
+		resolution = "720p"
+	}
+	payload := videoV15CreatePayload(request.Prompt, ratio, resolution, segments[0], imageAssetID, referenceAssetIDs, audioAssetIDs)
+	referer := cfg.BaseURL + "/imagine"
+	if parentID != "" {
+		referer = cfg.BaseURL + "/imagine/post/" + parentID
+	}
+	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.VideoTimeoutSeconds)*time.Second, referer)
+	if err != nil {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
+	}
+	return a.finishVideoResponse(response, request.Progress)
+}
+
+// extendVideoV15 uploads the source video into the selected account before starting a new extension conversation.
+func (a *Adapter) extendVideoV15(ctx context.Context, cfg Config, lease *egress.Lease, token string, request provider.VideoRequest) (provider.VideoResult, error) {
+	if request.Duration < 6 || request.Duration > 10 {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Web 视频延长 duration 必须在 6 到 10 秒之间"))
+	}
+	if request.VideoExtensionStartTime <= 0 {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Web 视频延长必须提供大于 0 的 video_extension_start_time"))
+	}
+	video, err := a.loadVideoExtensionInput(ctx, lease, request.VideoURL, 20<<20)
+	if err != nil {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
+	}
+	uploaded, err := a.uploadFileV2Direct(ctx, cfg, lease, token, video, cfg.BaseURL+"/imagine", imagineSelfUploadSource, "video_extension_upload")
+	if err != nil {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
+	}
+	if uploaded.URI == "" {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("上传待延长视频后未返回 fileUri"))
+	}
+	postID, err := a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_VIDEO", uploaded.URI, "", "video_extension_media_post")
+	if err != nil {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
+	}
+	payload := videoExtensionPayload(request.Prompt, postID, request.Duration, request.VideoExtensionStartTime)
+	response, err := a.postJSONWithReferer(
+		ctx,
+		cfg,
+		lease,
+		token,
+		cfg.BaseURL+"/rest/app-chat/conversations/new",
+		payload,
+		time.Duration(cfg.VideoTimeoutSeconds)*time.Second,
+		cfg.BaseURL+"/imagine/post/"+postID,
+	)
+	if err != nil {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
+	}
+	return a.finishVideoResponse(response, request.Progress)
+}
+
+func (a *Adapter) loadVideoExtensionInput(ctx context.Context, lease *egress.Lease, value string, maxBytes int64) (provider.ImageInput, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return provider.ImageInput{}, fmt.Errorf("待延长视频不能为空")
+	}
+	if strings.HasPrefix(strings.ToLower(value), "data:") {
+		return parseVideoExtensionDataURI(value, maxBytes)
+	}
+	target, err := validateRemoteAttachmentURL(ctx, value, fmt.Errorf("待延长视频无效"))
+	if err != nil {
+		return provider.ImageInput{}, err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	download, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.fetchURL.String(), nil)
+	if err != nil {
+		return provider.ImageInput{}, err
+	}
+	download.Host = target.hostHeader
+	download.Header = remoteFileHeaders(lease.UserAgent)
+	download.Header.Set("Accept", "video/mp4,application/octet-stream;q=0.8,*/*;q=0.1")
+	response, err := lease.DoPinnedHTTPS(download, target.serverName)
+	if err != nil {
+		return provider.ImageInput{}, fmt.Errorf("下载待延长视频: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return provider.ImageInput{}, fmt.Errorf("下载待延长视频返回 %d", response.StatusCode)
+	}
+	if response.ContentLength > maxBytes {
+		return provider.ImageInput{}, fmt.Errorf("待延长视频超过 %d MiB", maxBytes>>20)
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if err != nil || len(raw) == 0 || int64(len(raw)) > maxBytes {
+		return provider.ImageInput{}, fmt.Errorf("待延长视频下载失败或超过 %d MiB", maxBytes>>20)
+	}
+	if err := validateMP4Video(raw, response.Header.Get("Content-Type")); err != nil {
+		return provider.ImageInput{}, err
+	}
+	filename := path.Base(target.originalURL.Path)
+	if filename == "." || filename == "/" || filename == "" || !strings.EqualFold(path.Ext(filename), ".mp4") {
+		filename = "video.mp4"
+	}
+	return provider.ImageInput{Filename: filename, MIMEType: "video/mp4", Data: raw}, nil
+}
+
+func parseVideoExtensionDataURI(value string, maxBytes int64) (provider.ImageInput, error) {
+	header, encoded, ok := strings.Cut(value, ",")
+	lowerHeader := strings.ToLower(header)
+	if !ok || !strings.HasPrefix(lowerHeader, "data:video/mp4") || !strings.Contains(lowerHeader, ";base64") {
+		return provider.ImageInput{}, fmt.Errorf("待延长视频 data URI 必须是 Base64 MP4")
+	}
+	encoded = strings.Join(strings.Fields(encoded), "")
+	if encoded == "" || int64(base64.StdEncoding.DecodedLen(len(encoded))) > maxBytes {
+		return provider.ImageInput{}, fmt.Errorf("待延长视频为空或超过 %d MiB", maxBytes>>20)
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(encoded)
+	}
+	if err != nil || len(raw) == 0 || int64(len(raw)) > maxBytes {
+		return provider.ImageInput{}, fmt.Errorf("待延长视频 Base64 无效或超过 %d MiB", maxBytes>>20)
+	}
+	if err := validateMP4Video(raw, "video/mp4"); err != nil {
+		return provider.ImageInput{}, err
+	}
+	return provider.ImageInput{Filename: "video.mp4", MIMEType: "video/mp4", Data: raw}, nil
+}
+
+func validateMP4Video(data []byte, declared string) error {
+	declared = strings.ToLower(strings.TrimSpace(strings.Split(declared, ";")[0]))
+	if declared != "" && declared != "application/octet-stream" && declared != "video/mp4" {
+		return fmt.Errorf("待延长视频 Content-Type 必须是 video/mp4")
+	}
+	if len(data) < 12 || string(data[4:8]) != "ftyp" {
+		return fmt.Errorf("待延长视频不是有效 MP4")
+	}
+	return nil
+}
+
+func (a *Adapter) finishVideoResponse(response *http.Response, progress func(int)) (provider.VideoResult, error) {
+	result, _, parseErr := parseVideoStream(response, progress)
 	_ = response.Body.Close()
 	if parseErr != nil {
 		if upstreamErr, ok := parseErr.(*webMediaUpstreamError); ok {
@@ -319,6 +541,193 @@ func (a *Adapter) prepareVideoReference(ctx context.Context, cfg Config, lease *
 		return "", fmt.Errorf("上传视频参考图片后未返回 fileUri")
 	}
 	return uploaded.URI, nil
+}
+
+func (a *Adapter) prepareVideoAsset(ctx context.Context, cfg Config, lease *egress.Lease, token, value string) (uploadedFile, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return uploadedFile{}, fmt.Errorf("视频参考图片 URL 不能为空")
+	}
+	image, err := a.loadChatImage(ctx, lease, value, 20<<20)
+	if err != nil {
+		return uploadedFile{}, err
+	}
+	uploaded, err := a.uploadFileV2Direct(ctx, cfg, lease, token, image, cfg.BaseURL+"/imagine", imagineSelfUploadSource, "video_reference_upload")
+	if err != nil {
+		return uploadedFile{}, err
+	}
+	if uploaded.URI == "" {
+		return uploadedFile{}, fmt.Errorf("上传视频参考图片后未返回 fileUri")
+	}
+	return uploaded, nil
+}
+
+// prepareVideoReferenceAudio 在视频账号的同一出口租约内上传参考音频，避免跨账号资产不可见。
+func (a *Adapter) prepareVideoReferenceAudio(ctx context.Context, cfg Config, lease *egress.Lease, token, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("视频参考音频不能为空")
+	}
+	lower := strings.ToLower(value)
+	if !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "data:") {
+		return "", fmt.Errorf("视频参考音频必须提供 HTTPS URL 或 Base64 data URI")
+	}
+	audio, err := a.loadVideoReferenceAudio(ctx, lease, value)
+	if err != nil {
+		return "", err
+	}
+	uploaded, err := a.uploadFileV2Direct(ctx, cfg, lease, token, audio, cfg.BaseURL+"/imagine", selfUploadFileSource, "video_reference_audio_upload")
+	if err != nil {
+		return "", err
+	}
+	if uploaded.ID == "" {
+		return "", fmt.Errorf("上传视频参考音频后未返回资产 ID")
+	}
+	return uploaded.ID, nil
+}
+
+func (a *Adapter) loadVideoReferenceAudio(ctx context.Context, lease *egress.Lease, value string) (provider.ImageInput, error) {
+	if strings.HasPrefix(strings.ToLower(value), "data:") {
+		return parseVideoReferenceAudioDataURI(value)
+	}
+	target, err := validateRemoteAttachmentURL(ctx, value, fmt.Errorf("视频参考音频无效"))
+	if err != nil {
+		return provider.ImageInput{}, err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.fetchURL.String(), nil)
+	if err != nil {
+		return provider.ImageInput{}, err
+	}
+	request.Host = target.hostHeader
+	request.Header.Set("Accept", "audio/*,*/*;q=0.1")
+	request.Header.Set("User-Agent", lease.UserAgent)
+	response, err := lease.DoPinnedHTTPS(request, target.serverName)
+	if err != nil {
+		return provider.ImageInput{}, fmt.Errorf("下载视频参考音频: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return provider.ImageInput{}, fmt.Errorf("下载视频参考音频返回 %d", response.StatusCode)
+	}
+	if response.ContentLength > maxVideoReferenceAudioBytes {
+		return provider.ImageInput{}, fmt.Errorf("视频参考音频超过 20 MiB")
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxVideoReferenceAudioBytes+1))
+	if err != nil || len(raw) == 0 || len(raw) > maxVideoReferenceAudioBytes {
+		return provider.ImageInput{}, fmt.Errorf("视频参考音频下载失败或超过 20 MiB")
+	}
+	mimeType, err := validatedVideoReferenceAudioMIME(raw, response.Header.Get("Content-Type"), path.Ext(target.originalURL.Path))
+	if err != nil {
+		return provider.ImageInput{}, err
+	}
+	return provider.ImageInput{Filename: "reference" + videoReferenceAudioExtension(mimeType), MIMEType: mimeType, Data: raw}, nil
+}
+
+func parseVideoReferenceAudioDataURI(value string) (provider.ImageInput, error) {
+	header, encoded, ok := strings.Cut(value, ",")
+	if !ok || !strings.HasPrefix(strings.ToLower(header), "data:audio/") || !strings.Contains(strings.ToLower(header), ";base64") {
+		return provider.ImageInput{}, fmt.Errorf("视频参考音频必须是 Base64 audio data URI")
+	}
+	encoded = strings.Join(strings.Fields(encoded), "")
+	if encoded == "" || int64(base64.StdEncoding.DecodedLen(len(encoded))) > maxVideoReferenceAudioBytes {
+		return provider.ImageInput{}, fmt.Errorf("视频参考音频为空或超过 20 MiB")
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(encoded)
+	}
+	if err != nil || len(raw) == 0 || len(raw) > maxVideoReferenceAudioBytes {
+		return provider.ImageInput{}, fmt.Errorf("视频参考音频 Base64 无效或超过 20 MiB")
+	}
+	declared := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.ToLower(header), "data:"), ";base64"))
+	mimeType, err := validatedVideoReferenceAudioMIME(raw, declared, "")
+	if err != nil {
+		return provider.ImageInput{}, err
+	}
+	return provider.ImageInput{Filename: "reference" + videoReferenceAudioExtension(mimeType), MIMEType: mimeType, Data: raw}, nil
+}
+
+func validatedVideoReferenceAudioMIME(data []byte, declared, extension string) (string, error) {
+	detected := normalizeVideoReferenceAudioMIME(http.DetectContentType(data))
+	declared = normalizeVideoReferenceAudioMIME(declared)
+	if declared == "" {
+		declared = videoReferenceAudioMIMEFromExtension(extension)
+	}
+	if !supportedVideoReferenceAudioMIME(declared) {
+		declared = detected
+	}
+	if !supportedVideoReferenceAudioMIME(declared) {
+		return "", fmt.Errorf("视频参考音频格式不支持")
+	}
+	if supportedVideoReferenceAudioMIME(detected) && detected != declared {
+		return "", fmt.Errorf("视频参考音频 Content-Type 与实际内容不一致")
+	}
+	return declared, nil
+}
+
+func normalizeVideoReferenceAudioMIME(value string) string {
+	value = strings.ToLower(strings.TrimSpace(strings.Split(value, ";")[0]))
+	switch value {
+	case "audio/x-wav", "audio/wave":
+		return "audio/wav"
+	case "application/octet-stream":
+		return ""
+	default:
+		return value
+	}
+}
+
+func supportedVideoReferenceAudioMIME(value string) bool {
+	switch value {
+	case "audio/mpeg", "audio/wav", "audio/mp4", "audio/aac", "audio/ogg", "audio/webm", "audio/flac":
+		return true
+	default:
+		return false
+	}
+}
+
+func videoReferenceAudioMIMEFromExtension(extension string) string {
+	switch strings.ToLower(extension) {
+	case ".mp3":
+		return "audio/mpeg"
+	case ".wav":
+		return "audio/wav"
+	case ".m4a", ".mp4":
+		return "audio/mp4"
+	case ".aac":
+		return "audio/aac"
+	case ".ogg", ".oga":
+		return "audio/ogg"
+	case ".webm":
+		return "audio/webm"
+	case ".flac":
+		return "audio/flac"
+	default:
+		return ""
+	}
+}
+
+func videoReferenceAudioExtension(mimeType string) string {
+	switch mimeType {
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/wav":
+		return ".wav"
+	case "audio/mp4":
+		return ".m4a"
+	case "audio/aac":
+		return ".aac"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/webm":
+		return ".webm"
+	case "audio/flac":
+		return ".flac"
+	default:
+		return ".audio"
+	}
 }
 
 // DownloadVideo retrieves a completed Grok asset through its source SSO
@@ -552,5 +961,59 @@ func videoCreatePayload(prompt, parentID, ratio, resolution string, seconds int,
 	return map[string]any{
 		"temporary": true, "modelName": "imagine-video-gen", "message": prompt + " --mode=custom", "enableSideBySide": true,
 		"responseMetadata": map[string]any{"experiments": []any{}, "modelConfigOverride": map[string]any{"modelMap": map[string]any{"videoGenModelConfig": config}}},
+	}
+}
+
+// videoV15CreatePayload 按 Imagine Web 新协议区分文生、单图和多参考图视频。
+func videoV15CreatePayload(prompt, ratio, resolution string, seconds int, imageAssetID string, referenceAssetIDs, audioAssetIDs []string) map[string]any {
+	parameters := map[string]any{"prompt": prompt, "aspectRatio": ratio, "duration": seconds, "resolutionName": resolution}
+	mediaGenInput := map[string]any{}
+	switch {
+	case imageAssetID != "":
+		parameters["inputAssets"] = []string{imageAssetID}
+		mediaGenInput["imageToVideo"] = parameters
+	case len(referenceAssetIDs) > 0 || len(audioAssetIDs) > 0:
+		if len(referenceAssetIDs) > 0 {
+			parameters["inputAssets"] = referenceAssetIDs
+		}
+		if len(audioAssetIDs) > 0 {
+			parameters["audioAssets"] = audioAssetIDs
+		}
+		mediaGenInput["referenceToVideo"] = parameters
+	default:
+		mediaGenInput["textToVideo"] = parameters
+	}
+	return map[string]any{
+		"modelName": "imagine-video-gen", "message": prompt + " --mode=custom",
+		"enableImageStreaming": true, "enableSideBySide": true, "sendFinalMetadata": true,
+		"responseMetadata": map[string]any{"experiments": []any{}, "modelConfigOverride": map[string]any{"modelMap": map[string]any{}}},
+		"mediaGenInput":    mediaGenInput,
+		"kind":             "CONVERSATION_KIND_IMAGINE",
+	}
+}
+
+// videoExtensionPayload maps the OpenAI-compatible extension request to Grok Web videoExtension.
+func videoExtensionPayload(prompt, postID string, duration int, startTime float64) map[string]any {
+	parameters := map[string]any{
+		"inputAssets":             []string{postID},
+		"duration":                duration,
+		"videoExtensionStartTime": startTime,
+	}
+	if prompt != "" {
+		parameters["prompt"] = prompt
+	}
+	message := "--mode=normal"
+	if prompt != "" {
+		message = prompt + " --mode=custom"
+	}
+	return map[string]any{
+		"message":              message,
+		"modelName":            "imagine-video-gen",
+		"enableImageStreaming": true,
+		"enableSideBySide":     true,
+		"sendFinalMetadata":    true,
+		"mediaGenInput": map[string]any{
+			"videoExtension": parameters,
+		},
 	}
 }

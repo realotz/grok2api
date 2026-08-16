@@ -157,9 +157,10 @@ const endpoints: Record<string, EndpointDefinition> = {
       { name: "prompt", required: true, descriptionKey: "docs.reference.fieldVideoExtendPrompt" },
       { name: "video", required: true, descriptionKey: "docs.reference.fieldVideoInput" },
       { name: "duration", descriptionKey: "docs.reference.fieldVideoExtendDuration" },
+      { name: "video_extension_start_time", descriptionKey: "docs.reference.fieldVideoExtensionStartTime" },
     ],
     noteKeys: ["docs.reference.noteVideoAsync", "docs.reference.noteVideoEditModel", "docs.reference.noteVideoBilling", "docs.reference.noteVideoStrict"],
-    request: () => ({ model: "grok-imagine-video", prompt: "The shot pans to an over the shoulder perspective.", duration: 6, video: { url: "https://example.com/source.mp4" } }),
+    request: () => ({ model: "grok-imagine-video-1.5", prompt: "The cat lands softly.", duration: 10, video_extension_start_time: 16.031666, video: { url: "https://example.com/source.mp4" } }),
     response: { request_id: "video_extend_example" },
   },
   "video/get": {
@@ -358,7 +359,7 @@ function withExampleModel(response: Record<string, unknown>, model: string): Rec
 }
 
 function fallbackModel(key: string): string {
-  if (key.startsWith("image/")) return key === "image/edits" ? "grok-imagine-image-edit" : "grok-imagine-image-lite";
+  if (key.startsWith("image/")) return "grok-imagine-image-2.0-web";
   if (key.startsWith("video/")) return "grok-imagine-video";
   if (key.startsWith("voice/")) {
     if (key === "voice/stt" || key === "voice/audio-transcriptions") return "grok-stt";

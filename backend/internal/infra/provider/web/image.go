@@ -31,8 +31,10 @@ const (
 	maxGeneratedImages            = 10
 	mediaOutputAttempts           = 3
 	imageDownloadTimeout          = 60 * time.Second
+	selfUploadFileSource          = "SELF_UPLOAD_FILE_SOURCE"
 	imagineSelfUploadSource       = "IMAGINE_SELF_UPLOAD_FILE_SOURCE"
 	directFileUploadResponseLimit = 2 << 20
+	segmentResponseLimit          = 2 << 20
 )
 
 var errLiteImageReady = errors.New("Lite 图片已完成")
@@ -44,13 +46,14 @@ type imagineModelConfig struct {
 }
 
 type imagineImageValue struct {
-	ID       string
-	URL      string
-	Blob     string
-	Position int
-	Width    int
-	Height   int
-	position bool
+	ID           string
+	URL          string
+	Blob         string
+	Segmentation json.RawMessage
+	Position     int
+	Width        int
+	Height       int
+	position     bool
 }
 
 type imagineSlot struct {
@@ -69,17 +72,11 @@ type imagineCollector struct {
 	terminalCount int
 }
 
-func resolveImagineModel(model, resolution string, count int) (imagineModelConfig, bool) {
-	if model != "imagine" {
+func resolveImagineModel(model, resolution string, _ int) (imagineModelConfig, bool) {
+	if model != "imagine" || resolution != "1k" {
 		return imagineModelConfig{}, false
 	}
-	batchSize := 4
-	if count > 8 {
-		batchSize = 12
-	} else if count > 4 {
-		batchSize = 8
-	}
-	return imagineModelConfig{Pro: resolution == "2k", NativeBatchSize: batchSize, MaxReturnCount: 10}, true
+	return imagineModelConfig{Pro: true, NativeBatchSize: 1, MaxReturnCount: 1}, true
 }
 
 func imagineUpstreamGenerationCount(streaming bool, count int, config imagineModelConfig) int {
@@ -282,8 +279,8 @@ func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGener
 	if count <= 0 {
 		count = 1
 	}
-	if request.Streaming && count != 1 {
-		return imageGenerationUserError("Streaming is only supported with n=1.", "input", "unsupported_parameter")
+	if count != 1 {
+		return invalidImageRequest("Grok Web 图片生成仅支持 n=1")
 	}
 	if request.PartialImages < 0 || request.PartialImages > 3 {
 		return invalidImageRequest("partial_images 必须在 0 到 3 之间")
@@ -323,8 +320,8 @@ func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGener
 	if resolution == "" {
 		resolution = "1k"
 	}
-	if resolution != "1k" && resolution != "2k" {
-		return invalidImageRequest("resolution 必须是 1k 或 2k")
+	if resolution != "1k" {
+		return invalidImageRequest("Grok Web 图片生成仅支持 resolution=1k")
 	}
 	modelConfig, ok := resolveImagineModel(protocolModel, resolution, count)
 	if !ok {
@@ -356,7 +353,7 @@ func (a *Adapter) generateLiteImage(ctx context.Context, request provider.ImageG
 		}
 		urls = append(urls, value)
 	}
-	response, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format)
+	response, err := a.imageResponse(ctx, request.Credential, imagineImagesFromURLs(urls), count, format)
 	if response != nil {
 		response.QuotaUnits = count
 	}
@@ -483,7 +480,7 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 
 func (a *Adapter) forwardImageChatCompletion(ctx context.Context, request provider.ResponseResourceRequest, input openAIRequest, normalized normalizedChatInput, spec ModelSpec) (*provider.Response, error) {
 	if len(normalized.Attachments) > 0 {
-		return invalidImageRequest("文生图模型只接受当前用户消息中的纯文本；图生图请使用 grok-imagine-image-edit 和 /v1/images/edits")
+		return invalidImageRequest("文生图模型只接受当前用户消息中的纯文本；图生图请使用 grok-imagine-image-2.0-web 和 /v1/images/edits")
 	}
 	count := 1
 	format := "url"
@@ -495,8 +492,8 @@ func (a *Adapter) forwardImageChatCompletion(ctx context.Context, request provid
 			format = strings.ToLower(strings.TrimSpace(input.ImageConfig.ResponseFormat))
 		}
 	}
-	if count < 1 || count > maxGeneratedImages {
-		return invalidImageRequest("image_config.n 必须在 1 到 10 之间")
+	if count != 1 {
+		return invalidImageRequest("image_config.n 仅支持 1")
 	}
 	if format != "url" && format != "b64_json" {
 		return invalidImageRequest("image_config.response_format 必须是 url 或 b64_json")
@@ -739,6 +736,9 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 			continue
 		}
 		if message["type"] == "error" {
+			if _, _, frameErr := parseUpstreamFrame(data, &parsedChat{}); errors.Is(frameErr, errWebUsageLimit) {
+				return webUsageLimitProviderResponse(), nil
+			}
 			upstreamErr := fmt.Errorf("Imagine WebSocket 返回错误")
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, upstreamErr)
 			return nil, upstreamErr
@@ -756,13 +756,15 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 			"type":    "server_error", "code": "image_generation_incomplete",
 		}}), nil
 	}
-	urls := make([]string, 0, len(images))
-	blobs := make([]string, 0, len(images))
-	for _, image := range images {
-		urls = append(urls, image.URL)
-		blobs = append(blobs, image.Blob)
+	images = images[:count]
+	for index := range images {
+		segmentation, segmentErr := a.segmentImage(ctx, cfg, lease, token, images[index].ID)
+		if segmentErr != nil {
+			return nil, segmentErr
+		}
+		images[index].Segmentation = segmentation
 	}
-	result, err := a.imageResponse(ctx, request.Credential, urls, blobs, count, format)
+	result, err := a.imageResponse(ctx, request.Credential, images, count, format)
 	if result != nil {
 		result.QuotaUnits = count
 	}
@@ -773,6 +775,15 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 // response. Reacquiring the lease is required because the failed lease keeps
 // the immutable browser-session cookies that were rejected upstream.
 func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
+	if len(request.SelectionRegions) > 1 {
+		return invalidImageRequest("selection_regions 当前仅支持一个选区")
+	}
+	if len(request.SelectionRegions) > 0 && len(request.ImageURLs) != 1 {
+		return invalidImageRequest("蒙版编辑仅支持一张待编辑图片，不支持额外参考图")
+	}
+	if len(request.SelectionRegions) > 0 && request.Streaming {
+		return invalidImageRequest("selection_regions 暂不支持流式图片编辑")
+	}
 	for attempt := 0; attempt < 2; attempt++ {
 		response, err := a.editImageAttempt(ctx, request)
 		if err == nil {
@@ -851,7 +862,7 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 		}
 		images = append(images, image)
 	}
-	refs := make([]string, 0, len(images))
+	assetIDs := make([]string, 0, len(images))
 	parentID := ""
 	for _, image := range images {
 		uploaded, uploadErr := a.uploadFileV2Direct(ctx, cfg, lease, token, image, cfg.BaseURL+"/imagine", imagineSelfUploadSource, "image_edit_upload")
@@ -861,7 +872,10 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 		if uploaded.URI == "" {
 			return nil, fmt.Errorf("上传图片成功但上游未返回 fileUri")
 		}
-		refs = append(refs, uploaded.URI)
+		if uploaded.ID == "" {
+			return nil, fmt.Errorf("上传图片成功但上游未返回资产 ID")
+		}
+		assetIDs = append(assetIDs, uploaded.ID)
 		postID, postErr := a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_IMAGE", uploaded.URI, "", "image_edit_media_post")
 		if postErr != nil {
 			return nil, postErr
@@ -870,7 +884,7 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 			parentID = postID
 		}
 	}
-	payload := buildImageEditPayload(request.Prompt, refs, parentID, ratio)
+	payload := buildImageEditPayload(request.Prompt, assetIDs, request.SelectionRegions)
 	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.ImageTimeoutSeconds)*time.Second, cfg.BaseURL+"/imagine/post/"+parentID)
 	if err != nil {
 		return nil, err
@@ -900,6 +914,9 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 	capture := &boundedCapture{limit: 8 << 20}
 	parsed, consumeErr := consumeUpstream(io.TeeReader(response.Body, capture), nil)
 	if consumeErr != nil {
+		if errors.Is(consumeErr, errWebUsageLimit) {
+			return webUsageLimitProviderResponse(), nil
+		}
 		return nil, consumeErr
 	}
 	urls := imageEditResultURLs(&parsed, capture.Bytes())
@@ -909,27 +926,61 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 			"type":    "server_error", "code": "image_edit_incomplete",
 		}}), nil
 	}
-	result, err := a.imageResponse(ctx, request.Credential, urls, nil, 1, format)
+	editedImages := imagineImagesFromURLs(urls)
+	for index := range editedImages {
+		editedImages[index].ID = imagineAssetIDFromURL(editedImages[index].URL)
+		if editedImages[index].ID == "" {
+			return nil, errors.New("图片编辑结果缺少可用于重新分段的 asset ID")
+		}
+		segmentation, segmentErr := a.segmentImage(ctx, cfg, lease, token, editedImages[index].ID)
+		if segmentErr != nil {
+			return nil, segmentErr
+		}
+		editedImages[index].Segmentation = segmentation
+	}
+	result, err := a.imageResponse(ctx, request.Credential, editedImages, 1, format)
 	if result != nil {
 		result.QuotaUnits = 1
 	}
 	return result, err
 }
 
-func buildImageEditPayload(prompt string, refs []string, parentID, aspectRatio string) map[string]any {
-	config := map[string]any{"imageReferences": refs, "parentPostId": parentID}
-	if aspectRatio != "" {
-		config["aspectRatio"] = aspectRatio
+func webUsageLimitProviderResponse() *provider.Response {
+	return jsonProviderResponse(http.StatusTooManyRequests, map[string]any{"error": map[string]any{
+		"message": "Grok Imagine 额度已耗尽，正在切换其他账号",
+		"type":    "rate_limit_error",
+		"code":    "usage_limit_reached",
+	}})
+}
+
+func imageSelectionRegionsPayload(regions []provider.ImageSelectionRegion) []any {
+	selectionRegions := make([]any, 0, len(regions))
+	for _, region := range regions {
+		selectionRegions = append(selectionRegions, map[string]any{"outer": map[string]any{"points": region.Points}})
+	}
+	return selectionRegions
+}
+
+// buildImageEditPayload 按 Imagine Web 协议用资产 ID 关联待编辑图片。
+func buildImageEditPayload(prompt string, assetIDs []string, regions []provider.ImageSelectionRegion) map[string]any {
+	mentions := make([]string, 0, len(assetIDs)+1)
+	for _, assetID := range assetIDs {
+		mentions = append(mentions, "@"+assetID)
+	}
+	mentions = append(mentions, prompt)
+	message := strings.Join(mentions, " ")
+	imageToImage := map[string]any{"prompt": message, "inputAssets": assetIDs}
+	if len(regions) > 0 {
+		imageToImage["selectionRegions"] = imageSelectionRegionsPayload(regions)
 	}
 	return map[string]any{
-		"temporary": true, "modelName": "imagine-image-edit", "message": prompt,
-		"enableImageGeneration": true, "returnImageBytes": false, "returnRawGrokInXaiRequest": false,
-		"enableImageStreaming": true, "imageGenerationCount": 2, "forceConcise": false,
-		"enableSideBySide": true, "sendFinalMetadata": true, "isReasoning": false,
-		"disableTextFollowUps": true, "disableMemory": false, "forceSideBySide": false,
+		"modelName": "imagine-image-edit", "message": message,
+		"enableImageStreaming": true, "enableSideBySide": true, "sendFinalMetadata": true,
 		"responseMetadata": map[string]any{"modelConfigOverride": map[string]any{"modelMap": map[string]any{
-			"imageEditModel": "imagine", "imageEditModelConfig": config,
+			"imageEditModel": "imagine",
 		}}},
+		"mediaGenInput": map[string]any{"imageToImage": imageToImage},
+		"kind":          "CONVERSATION_KIND_IMAGINE",
 	}
 }
 
@@ -953,6 +1004,9 @@ func parseImageEditStreamFrame(data []byte) (imageEditStreamFrame, bool) {
 	}
 	result, _ := root["result"].(map[string]any)
 	response, _ := result["response"].(map[string]any)
+	if response == nil {
+		response = result
+	}
 	imageResponse, _ := response["streamingImageGenerationResponse"].(map[string]any)
 	if imageResponse == nil {
 		return imageEditStreamFrame{}, false
@@ -1503,16 +1557,82 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 	return nil, fmt.Errorf("Grok Web Statsig 刷新失败")
 }
 
-func (a *Adapter) imageResponse(ctx context.Context, credential account.Credential, urls, blobs []string, count int, format string) (*provider.Response, error) {
-	data := make([]any, 0, min(count, len(urls)))
-	for index := 0; index < count && index < len(urls); index++ {
-		blob := ""
-		if index < len(blobs) {
-			blob = blobs[index]
+// segmentImage 使用生成结果的上游 asset ID 获取对象检测框和 RLE 掩码。
+func (a *Adapter) segmentImage(ctx context.Context, cfg Config, lease *egress.Lease, token, assetID string) (json.RawMessage, error) {
+	assetID = strings.TrimSpace(assetID)
+	if assetID == "" {
+		return nil, errors.New("Imagine 分段缺少 asset ID")
+	}
+	response, err := a.postJSONWithReferer(
+		ctx,
+		cfg,
+		lease,
+		token,
+		cfg.BaseURL+"/rest/media/segment",
+		map[string]any{"assetId": assetID, "cachedOnly": false, "maskFormat": "rle"},
+		time.Duration(cfg.ImageTimeoutSeconds)*time.Second,
+		cfg.BaseURL+"/imagine/post/"+url.PathEscape(assetID)+"?scope=asset",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, segmentResponseLimit+1))
+	if readErr != nil {
+		return nil, readErr
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		truncated := len(body) > webMediaDiagnosticBodyLimit
+		if truncated {
+			body = body[:webMediaDiagnosticBodyLimit]
 		}
-		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: urls[index], Blob: blob}, format)
+		return nil, newWebMediaUpstreamError(response.StatusCode, body, truncated)
+	}
+	if len(body) > segmentResponseLimit {
+		return nil, errors.New("Imagine 分段响应超过 2 MiB")
+	}
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(body, &payload) != nil || len(payload["map"]) == 0 {
+		return nil, errors.New("Imagine 分段响应格式无效")
+	}
+	return json.RawMessage(body), nil
+}
+
+func imagineImagesFromURLs(urls []string) []imagineImageValue {
+	images := make([]imagineImageValue, len(urls))
+	for index, value := range urls {
+		images[index].URL = value
+	}
+	return images
+}
+
+// imagineAssetIDFromURL 从 Grok 生成图片路径中提取新资产 ID，用于重新获取分段。
+func imagineAssetIDFromURL(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for index := 0; index+1 < len(parts); index++ {
+		if parts[index] == "generated" && parts[index+1] != "" {
+			return parts[index+1]
+		}
+	}
+	return ""
+}
+
+func (a *Adapter) imageResponse(ctx context.Context, credential account.Credential, images []imagineImageValue, count int, format string) (*provider.Response, error) {
+	data := make([]any, 0, min(count, len(images)))
+	for index := 0; index < count && index < len(images); index++ {
+		item, err := a.imageDataItem(ctx, credential, images[index], format)
 		if err != nil {
 			return nil, err
+		}
+		if images[index].ID != "" {
+			item["asset_id"] = images[index].ID
+		}
+		if len(images[index].Segmentation) > 0 {
+			item["segmentation"] = images[index].Segmentation
 		}
 		data = append(data, item)
 	}
@@ -1827,7 +1947,7 @@ func imagineResetMessage() map[string]any {
 }
 
 func imagineRequestMessage(id, prompt, ratio string, nsfw, pro bool, generations int) map[string]any {
-	return map[string]any{"type": "conversation.item.create", "timestamp": time.Now().UnixMilli(), "item": map[string]any{"type": "message", "content": []any{map[string]any{"requestId": id, "text": prompt, "type": "input_text", "properties": map[string]any{"section_count": 0, "is_kids_mode": false, "enable_nsfw": nsfw, "skip_upsampler": false, "enable_side_by_side": true, "is_initial": false, "aspect_ratio": ratio, "enable_pro": pro, "num_generations": generations}}}}}
+	return map[string]any{"type": "conversation.item.create", "timestamp": time.Now().UnixMilli(), "item": map[string]any{"type": "message", "content": []any{map[string]any{"requestId": id, "text": prompt, "type": "input_text", "properties": map[string]any{"section_count": 0, "is_kids_mode": false, "enable_nsfw": nsfw, "skip_upsampler": false, "enable_side_by_side": true, "is_initial": false, "aspect_ratio": ratio, "enable_pro": pro, "num_generations": generations, "enable_watermark": false}}}}}
 }
 
 func resolveImageAspectRatio(aspectRatio, size string) (string, error) {

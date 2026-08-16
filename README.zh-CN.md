@@ -258,10 +258,9 @@ Web 使用内置目录并按账号等级过滤；更高等级继承低等级模�
 | `grok-chat-auto` | 对话 | Super | Chat Completions、Responses、Messages |
 | `grok-chat-expert` | 对话 | Super | Chat Completions、Responses、Messages |
 | `grok-chat-heavy` | 对话 | Heavy | Chat Completions、Responses、Messages |
-| `grok-imagine-image-lite` | 图像 | Basic | Images Generations |
-| `grok-imagine-image-quality-lite` | 图像 | Basic | Images Generations |
-| `grok-imagine-image-edit` | 图像编辑 | Super | Images Edits |
-| `grok-imagine-video` | 视频 | Super | Videos |
+| `grok-imagine-image-2.0-web` | 图像 / 图像编辑 | Basic | Images Generations / Images Edits（仅 1K 质量模式；非流式生成响应包含对象分段；额度耗尽自动换号） |
+| `grok-imagine-video` | 视频 | Basic | Videos；保留旧 Web 协议 |
+| `grok-imagine-video-1.5` | 视频 | Basic；1080p 仅 Heavy/H | Videos；新版文生、单图图生、多参考图/音频协议；480p/720p/1080p，6-15 秒，参考模式最高 720p |
 
 ### Grok Console
 
@@ -321,7 +320,7 @@ Authorization: Bearer g2a_xxx_xxx
 
 stored response 和 compact 取决于最终 Provider。登录管理端后可在 `/docs` 查看当前模型与调用示例；仅在 `server.swaggerEnabled: true` 时提供 Swagger。
 
-`/v1/audio/transcriptions` 支持 `json`（默认）、`verbose_json` 和 `text`。视频编辑与延长按实际路由校验 Console `grok-imagine-video`，对外模型名仍可自定义。金额计费以网关能够可靠测量的官方计价单位为准：TTS 按输入字符数预留并结算，REST 与流式 STT 按成功响应返回的实际音频时长结算。STT 时长只能在请求完成后获得，因此并发中的请求可能使有限额 Key 短暂超过金额上限。Realtime、视频编辑与延长，以及未收录官方定价的自定义路由当前记录为“未计费”，保持可调用且不消耗金额额度。
+`/v1/audio/transcriptions` 支持 `json`（默认）、`verbose_json` 和 `text`。视频编辑按实际路由校验 Console `grok-imagine-video`。视频延长还支持 Web `grok-imagine-video-1.5`：请求需用 `video_extension_start_time` 提供源视频的绝对结束时间，网关会先把源视频上传到选中的 Web 账号，再新建延长会话；Web 的 `duration` 表示本次新增片段时长，范围 6 到 10 秒。对外模型名仍可自定义。金额计费以网关能够可靠测量的官方计价单位为准：TTS 按输入字符数预留并结算，REST 与流式 STT 按成功响应返回的实际音频时长结算。STT 时长只能在请求完成后获得，因此并发中的请求可能使有限额 Key 短暂超过金额上限。Realtime、视频编辑与延长，以及未收录官方定价的自定义路由当前记录为“未计费”，保持可调用且不消耗金额额度。
 
 客户端密钥支持模型白名单，以及可选的 RPM、并发、用量和截止日期限制。
 

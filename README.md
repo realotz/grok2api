@@ -257,10 +257,9 @@ Web uses a built-in catalog filtered by account tier; higher tiers inherit lower
 | `grok-chat-auto` | Conversation | Super | Chat Completions, Responses, Messages |
 | `grok-chat-expert` | Conversation | Super | Chat Completions, Responses, Messages |
 | `grok-chat-heavy` | Conversation | Heavy | Chat Completions, Responses, Messages |
-| `grok-imagine-image-lite` | Image | Basic | Images Generations |
-| `grok-imagine-image-quality-lite` | Image | Basic | Images Generations |
-| `grok-imagine-image-edit` | Image Edit | Super | Images Edits |
-| `grok-imagine-video` | Video | Super | Videos |
+| `grok-imagine-image-2.0-web` | Image / Image Edit | Basic | Images Generations / Images Edits (1K quality mode only; non-streaming generation responses include object segmentation; quota exhaustion rotates accounts automatically) |
+| `grok-imagine-video` | Video | Basic | Videos; retains the legacy Web protocol |
+| `grok-imagine-video-1.5` | Video | Basic; 1080p requires Heavy/H | Videos; new text-to-video, image-to-video, and image/audio reference protocol; 480p/720p/1080p, 6-15 seconds, reference mode up to 720p |
 
 ### Grok Console
 
@@ -320,7 +319,7 @@ Authorization: Bearer g2a_xxx_xxx
 
 Stored responses and compact depend on the selected Provider. The signed-in admin console provides live examples at `/docs`; Swagger is available only when `server.swaggerEnabled: true`.
 
-`/v1/audio/transcriptions` supports `json` (default), `verbose_json`, and `text`. Video edit/extension routes must resolve to Console `grok-imagine-video`; custom public model names remain supported. Monetary billing is applied only when the gateway can reliably measure the official pricing unit: TTS is reserved and settled from its input character count, while REST and streaming STT are settled from the actual audio duration returned by a successful response. Because STT duration is known only after completion, concurrent requests may briefly take a billing-limited key beyond its spend limit. Realtime, video edits/extensions, and custom routes without a recognized official price are currently audited as unpriced; they remain callable and do not consume the spend limit.
+`/v1/audio/transcriptions` supports `json` (default), `verbose_json`, and `text`. Video edits resolve to Console `grok-imagine-video`. Video extensions also support Web `grok-imagine-video-1.5`: provide `video_extension_start_time` with the source video's absolute end timestamp; the gateway uploads the source video into the selected Web account before starting a new extension conversation. Web extension `duration` is the added segment length from 6 to 10 seconds. Custom public model names remain supported. Monetary billing is applied only when the gateway can reliably measure the official pricing unit: TTS is reserved and settled from its input character count, while REST and streaming STT are settled from the actual audio duration returned by a successful response. Because STT duration is known only after completion, concurrent requests may briefly take a billing-limited key beyond its spend limit. Realtime, video edits/extensions, and custom routes without a recognized official price are currently audited as unpriced; they remain callable and do not consume the spend limit.
 
 Client keys support model allowlists and optional RPM, concurrency, spend, and expiry limits.
 

@@ -24,6 +24,20 @@ export type ChatResponseResult = ChatStreamSnapshot;
 export type ImageResult = {
   url: string;
   revisedPrompt?: string;
+  assetId?: string;
+  segmentation?: ImageSegmentation;
+};
+
+export type ImageSegment = {
+  name: string;
+  boxXyxy: [number, number, number, number];
+  score: number;
+  maskRle?: { size: [number, number]; counts: string };
+};
+
+export type ImageSegmentation = {
+  cached?: boolean;
+  map: { objects: ImageSegment[] };
 };
 
 export type VideoStatus = {
@@ -116,6 +130,32 @@ export async function generateImage(input: {
   return images.map((image) => ({ ...image, url: resolveMediaURL(image.url) }));
 }
 
+export async function editImage(input: {
+  apiKey: string;
+  model: string;
+  prompt: string;
+  imageURL: string;
+  selectionRegions?: Array<{ outer: { points: number[] } }>;
+  signal?: AbortSignal;
+}): Promise<ImageResult[]> {
+  const payload = await publicApiRequest(input.apiKey, "/images/edits", {
+    method: "POST",
+    body: {
+      model: input.model,
+      prompt: input.prompt,
+      image: { url: input.imageURL },
+      n: 1,
+      resolution: "1k",
+      response_format: "url",
+      ...(input.selectionRegions?.length ? { selection_regions: input.selectionRegions } : {}),
+    },
+    signal: input.signal,
+  });
+  const images = readImages(payload);
+  if (images.length === 0) throw new CreativeApiError(200, "The image edit response did not contain an image", "invalid_response");
+  return images.map((image) => ({ ...image, url: resolveMediaURL(image.url) }));
+}
+
 export async function createVideo(input: {
   apiKey: string;
   model: string;
@@ -123,7 +163,7 @@ export async function createVideo(input: {
   imageURL?: string;
   imageFileID?: string;
   referenceImages?: Array<{ url?: string; fileId?: string }>;
-  referenceVoiceIds?: string[];
+  referenceAudios?: Array<{ url?: string; data?: string; format?: string }>;
   duration: number;
   aspectRatio: string;
   resolution: string;
@@ -144,8 +184,8 @@ export async function createVideo(input: {
       return { url: item.url };
     });
   }
-  if (input.referenceVoiceIds && input.referenceVoiceIds.length > 0) {
-    body.reference_audios = input.referenceVoiceIds.map((voiceId) => ({ voice_id: voiceId }));
+  if (input.referenceAudios && input.referenceAudios.length > 0) {
+    body.reference_audios = input.referenceAudios;
   }
   const payload = await publicApiRequest(
     input.apiKey,
@@ -637,8 +677,33 @@ function readImages(payload: unknown): ImageResult[] {
       : typeof item.b64_json === "string" && item.b64_json.trim()
         ? `data:image/png;base64,${item.b64_json}`
         : "";
-    return url ? [{ url, revisedPrompt: typeof item.revised_prompt === "string" ? item.revised_prompt : undefined }] : [];
+    return url ? [{
+      url,
+      revisedPrompt: typeof item.revised_prompt === "string" ? item.revised_prompt : undefined,
+      assetId: typeof item.asset_id === "string" ? item.asset_id : undefined,
+      segmentation: readImageSegmentation(item.segmentation),
+    }] : [];
   });
+}
+
+function readImageSegmentation(value: unknown): ImageSegmentation | undefined {
+  if (!isRecord(value) || !isRecord(value.map) || !Array.isArray(value.map.objects)) return undefined;
+  const objects = value.map.objects.flatMap((item): ImageSegment[] => {
+    if (!isRecord(item) || typeof item.name !== "string" || !Array.isArray(item.boxXyxy) || item.boxXyxy.length !== 4) return [];
+    const box = item.boxXyxy.map(Number);
+    if (box.some((coordinate) => !Number.isFinite(coordinate))) return [];
+    const mask = isRecord(item.maskRle) && Array.isArray(item.maskRle.size) && item.maskRle.size.length === 2
+      && item.maskRle.size.every((dimension) => typeof dimension === "number" && Number.isFinite(dimension) && dimension > 0)
+      ? { size: [item.maskRle.size[0] as number, item.maskRle.size[1] as number] as [number, number], counts: typeof item.maskRle.counts === "string" ? item.maskRle.counts : "" }
+      : undefined;
+    return [{
+      name: item.name.trim() || "segment",
+      boxXyxy: box as [number, number, number, number],
+      score: typeof item.score === "number" && Number.isFinite(item.score) ? item.score : 0,
+      maskRle: mask,
+    }];
+  });
+  return objects.length > 0 ? { cached: typeof value.cached === "boolean" ? value.cached : undefined, map: { objects } } : undefined;
 }
 
 function readVideoStatus(payload: unknown): VideoStatus {

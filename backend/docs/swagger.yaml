@@ -21,7 +21,7 @@ definitions:
       image:
         $ref: '#/definitions/httpserver.SwaggerImageReference'
       model:
-        example: grok-imagine-image-edit
+        example: grok-imagine-image-2.0-web
         type: string
       "n":
         example: 1
@@ -120,8 +120,14 @@ definitions:
     type: object
   httpserver.SwaggerVideoAudioInput:
     properties:
-      voice_id:
-        example: eve
+      data:
+        example: SUQzBAAAAAAA...
+        type: string
+      format:
+        example: mp3
+        type: string
+      url:
+        example: https://example.com/reference.mp3
         type: string
     type: object
   httpserver.SwaggerVideoGenerationRequest:
@@ -135,7 +141,7 @@ definitions:
       image:
         $ref: '#/definitions/httpserver.SwaggerVideoMediaInput'
       model:
-        example: grok-imagine-video
+        example: grok-imagine-video-1.5
         type: string
       prompt:
         example: A cinematic tracking shot in the rain
@@ -153,6 +159,9 @@ definitions:
         type: string
       video:
         $ref: '#/definitions/httpserver.SwaggerVideoMediaInput'
+      video_extension_start_time:
+        example: 6.041667
+        type: number
     type: object
   httpserver.SwaggerVideoMediaInput:
     properties:

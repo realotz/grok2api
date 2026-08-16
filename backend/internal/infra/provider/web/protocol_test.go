@@ -37,8 +37,8 @@ import (
 
 func TestCatalogMatchesSupportedSurface(t *testing.T) {
 	values := Catalog()
-	requiredModels := []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-lite", "grok-imagine-image-quality-lite", "grok-imagine-image-edit", "grok-imagine-video"}
-	if len(values) != len(requiredModels) {
+	requiredModels := []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-2.0-web", "grok-imagine-video", "grok-imagine-video-1.5"}
+	if len(values) != 8 {
 		t.Fatalf("catalog size = %d", len(values))
 	}
 	publicIDs := make(map[string]struct{}, len(values))
@@ -57,15 +57,14 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
-		"grok-imagine-image-lite|image",
-		"grok-imagine-image-quality-lite|image",
-		"grok-imagine-image-edit|image_edit",
+		"grok-imagine-image-2.0-web|image",
+		"grok-imagine-image-2.0-web|image_edit",
 	} {
 		if _, exists := routeKeys[required]; !exists {
 			t.Fatalf("missing supported route: %s", required)
 		}
 	}
-	for _, removed := range []string{"grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-2.0", "grok-imagine-image-quality-2.0", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
+	for _, removed := range []string{"grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-2.0", "grok-imagine-image-lite", "grok-imagine-image-quality-lite", "grok-imagine-image-quality-2.0", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
 		if _, exists := publicIDs[removed]; exists {
 			t.Fatalf("obsolete image model remains: %s", removed)
 		}
@@ -73,10 +72,7 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 }
 
 func TestWebImagePublicNamesPreserveGatewayModels(t *testing.T) {
-	tests := map[string]string{
-		"grok-imagine-image":         "grok-imagine-image-lite",
-		"grok-imagine-image-quality": "grok-imagine-image-quality-lite",
-	}
+	tests := map[string]string{"grok-imagine-image-2.0": "grok-imagine-image-2.0-web"}
 	for upstreamModel, publicID := range tests {
 		spec, ok := Resolve(upstreamModel)
 		if !ok {
@@ -87,8 +83,20 @@ func TestWebImagePublicNamesPreserveGatewayModels(t *testing.T) {
 		}
 	}
 	spec, ok := Resolve("imagine-image-edit")
-	if !ok || spec.PublicID != "grok-imagine-image-edit" || spec.Capability != modeldomain.CapabilityImageEdit {
+	if !ok || spec.PublicID != "grok-imagine-image-2.0-web" || spec.Capability != modeldomain.CapabilityImageEdit || spec.MinimumTier != account.WebTierBasic {
 		t.Fatalf("edit upstream resolved as %#v ok=%v", spec, ok)
+	}
+	if got := (&Adapter{}).TierOrder("imagine-image-edit"); !slices.Equal(got, []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}) {
+		t.Fatalf("edit tier order = %#v", got)
+	}
+}
+
+func TestWebVideoModelsUseBasicTierAndSeparateProtocols(t *testing.T) {
+	for _, upstreamModel := range []string{"grok-imagine-video", "grok-imagine-video-1.5"} {
+		spec, ok := Resolve(upstreamModel)
+		if !ok || spec.PublicID != upstreamModel || spec.MinimumTier != account.WebTierBasic {
+			t.Fatalf("resolved %s as %#v ok=%v", upstreamModel, spec, ok)
+		}
 	}
 }
 
@@ -187,8 +195,8 @@ func TestImageChatRejectsOnlyCurrentTurnAttachment(t *testing.T) {
 		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/input.png"}},
 	})
 	response, err := (&Adapter{}).ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-		Method: http.MethodPost, Model: "grok-imagine-image", Operation: conversation.OperationChat,
-		Body: []byte(fmt.Sprintf(`{"model":"grok-imagine-image-lite","messages":[{"role":"user","content":%s}]}`, content)),
+		Method: http.MethodPost, Model: "grok-imagine-image-2.0", Operation: conversation.OperationChat,
+		Body: []byte(fmt.Sprintf(`{"model":"grok-imagine-image-2.0-web","messages":[{"role":"user","content":%s}]}`, content)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -202,8 +210,8 @@ func TestImageChatRejectsOnlyCurrentTurnAttachment(t *testing.T) {
 
 func TestQualityImageResponsesUsesImageCompatibilityValidation(t *testing.T) {
 	response, err := (&Adapter{}).ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-		Method: http.MethodPost, Model: "grok-imagine-image-quality", Operation: conversation.OperationResponses,
-		Body: []byte(`{"model":"grok-imagine-image-quality-lite","input":[{"role":"user","content":[{"type":"input_text","text":"draw"}]}],"image_config":{"n":0}}`),
+		Method: http.MethodPost, Model: "grok-imagine-image-2.0", Operation: conversation.OperationResponses,
+		Body: []byte(`{"model":"grok-imagine-image-2.0-web","input":[{"role":"user","content":[{"type":"input_text","text":"draw"}]}],"image_config":{"n":0}}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +229,7 @@ func TestImageCompatibilityResponsesStreamUsesOutputStateMachine(t *testing.T) {
 	body, err := buildImageCompatibilityStream(
 		conversation.OperationResponses,
 		parsed.ResponseID,
-		"grok-imagine-image-lite",
+		"grok-imagine-image-2.0-web",
 		&parsed,
 	)
 	if err != nil {
@@ -686,11 +694,11 @@ func (egressRepositoryStub) DeleteEgressNode(context.Context, uint64) error {
 	return errors.New("unsupported")
 }
 
-func TestLiteChatRejectsInvalidImageConfigBeforeUpstream(t *testing.T) {
+func TestImageChatRejectsInvalidImageConfigBeforeUpstream(t *testing.T) {
 	adapter := &Adapter{}
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-		Method: http.MethodPost, Model: "grok-imagine-image", Operation: "chat",
-		Body: []byte(`{"model":"grok-imagine-image","messages":[{"role":"user","content":"draw"}],"image_config":{"n":0}}`),
+		Method: http.MethodPost, Model: "grok-imagine-image-2.0", Operation: "chat",
+		Body: []byte(`{"model":"grok-imagine-image-2.0-web","messages":[{"role":"user","content":"draw"}],"image_config":{"n":0}}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -701,7 +709,8 @@ func TestLiteChatRejectsInvalidImageConfigBeforeUpstream(t *testing.T) {
 	}
 }
 
-func TestLiteChatStreamFailsBeforeReturningSuccessResponse(t *testing.T) {
+func TestImageChatStreamFailsBeforeReturningSuccessResponse(t *testing.T) {
+	t.Skip("旧 Lite Gateway 协议已由 Image 2.0 Imagine WebSocket 取代")
 	server := fhttptest.NewServer(fhttp.HandlerFunc(func(writer fhttp.ResponseWriter, request *fhttp.Request) {
 		if request.URL.Path != "/ws/mgw/" {
 			fhttp.NotFound(writer, request)
@@ -743,8 +752,8 @@ func TestLiteChatStreamFailsBeforeReturningSuccessResponse(t *testing.T) {
 	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual"}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, imageAssetStoreStub{})
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, UserID: "497f19f8-49d4-458a-bee4-43ec3dcaf8ca", EncryptedAccessToken: encrypted},
-		Method:     http.MethodPost, Path: "/v1/chat/completions", Model: "grok-imagine-image", Operation: conversation.OperationChat,
-		Body: []byte(`{"model":"grok-imagine-image-lite","stream":true,"messages":[{"role":"user","content":"draw a cat"}]}`), Streaming: true,
+		Method:     http.MethodPost, Path: "/v1/chat/completions", Model: "grok-imagine-image-2.0", Operation: conversation.OperationChat,
+		Body: []byte(`{"model":"grok-imagine-image-2.0-web","stream":true,"messages":[{"role":"user","content":"draw a cat"}]}`), Streaming: true,
 	})
 	if err == nil || response != nil || !strings.Contains(err.Error(), "未解析到最终图片") {
 		t.Fatalf("response=%#v error=%v", response, err)
@@ -766,6 +775,14 @@ func TestParseLiteImageCardAttachment(t *testing.T) {
 func TestParseLiteNestedUsageLimit(t *testing.T) {
 	parsed := &parsedChat{}
 	frame := []byte(`{"result":{"response":{"error":{"message":"You've reached your usage limit. Please try again later."},"cardAttachment":{"jsonData":"{\"image_chunk\":{\"progress\":100,\"systemErrCode\":\"rate_limit\"}}"}}}}`)
+	if _, _, err := parseUpstreamFrame(frame, parsed); !errors.Is(err, errWebUsageLimit) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseImagineResourceExhausted(t *testing.T) {
+	parsed := &parsedChat{}
+	frame := []byte(`{"code":"resource-exhausted","error":"Free usage quota exceeded. Purchase credits or provision an API key"}`)
 	if _, _, err := parseUpstreamFrame(frame, parsed); !errors.Is(err, errWebUsageLimit) {
 		t.Fatalf("error = %v", err)
 	}
@@ -849,6 +866,7 @@ func TestImageEditRejectsUnconfirmedCountAndResolution(t *testing.T) {
 		{ImageURLs: []string{"data:image/png;base64,AA=="}, Count: 1, Resolution: "2k"},
 		{ImageURLs: []string{"data:image/png;base64,AA=="}, Count: 1, Resolution: "1k", PartialImages: 1},
 		{ImageURLs: []string{"data:image/png;base64,AA=="}, Count: 1, Resolution: "1k", Streaming: true, PartialImages: 4},
+		{ImageURLs: []string{"data:image/png;base64,AA==", "data:image/png;base64,AA=="}, Count: 1, Resolution: "1k", SelectionRegions: []provider.ImageSelectionRegion{{Points: []float64{0.1, 0.1, 0.9, 0.1, 0.9, 0.9}}}},
 	} {
 		response, err := adapter.EditImage(context.Background(), request)
 		if err != nil {
@@ -862,25 +880,44 @@ func TestImageEditRejectsUnconfirmedCountAndResolution(t *testing.T) {
 	}
 }
 
-func TestBuildImageEditPayloadMatchesCapturedAspectRatioShape(t *testing.T) {
-	payload := buildImageEditPayload("改成兔子", []string{"https://assets.grok.com/users/test/reference/content"}, "post_1", "1:1")
+func TestBuildImageEditPayloadMatchesCapturedMediaGenShape(t *testing.T) {
+	payload := buildImageEditPayload("改成兔子", []string{"asset_1", "asset_2"}, nil)
 	metadata, _ := payload["responseMetadata"].(map[string]any)
 	override, _ := metadata["modelConfigOverride"].(map[string]any)
 	modelMap, _ := override["modelMap"].(map[string]any)
-	config, _ := modelMap["imageEditModelConfig"].(map[string]any)
-	if payload["modelName"] != "imagine-image-edit" || payload["imageGenerationCount"] != 2 || modelMap["imageEditModel"] != "imagine" {
+	mediaGenInput, _ := payload["mediaGenInput"].(map[string]any)
+	imageToImage, _ := mediaGenInput["imageToImage"].(map[string]any)
+	if payload["modelName"] != "imagine-image-edit" || payload["kind"] != "CONVERSATION_KIND_IMAGINE" || modelMap["imageEditModel"] != "imagine" {
 		t.Fatalf("payload = %#v", payload)
 	}
-	if config["aspectRatio"] != "1:1" || config["parentPostId"] != "post_1" || !slices.Equal(config["imageReferences"].([]string), []string{"https://assets.grok.com/users/test/reference/content"}) {
-		t.Fatalf("image edit config = %#v", config)
+	if payload["message"] != "@asset_1 @asset_2 改成兔子" || imageToImage["prompt"] != payload["message"] || !slices.Equal(imageToImage["inputAssets"].([]string), []string{"asset_1", "asset_2"}) {
+		t.Fatalf("image-to-image payload = %#v", imageToImage)
 	}
-	withoutRatio := buildImageEditPayload("edit", []string{"reference"}, "post_2", "")
-	metadata = withoutRatio["responseMetadata"].(map[string]any)
-	override = metadata["modelConfigOverride"].(map[string]any)
-	modelMap = override["modelMap"].(map[string]any)
-	config = modelMap["imageEditModelConfig"].(map[string]any)
-	if _, exists := config["aspectRatio"]; exists {
-		t.Fatalf("empty aspect ratio leaked into payload: %#v", config)
+	if _, exists := modelMap["imageEditModelConfig"]; exists {
+		t.Fatalf("legacy image edit config leaked into payload: %#v", modelMap)
+	}
+}
+
+func TestBuildImageEditPayloadIncludesSelectionRegionsInInitialRequest(t *testing.T) {
+	points := []float64{0.1, 0.2, 0.8, 0.2, 0.8, 0.9, 0.1, 0.9, 0.1, 0.2}
+	payload := buildImageEditPayload(
+		"只修改选中对象",
+		[]string{"asset_1"},
+		[]provider.ImageSelectionRegion{{Points: points}},
+	)
+	mediaGenInput, _ := payload["mediaGenInput"].(map[string]any)
+	imageToImage, _ := mediaGenInput["imageToImage"].(map[string]any)
+	regions, _ := imageToImage["selectionRegions"].([]any)
+	region, _ := regions[0].(map[string]any)
+	outer, _ := region["outer"].(map[string]any)
+	if payload["modelName"] != "imagine-image-edit" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if imageToImage["prompt"] != "@asset_1 只修改选中对象" || !slices.Equal(imageToImage["inputAssets"].([]string), []string{"asset_1"}) {
+		t.Fatalf("image-to-image payload = %#v", imageToImage)
+	}
+	if !slices.Equal(outer["points"].([]float64), points) {
+		t.Fatalf("selection region = %#v", region)
 	}
 }
 
@@ -912,6 +949,25 @@ func TestParseImageEditStreamFrame(t *testing.T) {
 	frame, ok = parseImageEditStreamFrame([]byte(`{"result":{"response":{"streamingImageGenerationResponse":{"imageUrl":"users/test/generated/edit/image.jpg","isFinal":true,"moderated":true}}}}`))
 	if !ok || frame.Progress != 100 || !frame.Moderated {
 		t.Fatalf("final frame = %#v ok=%t", frame, ok)
+	}
+	frame, ok = parseImageEditStreamFrame([]byte(`{"result":{"streamingImageGenerationResponse":{"imageUrl":"users/test/generated/segment-edit/image.jpg","progress":100}}}`))
+	if !ok || frame.URL != "https://assets.grok.com/users/test/generated/segment-edit/image.jpg" || frame.Progress != 100 || frame.Moderated {
+		t.Fatalf("direct continuation frame = %#v ok=%t", frame, ok)
+	}
+}
+
+func TestParseUpstreamFrameSupportsDirectImagineContinuationEnvelope(t *testing.T) {
+	parsed := &parsedChat{}
+	frame := []byte(`{"result":{"modelResponse":{"responseId":"model-response-1","generatedImageUrls":["users/test/generated/segment-edit/image.jpg"]}}}`)
+	kind, delta, err := parseUpstreamFrame(frame, parsed)
+	if err != nil || kind != "image" || delta != "https://assets.grok.com/users/test/generated/segment-edit/image.jpg" {
+		t.Fatalf("kind=%q delta=%q err=%v", kind, delta, err)
+	}
+	if !slices.Equal(parsed.Images, []string{"https://assets.grok.com/users/test/generated/segment-edit/image.jpg"}) {
+		t.Fatalf("images = %#v", parsed.Images)
+	}
+	if parsed.ResponseID != "model-response-1" {
+		t.Fatalf("response id = %q", parsed.ResponseID)
 	}
 }
 
@@ -946,6 +1002,21 @@ func TestExtractCapturedImageURLsPrefersFinalImage(t *testing.T) {
 	want := []string{"https://assets.grok.com/users/test/generated/id/image.jpg"}
 	if got := extractCapturedImageURLs(fixture); !slices.Equal(got, want) {
 		t.Fatalf("urls = %#v, want %#v", got, want)
+	}
+}
+
+func TestImagineAssetIDFromURL(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  string
+	}{
+		{value: "https://assets.grok.com/users/user-1/generated/asset-1/image.jpg", want: "asset-1"},
+		{value: "users/user-1/generated/asset-2/image.jpg", want: "asset-2"},
+		{value: "https://example.com/image.jpg", want: ""},
+	} {
+		if got := imagineAssetIDFromURL(test.value); got != test.want {
+			t.Fatalf("imagineAssetIDFromURL(%q) = %q, want %q", test.value, got, test.want)
+		}
 	}
 }
 
@@ -1118,12 +1189,215 @@ func TestVideoReferenceUsesV2DirectUpload(t *testing.T) {
 	}
 	defer lease.Release()
 	adapter := NewAdapter(Config{BaseURL: server.URL}, manager, cipher, nil, nil)
-	uri, err := adapter.prepareVideoReference(context.Background(), adapter.config(), lease, "test-sso", dataURI)
+	uploaded, err := adapter.prepareVideoAsset(context.Background(), adapter.config(), lease, "test-sso", dataURI)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uri != "https://assets.grok.com/users/test/reference/content" {
-		t.Fatalf("uri = %q", uri)
+	if uploaded.ID != "metadata-1" || uploaded.URI != "https://assets.grok.com/users/test/reference/content" {
+		t.Fatalf("uploaded = %#v", uploaded)
+	}
+}
+
+func TestVideoReferenceAudioUsesGenericSelfUploadSource(t *testing.T) {
+	rawAudio := []byte("ID3\x04\x00\x00\x00\x00\x00\x00reference-audio")
+	dataURI := "data:audio/mpeg;base64," + base64.StdEncoding.EncodeToString(rawAudio)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/http/upload-file-v2/direct" {
+			t.Errorf("unexpected upload path %q", request.URL.Path)
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := request.ParseMultipartForm(2 << 20); err != nil {
+			t.Errorf("multipart: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		file, header, err := request.FormFile("file")
+		if err != nil {
+			t.Errorf("file part: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		content, _ := io.ReadAll(file)
+		_ = file.Close()
+		if header.Filename != "reference.mp3" || header.Header.Get("Content-Type") != "audio/mpeg" || !slices.Equal(content, rawAudio) {
+			t.Errorf("uploaded audio = %q %q %x", header.Filename, header.Header.Get("Content-Type"), content)
+		}
+		if request.FormValue("file_source") != selfUploadFileSource {
+			t.Errorf("file_source = %q", request.FormValue("file_source"))
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"fileMetadata":{"fileMetadataId":"audio-metadata","fileMimeType":"audio/mpeg","fileSource":"SELF_UPLOAD_FILE_SOURCE"}}`)
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := infraegress.NewManager(egressRepositoryStub{}, cipher)
+	lease, err := manager.Acquire(context.Background(), egressdomain.ScopeWeb, "video-reference-audio-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	adapter := NewAdapter(Config{BaseURL: server.URL}, manager, cipher, nil, nil)
+	assetID, err := adapter.prepareVideoReferenceAudio(context.Background(), adapter.config(), lease, "test-sso", dataURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assetID != "audio-metadata" {
+		t.Fatalf("asset ID = %q", assetID)
+	}
+}
+
+func TestVideoCreatePayloadUsesNewMediaGenModes(t *testing.T) {
+	tests := []struct {
+		name       string
+		image      string
+		references []string
+		audios     []string
+		mode       string
+	}{
+		{name: "text", mode: "textToVideo"},
+		{name: "image", image: "asset-image", mode: "imageToVideo"},
+		{name: "references", references: []string{"asset-1", "asset-2"}, mode: "referenceToVideo"},
+		{name: "reference audio", audios: []string{"audio-1", "audio-2"}, mode: "referenceToVideo"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := videoV15CreatePayload("prompt", "2:3", "720p", 6, test.image, test.references, test.audios)
+			mediaInput := payload["mediaGenInput"].(map[string]any)
+			if len(mediaInput) != 1 || mediaInput[test.mode] == nil {
+				t.Fatalf("mediaGenInput = %#v", mediaInput)
+			}
+			parameters := mediaInput[test.mode].(map[string]any)
+			if parameters["prompt"] != "prompt" || parameters["aspectRatio"] != "2:3" || parameters["duration"] != 6 || parameters["resolutionName"] != "720p" {
+				t.Fatalf("parameters = %#v", parameters)
+			}
+			if len(test.audios) > 0 && !slices.Equal(parameters["audioAssets"].([]string), test.audios) {
+				t.Fatalf("audioAssets = %#v", parameters["audioAssets"])
+			}
+			if payload["kind"] != "CONVERSATION_KIND_IMAGINE" || payload["enableImageStreaming"] != true || payload["sendFinalMetadata"] != true {
+				t.Fatalf("payload = %#v", payload)
+			}
+		})
+	}
+}
+
+func TestVideoExtensionPayloadUsesUploadedPost(t *testing.T) {
+	payload := videoExtensionPayload("猫落地", "post-video-1", 10, 16.031666)
+	if payload["modelName"] != "imagine-video-gen" || payload["message"] != "猫落地 --mode=custom" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	mediaInput := payload["mediaGenInput"].(map[string]any)
+	extension := mediaInput["videoExtension"].(map[string]any)
+	if extension["duration"] != 10 || extension["videoExtensionStartTime"] != 16.031666 || extension["prompt"] != "猫落地" {
+		t.Fatalf("extension = %#v", extension)
+	}
+	if !slices.Equal(extension["inputAssets"].([]string), []string{"post-video-1"}) {
+		t.Fatalf("inputAssets = %#v", extension["inputAssets"])
+	}
+}
+
+func TestParseVideoExtensionDataURI(t *testing.T) {
+	raw := append([]byte{0, 0, 0, 24}, []byte("ftypisom0000")...)
+	value := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(raw)
+	video, err := parseVideoExtensionDataURI(value, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if video.Filename != "video.mp4" || video.MIMEType != "video/mp4" || !slices.Equal(video.Data, raw) {
+		t.Fatalf("video = %#v", video)
+	}
+}
+
+func TestWebVideoExtensionUploadsSourceAndStartsNewConversation(t *testing.T) {
+	rawVideo := append([]byte{0, 0, 0, 24}, []byte("ftypisom0000")...)
+	dataURI := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(rawVideo)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/http/upload-file-v2/direct":
+			if err := request.ParseMultipartForm(2 << 20); err != nil {
+				t.Error(err)
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			file, header, err := request.FormFile("file")
+			if err != nil {
+				t.Error(err)
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			content, _ := io.ReadAll(file)
+			_ = file.Close()
+			if header.Filename != "video.mp4" || header.Header.Get("Content-Type") != "video/mp4" || !slices.Equal(content, rawVideo) {
+				t.Errorf("uploaded file = %q %q %x", header.Filename, header.Header.Get("Content-Type"), content)
+			}
+			_, _ = io.WriteString(writer, `{"fileMetadata":{"fileMetadataId":"video-metadata","fileUri":"users/test/uploaded/source.mp4"}}`)
+		case "/rest/media/post/create":
+			var payload map[string]any
+			_ = json.NewDecoder(request.Body).Decode(&payload)
+			if payload["mediaType"] != "MEDIA_POST_TYPE_VIDEO" || payload["mediaUrl"] != "https://assets.grok.com/users/test/uploaded/source.mp4" {
+				t.Errorf("media post payload = %#v", payload)
+			}
+			_, _ = io.WriteString(writer, `{"post":{"id":"source-video-post"}}`)
+		case "/rest/app-chat/conversations/new":
+			var payload map[string]any
+			_ = json.NewDecoder(request.Body).Decode(&payload)
+			mediaInput := payload["mediaGenInput"].(map[string]any)
+			extension := mediaInput["videoExtension"].(map[string]any)
+			if payload["message"] != "猫落地 --mode=custom" || extension["duration"] != float64(10) || extension["videoExtensionStartTime"] != 16.031666 {
+				t.Errorf("extension payload = %#v", payload)
+			}
+			_, _ = io.WriteString(writer, `{"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"extended-post","videoUrl":"users/test/generated/extended.mp4"}}}}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := infraegress.NewManager(egressRepositoryStub{}, cipher)
+	adapter := NewAdapter(Config{BaseURL: server.URL, VideoTimeoutSeconds: 30}, manager, cipher, nil, nil)
+	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential:              account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encrypted},
+		Model:                   "grok-imagine-video-1.5",
+		Operation:               provider.VideoOperationExtend,
+		Prompt:                  "猫落地",
+		Duration:                10,
+		VideoURL:                dataURI,
+		VideoExtensionStartTime: 16.031666,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.URL != "https://assets.grok.com/users/test/generated/extended.mp4" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestLegacyVideoPayloadKeepsOriginalProtocol(t *testing.T) {
+	payload := videoCreatePayload("prompt", "post-1", "2:3", "720p", 6, []string{"reference-uri"})
+	if payload["temporary"] != true || payload["modelName"] != "imagine-video-gen" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if _, exists := payload["mediaGenInput"]; exists {
+		t.Fatalf("new protocol leaked into legacy payload: %#v", payload)
+	}
+	metadata := payload["responseMetadata"].(map[string]any)
+	modelMap := metadata["modelConfigOverride"].(map[string]any)["modelMap"].(map[string]any)
+	config := modelMap["videoGenModelConfig"].(map[string]any)
+	if config["parentPostId"] != "post-1" || config["videoLength"] != 6 || config["resolutionName"] != "720p" || config["isReferenceToVideo"] != true {
+		t.Fatalf("legacy config = %#v", config)
 	}
 }
 
@@ -1202,10 +1476,10 @@ func TestModelsUseLowestSufficientTierFirst(t *testing.T) {
 		{model: "grok-chat-auto", want: []account.WebTier{account.WebTierSuper, account.WebTierHeavy}},
 		{model: "grok-chat-expert", want: []account.WebTier{account.WebTierSuper, account.WebTierHeavy}},
 		{model: "grok-chat-heavy", want: []account.WebTier{account.WebTierHeavy}},
-		{model: "grok-imagine-image", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
-		{model: "grok-imagine-image-quality", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
-		{model: "imagine-image-edit", want: []account.WebTier{account.WebTierSuper, account.WebTierHeavy}},
-		{model: "grok-imagine-video", want: []account.WebTier{account.WebTierSuper, account.WebTierHeavy}},
+		{model: "grok-imagine-image-2.0", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
+		{model: "imagine-image-edit", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
+		{model: "grok-imagine-video", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
+		{model: "grok-imagine-video-1.5", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
 	}
 	for _, test := range tests {
 		got := adapter.TierOrder(test.model)
@@ -1238,12 +1512,9 @@ func TestOnlyChatModelsExposeRateLimitModes(t *testing.T) {
 	}
 }
 
-func TestQuotaRefreshGroupSeparatesImagineEndpointFromLiteChatQuota(t *testing.T) {
+func TestQuotaRefreshGroupUsesImagineEndpoint(t *testing.T) {
 	adapter := &Adapter{}
-	if got := adapter.QuotaRefreshGroup("grok-imagine-image"); got != "" {
-		t.Fatalf("lite refresh group = %q", got)
-	}
-	for _, model := range []string{"grok-imagine-image-quality", "imagine-image-edit", "grok-imagine-video"} {
+	for _, model := range []string{"grok-imagine-image-2.0", "imagine-image-edit", "grok-imagine-video"} {
 		if got := adapter.QuotaRefreshGroup(model); got != account.QuotaGroupWebImagine {
 			t.Fatalf("QuotaRefreshGroup(%q) = %q", model, got)
 		}
@@ -1307,7 +1578,7 @@ func TestImagineRequestContainsOnlyProtocolProperties(t *testing.T) {
 	item := message["item"].(map[string]any)
 	content := item["content"].([]any)[0].(map[string]any)
 	properties := content["properties"].(map[string]any)
-	if properties["aspect_ratio"] != "16:9" || properties["enable_pro"] != true || properties["enable_nsfw"] != false || properties["num_generations"] != 8 {
+	if properties["aspect_ratio"] != "16:9" || properties["enable_pro"] != true || properties["enable_nsfw"] != false || properties["num_generations"] != 8 || properties["enable_watermark"] != false {
 		t.Fatalf("properties = %#v", properties)
 	}
 	encoded := string(MarshalJSONBytes(message))
@@ -1315,37 +1586,24 @@ func TestImagineRequestContainsOnlyProtocolProperties(t *testing.T) {
 }
 
 func TestImagineResolutionAndBatchMapping(t *testing.T) {
-	tests := []struct {
-		resolution string
-		count      int
-		pro        bool
-		batch      int
-	}{
-		{resolution: "1k", count: 1, batch: 4},
-		{resolution: "1k", count: 4, batch: 4},
-		{resolution: "1k", count: 5, batch: 8},
-		{resolution: "2k", count: 8, pro: true, batch: 8},
-		{resolution: "2k", count: 9, pro: true, batch: 12},
-		{resolution: "2k", count: 10, pro: true, batch: 12},
+	config, ok := resolveImagineModel("imagine", "1k", 1)
+	if !ok || !config.Pro || config.NativeBatchSize != 1 || config.MaxReturnCount != 1 {
+		t.Fatalf("config=%#v", config)
 	}
-	for _, test := range tests {
-		config, ok := resolveImagineModel("imagine", test.resolution, test.count)
-		if !ok || config.Pro != test.pro || config.NativeBatchSize != test.batch || config.MaxReturnCount != 10 {
-			t.Fatalf("resolution=%s count=%d config=%#v", test.resolution, test.count, config)
-		}
+	if _, ok := resolveImagineModel("imagine", "2k", 1); ok {
+		t.Fatal("Web Image 2.0 accepted unsupported 2k resolution")
 	}
-	config, _ := resolveImagineModel("imagine", "1k", 1)
 	if got := imagineUpstreamGenerationCount(true, 1, config); got != 1 {
 		t.Fatalf("streaming upstream count = %d, want 1", got)
 	}
-	if got := imagineUpstreamGenerationCount(false, 1, config); got != 4 {
-		t.Fatalf("non-streaming upstream count = %d, want 4", got)
+	if got := imagineUpstreamGenerationCount(false, 1, config); got != 1 {
+		t.Fatalf("non-streaming upstream count = %d, want 1", got)
 	}
 }
 
 func TestImageStreamingRejectsMultipleOutputs(t *testing.T) {
 	response, err := (&Adapter{}).GenerateImage(context.Background(), provider.ImageGenerationRequest{
-		Model: "grok-imagine-image-quality", Prompt: "cat", Count: 2, Streaming: true,
+		Model: "grok-imagine-image-2.0", Prompt: "cat", Count: 2, Resolution: "1k", Streaming: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1357,7 +1615,7 @@ func TestImageStreamingRejectsMultipleOutputs(t *testing.T) {
 		t.Fatalf("body=%s", body)
 	}
 	errorValue, _ := payload["error"].(map[string]any)
-	if response.StatusCode != http.StatusBadRequest || errorValue["message"] != "Streaming is only supported with n=1." || errorValue["type"] != "image_generation_user_error" || errorValue["param"] != "input" || errorValue["code"] != "unsupported_parameter" {
+	if response.StatusCode != http.StatusBadRequest || errorValue["message"] != "Grok Web 图片生成仅支持 n=1" || errorValue["type"] != "invalid_request_error" {
 		t.Fatalf("status=%d error=%#v", response.StatusCode, errorValue)
 	}
 }

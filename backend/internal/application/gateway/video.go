@@ -53,10 +53,12 @@ type VideoInput struct {
 	ImageURL string
 	// ReferenceURLs are style/content references (official "reference_images").
 	ReferenceURLs []string
-	// ReferenceAudios are preset voice_ids for reference-to-video.
+	// ReferenceAudios are Web audio URLs or Base64 data URIs for reference-to-video.
 	ReferenceAudios []string
 	// VideoURL is required for edit/extend (official "video").
 	VideoURL string
+	// VideoExtensionStartTime selects the source timestamp continued by Web videoExtension.
+	VideoExtensionStartTime float64
 }
 
 func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job, error) {
@@ -119,6 +121,9 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 			if input.Duration < 2 || input.Duration > 10 {
 				return media.Job{}, fmt.Errorf("视频延长 duration 必须在 2 到 10 秒之间")
 			}
+			if input.VideoExtensionStartTime < 0 {
+				return media.Job{}, fmt.Errorf("video_extension_start_time 不能为负数")
+			}
 		}
 	}
 	allRefs := videoInputReferences(input.ImageURL, input.ReferenceURLs)
@@ -130,7 +135,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 			return media.Job{}, err
 		}
 	}
-	inputJSON, err := encodeVideoInputFull(operation, input.ImageURL, input.ReferenceURLs, input.ReferenceAudios, input.VideoURL)
+	inputJSON, err := encodeVideoInputFull(operation, input.ImageURL, input.ReferenceURLs, input.ReferenceAudios, input.VideoURL, input.VideoExtensionStartTime)
 	if err != nil {
 		return media.Job{}, err
 	}
@@ -138,20 +143,28 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, ErrModelNotFound
 	}
-	routes, err = routesForVideoOperation(routes, operation)
+	routes, err = routesForVideoOperation(routes, operation, input.VideoExtensionStartTime)
 	if err != nil {
 		return media.Job{}, err
 	}
-	route, selection, err := s.selectSchedulableMediaRouteWithQuotaMode(ctx, routes, input.ClientKey, model.CapabilityVideo, true, func(providerValue account.Provider) bool {
+	route, selection, err := s.selectSchedulableMediaRouteWithQuotaModeAndTier(ctx, routes, input.ClientKey, model.CapabilityVideo, true, func(providerValue account.Provider) bool {
 		_, ok := s.providers.Videos(providerValue)
 		return ok
 	}, func(route model.Route) string {
 		return videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), input.Resolution)
+	}, func(route model.Route) account.WebTier {
+		if route.Provider == account.ProviderWeb && strings.TrimSpace(route.UpstreamModel) == "grok-imagine-video-1.5" && strings.EqualFold(strings.TrimSpace(input.Resolution), "1080p") {
+			return account.WebTierHeavy
+		}
+		return ""
 	})
 	if err != nil {
 		return media.Job{}, err
 	}
-	if err := validateVideoRouteParameters(operation, route.UpstreamModel, input.Resolution, len(input.ReferenceURLs), input.Duration); err != nil {
+	if err := validateVideoRouteParameters(operation, route.Provider, route.UpstreamModel, input.Resolution, len(input.ReferenceURLs), len(input.ReferenceAudios), input.Duration); err != nil {
+		return media.Job{}, err
+	}
+	if err := validateVideoExtensionRoute(operation, route, input.Duration, input.VideoExtensionStartTime); err != nil {
 		return media.Job{}, err
 	}
 	if err := s.checkLedgerReady(); err != nil {
@@ -214,13 +227,14 @@ func isConsoleVideoUpstreamModel(upstreamModel string) bool {
 	}
 }
 
-func validateVideoRouteParameters(operation provider.VideoOperation, upstreamModel, resolution string, referenceCount, duration int) error {
+func validateVideoRouteParameters(operation provider.VideoOperation, providerValue account.Provider, upstreamModel, resolution string, referenceCount, referenceAudioCount, duration int) error {
 	if operation != provider.VideoOperationGenerate {
 		return nil
 	}
 	trimmedModel := strings.TrimSpace(upstreamModel)
 	hasReferences := referenceCount > 0
-	if isConsoleVideoUpstreamModel(trimmedModel) {
+	hasReferenceMode := hasReferences || referenceAudioCount > 0
+	if providerValue == account.ProviderConsole && isConsoleVideoUpstreamModel(trimmedModel) {
 		// 实测：8 张 reference_images 上游回 400
 		// "Too many reference images: 8. Maximum allowed is 7."（两个视频模型一致）。
 		if referenceCount > consoleVideoReferenceLimit {
@@ -233,25 +247,41 @@ func validateVideoRouteParameters(operation provider.VideoOperation, upstreamMod
 			return fmt.Errorf("%w: %s 的参考图生视频最长 %d 秒，当前为 %d 秒", ErrVideoOperationUnsupported, trimmedModel, consoleVideoReferenceMaxSeconds, duration)
 		}
 	}
+	if providerValue == account.ProviderWeb && trimmedModel == "grok-imagine-video-1.5" {
+		if duration < 6 || duration > 15 {
+			return fmt.Errorf("%w: Web grok-imagine-video-1.5 duration 必须在 6 到 15 秒之间", ErrVideoOperationUnsupported)
+		}
+		if referenceCount > consoleVideoReferenceLimit {
+			return fmt.Errorf("%w: reference_images 最多 %d 张，当前为 %d 张", ErrVideoOperationUnsupported, consoleVideoReferenceLimit, referenceCount)
+		}
+		resolution = strings.ToLower(strings.TrimSpace(resolution))
+		if resolution != "" && resolution != "480p" && resolution != "720p" && resolution != "1080p" {
+			return fmt.Errorf("%w: Web grok-imagine-video-1.5 仅支持 480p、720p 或 1080p", ErrVideoOperationUnsupported)
+		}
+	}
 	if !strings.EqualFold(strings.TrimSpace(resolution), "1080p") {
 		return nil
 	}
 	if trimmedModel != "grok-imagine-video-1.5" {
 		return fmt.Errorf("%w: %s 不支持 1080p", ErrVideoOperationUnsupported, upstreamModel)
 	}
-	if hasReferences {
+	if hasReferenceMode {
 		return fmt.Errorf("%w: reference_images 模式最高支持 720p", ErrVideoOperationUnsupported)
 	}
 	return nil
 }
 
-func routesForVideoOperation(routes []model.Route, operation provider.VideoOperation) ([]model.Route, error) {
+func routesForVideoOperation(routes []model.Route, operation provider.VideoOperation, extensionStartTime float64) ([]model.Route, error) {
 	if operation == provider.VideoOperationGenerate {
 		return routes, nil
 	}
 	compatible := make([]model.Route, 0, len(routes))
 	for _, candidate := range routes {
-		if candidate.Provider == account.ProviderConsole && strings.TrimSpace(candidate.UpstreamModel) == "grok-imagine-video" {
+		upstreamModel := strings.TrimSpace(candidate.UpstreamModel)
+		if candidate.Provider == account.ProviderConsole && upstreamModel == "grok-imagine-video" && extensionStartTime == 0 {
+			compatible = append(compatible, candidate)
+		}
+		if operation == provider.VideoOperationExtend && candidate.Provider == account.ProviderWeb && upstreamModel == "grok-imagine-video-1.5" && extensionStartTime > 0 {
 			compatible = append(compatible, candidate)
 		}
 	}
@@ -259,6 +289,20 @@ func routesForVideoOperation(routes []model.Route, operation provider.VideoOpera
 		return nil, ErrVideoOperationUnsupported
 	}
 	return compatible, nil
+}
+
+// validateVideoExtensionRoute applies the Web-only continuation timing contract after route resolution.
+func validateVideoExtensionRoute(operation provider.VideoOperation, route model.Route, duration int, startTime float64) error {
+	if operation != provider.VideoOperationExtend || route.Provider != account.ProviderWeb || strings.TrimSpace(route.UpstreamModel) != "grok-imagine-video-1.5" {
+		return nil
+	}
+	if duration < 6 || duration > 10 {
+		return fmt.Errorf("%w: Web 视频延长 duration 必须在 6 到 10 秒之间", ErrVideoOperationUnsupported)
+	}
+	if startTime <= 0 {
+		return fmt.Errorf("%w: Web 视频延长必须提供大于 0 的 video_extension_start_time", ErrVideoOperationUnsupported)
+	}
+	return nil
 }
 
 func resolveVideoPricing(operation provider.VideoOperation, upstreamModel, resolution string, duration, inputImages int) (audit.PricingResult, bool) {
@@ -476,8 +520,11 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	if err := s.mediaJobs.UpdateMediaJob(ctx, job); err != nil {
 		s.logger.Warn("video_job_progress_write_failed", "job_id", job.ID, "error", err)
 	}
-	imageReference, referenceInputs := decodeVideoInputParts(job.InputJSON)
+	imageReference, referenceInputs, videoInput := decodeVideoInputFull(job.InputJSON)
 	inputReferences := videoInputReferences(imageReference, referenceInputs)
+	if value := strings.TrimSpace(videoInput); value != "" {
+		inputReferences = append(inputReferences, value)
+	}
 	releaseInputSlot, err := s.acquireVideoInputSlot(ctx, inputReferences)
 	if err != nil {
 		s.deferVideoJob(parent, job)
@@ -584,6 +631,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			Operation: operation,
 			Prompt:    job.Prompt, Duration: duration, AspectRatio: aspectRatio, Resolution: resolution,
 			ImageURL: imageURL, ReferenceURLs: referenceURLs, ReferenceAudios: referenceAudios, VideoURL: videoURL,
+			VideoExtensionStartTime: decodeVideoExtensionStartTime(job.InputJSON),
 			Progress: func(value int) {
 				value = min(99, max(1, value))
 				if value-lastProgress < 5 {
@@ -1008,10 +1056,10 @@ func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationM
 }
 
 func encodeVideoInput(imageURL string, referenceURLs []string) (string, error) {
-	return encodeVideoInputFull(provider.VideoOperationGenerate, imageURL, referenceURLs, nil, "")
+	return encodeVideoInputFull(provider.VideoOperationGenerate, imageURL, referenceURLs, nil, "", 0)
 }
 
-func encodeVideoInputFull(operation provider.VideoOperation, imageURL string, referenceURLs []string, referenceAudios []string, videoURL string) (string, error) {
+func encodeVideoInputFull(operation provider.VideoOperation, imageURL string, referenceURLs []string, referenceAudios []string, videoURL string, extensionStartTime float64) (string, error) {
 	payload := map[string]any{}
 	if operation == "" {
 		operation = provider.VideoOperationGenerate
@@ -1037,6 +1085,9 @@ func encodeVideoInputFull(operation provider.VideoOperation, imageURL string, re
 	}
 	if value := strings.TrimSpace(videoURL); value != "" {
 		payload["video_url"] = value
+	}
+	if extensionStartTime > 0 {
+		payload["video_extension_start_time"] = extensionStartTime
 	}
 	// Keep a combined image_urls field for older readers/tools that only
 	// understand the pre-split shape. New workers prefer image_url/reference_urls.
@@ -1127,6 +1178,14 @@ func decodeVideoOperation(value string) provider.VideoOperation {
 	}
 }
 
+func decodeVideoExtensionStartTime(value string) float64 {
+	var input struct {
+		VideoExtensionStartTime float64 `json:"video_extension_start_time"`
+	}
+	_ = json.Unmarshal([]byte(value), &input)
+	return input.VideoExtensionStartTime
+}
+
 func (s *Service) resolveVideoJobInputs(ctx context.Context, operation provider.VideoOperation, inputJSON string) (string, []string, []string, string, error) {
 	_, _, referenceAudios, videoURL := decodeVideoInputDetailed(inputJSON)
 	resolvedImage, resolvedRefs, err := s.resolveVideoInputParts(ctx, inputJSON)
@@ -1154,8 +1213,10 @@ func validateVideoReferenceAudios(values []string) error {
 		return fmt.Errorf("reference_audios 最多 3 个")
 	}
 	for _, raw := range values {
-		if strings.TrimSpace(raw) == "" {
-			return fmt.Errorf("reference_audios.voice_id 不能为空")
+		value := strings.TrimSpace(raw)
+		lower := strings.ToLower(value)
+		if !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "data:audio/") {
+			return fmt.Errorf("reference_audios 每项必须是 HTTPS URL 或 Base64 音频数据")
 		}
 	}
 	return nil
@@ -1309,8 +1370,11 @@ func (s *Service) releaseVideoInputs(job media.Job) {
 	if s.mediaAssets == nil {
 		return
 	}
-	imageURL, referenceURLs := decodeVideoInputParts(job.InputJSON)
+	imageURL, referenceURLs, videoURL := decodeVideoInputFull(job.InputJSON)
 	references := videoInputReferences(imageURL, referenceURLs)
+	if value := strings.TrimSpace(videoURL); value != "" {
+		references = append(references, value)
+	}
 	if len(references) == 0 {
 		return
 	}

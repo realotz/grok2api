@@ -424,14 +424,17 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 	}
 	result := make([]account.RoutingCandidate, 0, len(values))
 	staticConsoleModel := provider == account.ProviderConsole && strings.TrimSpace(quotaMode) != ""
+	staticWebImageModel := provider == account.ProviderWeb && account.IsWebImageQuotaMode(quotaMode)
 	for _, value := range values {
 		capabilityKnown, supportsModel := known[value.ID], supported[value.ID]
-		if staticConsoleModel {
+		if staticConsoleModel || staticWebImageModel {
 			// Console exposes a provider-wide static catalog. Historical account
 			// snapshots may predate newly shipped catalog entries, but must not
 			// make those built-in routes unroutable until every account is synced
 			// again. A non-empty quota mode proves the adapter recognizes the
 			// upstream model; unknown/manual models keep snapshot-based gating.
+			// Web Image 2.0 generation and editing share the same account pool even
+			// when Grok omits the standalone edit model from an account snapshot.
 			capabilityKnown, supportsModel = true, true
 		} else if len(bound) > 0 {
 			capabilityKnown, supportsModel = true, true

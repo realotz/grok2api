@@ -182,7 +182,12 @@ func decodeImagineQuotaSnapshot(body []byte, accountID uint64, now time.Time) ([
 		if item.mode == "" {
 			continue
 		}
-		if *product.Available && (product.RemainingQueries == nil || product.WindowSizeSeconds == nil) {
+		// 上游现在可能只返回 available 与窗口长度，表示能力可用但不再公开
+		// 剩余次数。此时不制造定量窗口；分组替换会清理旧快照，路由继续按未知额度处理。
+		if *product.Available && product.RemainingQueries == nil {
+			continue
+		}
+		if *product.Available && product.WindowSizeSeconds == nil {
 			return nil, fmt.Errorf("Grok Web Imagine 配额字段 %s 结构不完整", item.field)
 		}
 		remaining := 0

@@ -2,15 +2,20 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
+	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
@@ -34,24 +39,30 @@ type ImageGenerationInput struct {
 
 // ImageEditInput 表示图片编辑用例已经完成协议校验后的输入。
 type ImageEditInput struct {
-	RequestID      string
-	ClientKey      clientkey.Key
-	PublicModel    string
-	Prompt         string
-	ImageURLs      []string
-	Count          int
-	Size           string
-	AspectRatio    string
-	Resolution     string
-	Quality        string
-	ResponseFormat string
-	Streaming      bool
-	PartialImages  int
+	RequestID        string
+	ClientKey        clientkey.Key
+	PublicModel      string
+	Prompt           string
+	ImageURLs        []string
+	Count            int
+	Size             string
+	AspectRatio      string
+	Resolution       string
+	Quality          string
+	ResponseFormat   string
+	Streaming        bool
+	PartialImages    int
+	SelectionRegions []provider.ImageSelectionRegion
 }
 
 type imageProviderSupport func(accountdomain.Provider) bool
 
 type imageExecution func(context.Context, accountdomain.Provider, accountdomain.Credential, string) (*provider.Response, error)
+
+type imageAssetReader interface {
+	OpenImage(ctx context.Context, id string) (mediadomain.Asset, io.ReadCloser, error)
+	PublicImageURL(id string) string
+}
 
 // GenerateImage 选择支持图片生成的路由和账号，并返回可统一审计的上游响应。
 func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput) (*Result, error) {
@@ -73,6 +84,11 @@ func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput)
 
 // EditImage 选择支持图片编辑的路由和账号，并返回可统一审计的上游响应。
 func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result, error) {
+	imageURLs, err := s.materializeLocalImageInputs(ctx, input.ImageURLs)
+	if err != nil {
+		return nil, err
+	}
+	selectionRegions := cloneImageSelectionRegions(input.SelectionRegions)
 	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImageEdit, modeldomain.CapabilityImageEdit, func(providerValue accountdomain.Provider) bool {
 		_, ok := s.providers.ImageEdit(providerValue)
 		return ok
@@ -83,11 +99,70 @@ func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result,
 		}
 		return adapter.EditImage(executionCtx, provider.ImageEditRequest{
 			Credential: credential, Model: upstream, Prompt: input.Prompt,
-			ImageURLs: input.ImageURLs, Count: input.Count, Size: input.Size, AspectRatio: input.AspectRatio,
+			ImageURLs: imageURLs, Count: input.Count, Size: input.Size, AspectRatio: input.AspectRatio,
 			Resolution: input.Resolution, Quality: input.Quality, ResponseFormat: input.ResponseFormat,
 			Streaming: input.Streaming, PartialImages: input.PartialImages,
+			SelectionRegions: selectionRegions,
 		})
 	}, input.Streaming, input.Resolution, input.Quality, input.Count, len(input.ImageURLs))
+}
+
+// cloneImageSelectionRegions 固化账号无关的归一化选区，换号重试时只重新上传原图。
+func cloneImageSelectionRegions(values []provider.ImageSelectionRegion) []provider.ImageSelectionRegion {
+	result := make([]provider.ImageSelectionRegion, len(values))
+	for index, value := range values {
+		result[index].Points = append([]float64(nil), value.Points...)
+	}
+	return result
+}
+
+// materializeLocalImageInputs 将本服务返回的媒体 URL 还原为可直接上传给上游的图片数据。
+func (s *Service) materializeLocalImageInputs(ctx context.Context, values []string) ([]string, error) {
+	result := append([]string(nil), values...)
+	reader, ok := s.mediaAssets.(imageAssetReader)
+	if !ok {
+		return result, nil
+	}
+	for index, raw := range result {
+		assetID, local := localImageAssetID(raw, reader)
+		if !local {
+			continue
+		}
+		asset, body, err := reader.OpenImage(ctx, assetID)
+		if err != nil {
+			return nil, fmt.Errorf("读取本地编辑图片 %s: %w", assetID, err)
+		}
+		data, readErr := io.ReadAll(body)
+		closeErr := body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("读取本地编辑图片 %s: %w", assetID, readErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("关闭本地编辑图片 %s: %w", assetID, closeErr)
+		}
+		result[index] = "data:" + asset.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(data)
+	}
+	return result, nil
+}
+
+func localImageAssetID(raw string, reader imageAssetReader) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	const prefix = "/v1/media/images/"
+	if !strings.HasPrefix(parsed.Path, prefix) {
+		return "", false
+	}
+	assetID := strings.TrimPrefix(parsed.Path, prefix)
+	if assetID == "" || strings.Contains(assetID, "/") {
+		return "", false
+	}
+	if parsed.IsAbs() && strings.TrimSuffix(reader.PublicImageURL(assetID), "/") != strings.TrimSuffix(trimmed, "/") {
+		return "", false
+	}
+	return assetID, true
 }
 
 func (s *Service) executeImage(

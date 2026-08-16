@@ -496,12 +496,19 @@ func TestDecodeImagineQuotaSnapshotAcceptsExplicitUnavailableProduct(t *testing.
 	}
 }
 
-func TestDecodeImagineQuotaSnapshotRejectsIncompleteAvailableProduct(t *testing.T) {
+func TestDecodeImagineQuotaSnapshotAcceptsAvailabilityOnlyProduct(t *testing.T) {
 	now := time.Now().UTC()
-	_, err := decodeImagineQuotaSnapshot([]byte(`{
-		"image":null,"imageEdit":null,"imagePro":{"available":true},"video":null,"video720p":null
+	windows, err := decodeImagineQuotaSnapshot([]byte(`{
+		"image":{"available":true,"windowSizeSeconds":64800},
+		"imageEdit":{"available":true,"windowSizeSeconds":64800},
+		"imagePro":{"available":true,"windowSizeSeconds":64800},
+		"video":{"available":true,"windowSizeSeconds":64800},
+		"video720p":{"available":true,"windowSizeSeconds":64800}
 	}`), 42, now)
-	if err == nil || !strings.Contains(err.Error(), "imagePro") {
-		t.Fatalf("err = %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windows) != 0 {
+		t.Fatalf("windows = %#v", windows)
 	}
 }

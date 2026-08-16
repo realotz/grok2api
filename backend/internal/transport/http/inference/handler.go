@@ -149,20 +149,27 @@ type imageEditJSONImage struct {
 	FileID string `json:"file_id"`
 }
 
+type imageEditJSONSelectionRegion struct {
+	Outer struct {
+		Points []float64 `json:"points"`
+	} `json:"outer"`
+}
+
 type imageEditJSONRequest struct {
-	Model          string               `json:"model"`
-	Prompt         string               `json:"prompt"`
-	Image          *imageEditJSONImage  `json:"image"`
-	Images         []imageEditJSONImage `json:"images"`
-	Count          *int                 `json:"n"`
-	Size           string               `json:"size"`
-	AspectRatio    string               `json:"aspect_ratio"`
-	Resolution     string               `json:"resolution"`
-	Quality        string               `json:"quality"`
-	ResponseFormat string               `json:"response_format"`
-	StorageOptions json.RawMessage      `json:"storage_options"`
-	Stream         bool                 `json:"stream"`
-	PartialImages  *int                 `json:"partial_images"`
+	Model            string                         `json:"model"`
+	Prompt           string                         `json:"prompt"`
+	Image            *imageEditJSONImage            `json:"image"`
+	Images           []imageEditJSONImage           `json:"images"`
+	Count            *int                           `json:"n"`
+	Size             string                         `json:"size"`
+	AspectRatio      string                         `json:"aspect_ratio"`
+	Resolution       string                         `json:"resolution"`
+	Quality          string                         `json:"quality"`
+	ResponseFormat   string                         `json:"response_format"`
+	StorageOptions   json.RawMessage                `json:"storage_options"`
+	Stream           bool                           `json:"stream"`
+	PartialImages    *int                           `json:"partial_images"`
+	SelectionRegions []imageEditJSONSelectionRegion `json:"selection_regions"`
 }
 
 type videoGenerationImage struct {
@@ -171,22 +178,25 @@ type videoGenerationImage struct {
 }
 
 type videoGenerationAudio struct {
-	VoiceID string `json:"voice_id"`
+	URL    string `json:"url"`
+	Data   string `json:"data"`
+	Format string `json:"format"`
 }
 
 type videoGenerationRequest struct {
-	Model           string                 `json:"model"`
-	Prompt          string                 `json:"prompt"`
-	User            *string                `json:"user"`
-	Duration        json.RawMessage        `json:"duration"`
-	AspectRatio     string                 `json:"aspect_ratio"`
-	Resolution      string                 `json:"resolution"`
-	Image           *videoGenerationImage  `json:"image"`
-	ReferenceImages []videoGenerationImage `json:"reference_images"`
-	ReferenceAudios []videoGenerationAudio `json:"reference_audios"`
-	Video           *videoGenerationImage  `json:"video"`
-	Output          json.RawMessage        `json:"output"`
-	StorageOptions  json.RawMessage        `json:"storage_options"`
+	Model                   string                 `json:"model"`
+	Prompt                  string                 `json:"prompt"`
+	User                    *string                `json:"user"`
+	Duration                json.RawMessage        `json:"duration"`
+	AspectRatio             string                 `json:"aspect_ratio"`
+	Resolution              string                 `json:"resolution"`
+	Image                   *videoGenerationImage  `json:"image"`
+	ReferenceImages         []videoGenerationImage `json:"reference_images"`
+	ReferenceAudios         []videoGenerationAudio `json:"reference_audios"`
+	Video                   *videoGenerationImage  `json:"video"`
+	VideoExtensionStartTime float64                `json:"video_extension_start_time"`
+	Output                  json.RawMessage        `json:"output"`
+	StorageOptions          json.RawMessage        `json:"storage_options"`
 }
 
 type modelListItem struct {
@@ -392,15 +402,11 @@ func (h *Handler) generateImage(c *gin.Context) {
 	}
 	count := 1
 	if request.Count != nil {
-		if *request.Count < 1 || *request.Count > 10 {
-			writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "n 必须在 1 到 10 之间")
+		if *request.Count != 1 {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "n 仅支持 1")
 			return
 		}
 		count = *request.Count
-	}
-	if request.Stream && count != 1 {
-		writeImageGenerationUserError(c, "unsupported_parameter", "input", "Streaming is only supported with n=1.")
-		return
 	}
 	partialImages := 0
 	if request.PartialImages != nil {
@@ -613,8 +619,8 @@ func (h *Handler) editImage(c *gin.Context) {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片编辑缺少有效 model 或 prompt")
 		return
 	}
-	if count < 1 || count > 10 {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "n 必须在 1 到 10 之间")
+	if count != 1 {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "n 仅支持 1")
 		return
 	}
 	partialImages := 0
@@ -647,6 +653,33 @@ func (h *Handler) editImage(c *gin.Context) {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "resolution 必须是 1k 或 2k")
 		return
 	}
+	selectionRegions := make([]provider.ImageSelectionRegion, 0, len(request.SelectionRegions))
+	if len(request.SelectionRegions) > 1 {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "selection_regions 当前仅支持一个选区")
+		return
+	}
+	for _, region := range request.SelectionRegions {
+		points := region.Outer.Points
+		if len(points) < 6 || len(points) > 128 || len(points)%2 != 0 {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "selection_regions.outer.points 必须包含 3 到 64 个坐标点")
+			return
+		}
+		for _, point := range points {
+			if math.IsNaN(point) || math.IsInf(point, 0) || point < 0 || point > 1 {
+				writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "selection_regions 坐标必须在 0 到 1 之间")
+				return
+			}
+		}
+		selectionRegions = append(selectionRegions, provider.ImageSelectionRegion{Points: append([]float64(nil), points...)})
+	}
+	if len(selectionRegions) > 0 && request.Stream {
+		writeOpenAIError(c, http.StatusBadRequest, "unsupported_parameter", "selection_regions 暂不支持 stream=true")
+		return
+	}
+	if len(selectionRegions) > 0 && len(imageURLs) != 1 {
+		writeOpenAIError(c, http.StatusBadRequest, "unsupported_parameter", "蒙版编辑仅支持一张待编辑图片，不支持额外参考图")
+		return
+	}
 	quality := strings.ToLower(strings.TrimSpace(request.Quality))
 	if quality != "" && quality != "low" && quality != "medium" {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "quality 必须是 low 或 medium")
@@ -660,7 +693,7 @@ func (h *Handler) editImage(c *gin.Context) {
 		RequestID: requestID, ClientKey: clientKey, PublicModel: model, Prompt: prompt,
 		ImageURLs: imageURLs, Count: count, Size: size, AspectRatio: aspectRatio,
 		Resolution: resolution, Quality: quality, ResponseFormat: request.ResponseFormat,
-		Streaming: request.Stream, PartialImages: partialImages,
+		Streaming: request.Stream, PartialImages: partialImages, SelectionRegions: selectionRegions,
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -748,8 +781,13 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 	referenceURLs := []string{}
 	referenceAudios := []string{}
 	videoURL := ""
+	videoExtensionStartTime := 0.0
 
 	if operation == gatewayVideoOperationGenerate {
+		if len(request.ReferenceAudios) > 0 {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "reference_audios 暂不支持")
+			return
+		}
 		var err error
 		duration, err = parseVideoDuration(request.Duration)
 		if err != nil {
@@ -789,12 +827,22 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		}
 		referenceAudios = make([]string, 0, len(request.ReferenceAudios))
 		for i, input := range request.ReferenceAudios {
-			voiceID := strings.TrimSpace(input.VoiceID)
-			if voiceID == "" {
-				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_audios[%d].voice_id 不能为空", i))
+			audioURL := strings.TrimSpace(input.URL)
+			audioData := strings.Join(strings.Fields(input.Data), "")
+			if (audioURL == "") == (audioData == "") {
+				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_audios[%d] 必须且只能提供 url 或 data", i))
 				return
 			}
-			referenceAudios = append(referenceAudios, voiceID)
+			if audioURL != "" {
+				referenceAudios = append(referenceAudios, audioURL)
+			} else {
+				mimeType := referenceAudioMIME(input.Format)
+				if mimeType == "" {
+					writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_audios[%d].format 必须是 mp3、wav、m4a、aac、ogg、webm 或 flac", i))
+					return
+				}
+				referenceAudios = append(referenceAudios, "data:"+mimeType+";base64,"+audioData)
+			}
 		}
 		if len(referenceAudios) > 3 {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "reference_audios 最多 3 个")
@@ -870,6 +918,11 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "视频延长 duration 必须在 2 到 10 秒之间")
 				return
 			}
+			videoExtensionStartTime = request.VideoExtensionStartTime
+			if videoExtensionStartTime < 0 {
+				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "video_extension_start_time 不能为负数")
+				return
+			}
 		}
 	}
 
@@ -891,12 +944,34 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		Operation: op,
 		Prompt:    prompt, Duration: duration, AspectRatio: aspectRatio, Resolution: resolution,
 		ImageURL: imageURL, ReferenceURLs: referenceURLs, ReferenceAudios: referenceAudios, VideoURL: videoURL,
+		VideoExtensionStartTime: videoExtensionStartTime,
 	})
 	if err != nil {
 		writeGatewayError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"request_id": job.ID})
+}
+
+func referenceAudioMIME(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "mp3", "mpeg":
+		return "audio/mpeg"
+	case "wav":
+		return "audio/wav"
+	case "m4a", "mp4":
+		return "audio/mp4"
+	case "aac":
+		return "audio/aac"
+	case "ogg":
+		return "audio/ogg"
+	case "webm":
+		return "audio/webm"
+	case "flac":
+		return "audio/flac"
+	default:
+		return ""
+	}
 }
 
 func (h *Handler) getVideo(c *gin.Context) {

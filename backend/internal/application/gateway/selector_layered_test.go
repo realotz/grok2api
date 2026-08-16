@@ -818,6 +818,26 @@ func TestAssembleRoutingCandidatesAllowsRecognizedStaticConsoleModelWithStaleSna
 	}
 }
 
+func TestAssembleRoutingCandidatesAllowsWebImageWithMissingEditCapability(t *testing.T) {
+	bases := []account.RoutingAccountBase{{Credential: account.Credential{
+		ID: 1, Provider: account.ProviderWeb, Enabled: true, AuthStatus: account.AuthStatusActive,
+	}}}
+	overlay := account.RoutingOverlaySnapshot{Values: []account.RoutingAccountOverlay{{
+		AccountID: 1, ModelCapabilityKnown: true, SupportsModel: false,
+	}}}
+
+	for _, mode := range []string{account.QuotaModeWebImagePro, account.QuotaModeWebImageEdit} {
+		candidates := assembleRoutingCandidates(account.ProviderWeb, mode, bases, overlay)
+		if len(candidates) != 1 || !candidates[0].ModelCapabilityKnown || !candidates[0].SupportsModel {
+			t.Fatalf("Web image candidates for %s = %#v", mode, candidates)
+		}
+	}
+	video := assembleRoutingCandidates(account.ProviderWeb, account.QuotaModeWebVideo, bases, overlay)
+	if len(video) != 1 || !video[0].ModelCapabilityKnown || video[0].SupportsModel {
+		t.Fatalf("Web video must retain capability gating: %#v", video)
+	}
+}
+
 func newLayeredRepositoryFixture() *layeredAccountRepository {
 	return &layeredAccountRepository{
 		bases: []account.RoutingAccountBase{{Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, Enabled: true, AuthStatus: account.AuthStatusActive}}},

@@ -471,19 +471,24 @@ type ImageInput struct {
 	Data     []byte
 }
 
+type ImageSelectionRegion struct {
+	Points []float64
+}
+
 type ImageEditRequest struct {
-	Credential     account.Credential
-	Model          string
-	Prompt         string
-	ImageURLs      []string
-	Count          int
-	Size           string
-	AspectRatio    string
-	Resolution     string
-	Quality        string
-	ResponseFormat string
-	Streaming      bool
-	PartialImages  int
+	Credential       account.Credential
+	Model            string
+	Prompt           string
+	ImageURLs        []string
+	Count            int
+	Size             string
+	AspectRatio      string
+	Resolution       string
+	Quality          string
+	ResponseFormat   string
+	Streaming        bool
+	PartialImages    int
+	SelectionRegions []ImageSelectionRegion
 }
 
 // VideoOperation selects the official xAI video endpoint family.
@@ -515,12 +520,14 @@ type VideoRequest struct {
 	// A single reference must stay in reference_images and must not be coerced to image.
 	// Official docs forbid combining image with reference_images.
 	ReferenceURLs []string
-	// ReferenceAudios are preset voice_ids for reference-to-video (official "reference_audios").
-	// At most 3 entries; may be used alone or with reference_images.
+	// ReferenceAudios are Web audio URLs or Base64 data URIs for reference-to-video.
+	// Sources are uploaded with the selected account before audioAssets is built.
 	ReferenceAudios []string
 	// VideoURL is required for edit/extend (official "video" field).
 	VideoURL string
-	Progress func(int)
+	// VideoExtensionStartTime is the source-video continuation point used by Grok Web videoExtension.
+	VideoExtensionStartTime float64
+	Progress                func(int)
 }
 
 type VideoResult struct {

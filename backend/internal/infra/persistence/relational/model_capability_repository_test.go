@@ -119,6 +119,48 @@ func TestConsoleBuiltInModelIgnoresStaleAccountCapabilitySnapshot(t *testing.T) 
 	}
 }
 
+func TestWebImageModelIgnoresMissingStandaloneEditCapability(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accounts := NewAccountRepository(database)
+	models := NewModelRepository(database)
+
+	credential, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, Name: "web-basic", SourceKey: "web-basic",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := models.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-chat-fast"}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		upstreamModel string
+		quotaMode     string
+	}{
+		{upstreamModel: "grok-imagine-image-2.0", quotaMode: account.QuotaModeWebImagePro},
+		{upstreamModel: "imagine-image-edit", quotaMode: account.QuotaModeWebImageEdit},
+	} {
+		candidates, listErr := accounts.ListRoutingCandidates(ctx, account.ProviderWeb, 0, test.upstreamModel, test.quotaMode)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		if len(candidates) != 1 || !candidates[0].ModelCapabilityKnown || !candidates[0].SupportsModel {
+			t.Fatalf("Web image candidates for %s = %#v", test.upstreamModel, candidates)
+		}
+	}
+
+	video, err := accounts.ListRoutingCandidates(ctx, account.ProviderWeb, 0, "grok-imagine-video", account.QuotaModeWebVideo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(video) != 1 || !video[0].ModelCapabilityKnown || video[0].SupportsModel {
+		t.Fatalf("Web video must retain capability gating: %#v", video)
+	}
+}
+
 func TestConsoleCatalogRoutesUseAutomaticAccountPoolWithoutCapabilitySnapshot(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
@@ -814,7 +856,7 @@ func TestWebRediscoveryRestoresCatalogRouteDefaults(t *testing.T) {
 	database := openTestDatabase(t)
 	repo := NewModelRepository(database)
 	value, err := repo.Create(ctx, model.Route{
-		PublicID: "grok-imagine-image-edit", Provider: account.ProviderWeb, UpstreamModel: "imagine-image-edit",
+		PublicID: "grok-imagine-image-2.0-web", Provider: account.ProviderWeb, UpstreamModel: "imagine-image-edit",
 		Capability: model.CapabilityImageEdit, Enabled: true,
 	}, nil)
 	if err != nil {
@@ -835,22 +877,17 @@ func TestWebRediscoveryRestoresCatalogRouteDefaults(t *testing.T) {
 	}
 }
 
-func TestWebImageRediscoveryUsesLitePublicNames(t *testing.T) {
+func TestWebImageRediscoveryUsesImage20PublicName(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
 	repo := NewModelRepository(database)
-	tests := map[string]string{
-		"grok-imagine-image":         "Web/grok-imagine-image-lite",
-		"grok-imagine-image-quality": "Web/grok-imagine-image-quality-lite",
+	const upstreamModel = "grok-imagine-image-2.0"
+	if err := repo.UpsertDiscovered(ctx, account.ProviderWeb, []string{upstreamModel}); err != nil {
+		t.Fatal(err)
 	}
-	for upstreamModel, publicID := range tests {
-		if err := repo.UpsertDiscovered(ctx, account.ProviderWeb, []string{upstreamModel}); err != nil {
-			t.Fatal(err)
-		}
-		route, err := repo.GetByPublicIDIncludingDisabled(ctx, publicID)
-		if err != nil || route.UpstreamModel != upstreamModel || route.Capability != model.CapabilityImage {
-			t.Fatalf("rediscovered %s as %#v, err=%v", upstreamModel, route, err)
-		}
+	route, err := repo.GetByPublicIDIncludingDisabled(ctx, "Web/grok-imagine-image-2.0-web")
+	if err != nil || route.UpstreamModel != upstreamModel || route.Capability != model.CapabilityImage {
+		t.Fatalf("rediscovered %s as %#v, err=%v", upstreamModel, route, err)
 	}
 }
 
