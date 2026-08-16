@@ -130,7 +130,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, ErrModelNotFound
 	}
-	routes, err = routesForVideoOperation(routes, operation)
+	routes, err = routesForVideoOperation(routes, operation, input.VideoExtensionStartTime)
 	if err != nil {
 		return media.Job{}, err
 	}
@@ -142,7 +142,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, err
 	}
-	routes, err = routesForVideoParameters(routes, operation, input.Resolution, len(input.ReferenceURLs), input.Duration)
+	routes, err = routesForVideoParameters(routes, operation, input.Resolution, len(input.ReferenceURLs), len(input.ReferenceAudios), input.Duration)
 	if err != nil {
 		return media.Job{}, err
 	}
@@ -159,7 +159,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, err
 	}
-	route, selection, err := s.selectSchedulableEligibleMediaRouteWithQuotaMode(ctx, routes, input.ClientKey, true, func(route model.Route) string {
+	route, selection, err := s.selectSchedulableEligibleMediaRouteWithQuotaModeAndTier(ctx, routes, input.ClientKey, true, func(route model.Route) string {
 		return videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), input.Resolution)
 	}, func(route model.Route) account.WebTier {
 		if route.Provider == account.ProviderWeb && strings.TrimSpace(route.UpstreamModel) == "grok-imagine-video-1.5" && strings.EqualFold(strings.TrimSpace(input.Resolution), "1080p") {
@@ -217,14 +217,14 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 // Callers must first apply capability, client-key, and Provider eligibility:
 // the same public model may aggregate Console, Build, and Web routes with
 // different input contracts.
-func routesForVideoParameters(routes []model.Route, operation provider.VideoOperation, resolution string, referenceCount, duration int) ([]model.Route, error) {
+func routesForVideoParameters(routes []model.Route, operation provider.VideoOperation, resolution string, referenceCount, referenceAudioCount, duration int) ([]model.Route, error) {
 	if len(routes) == 0 {
 		return routes, nil
 	}
 	compatible := make([]model.Route, 0, len(routes))
 	var firstErr error
 	for _, candidate := range routes {
-		if err := validateVideoRouteParameters(candidate.Provider, operation, candidate.UpstreamModel, resolution, referenceCount, duration); err != nil {
+		if err := validateVideoRouteParameters(operation, candidate.Provider, candidate.UpstreamModel, resolution, referenceCount, referenceAudioCount, duration); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -241,12 +241,13 @@ func routesForVideoParameters(routes []model.Route, operation provider.VideoOper
 // Console 视频输入的上限与时长按「Provider + 入口字段 + 上游模型」分档。
 // /v1/videos/generations 是异步接口，只在 adapter 层拦截会产出必然失败的任务；
 // adapter 仍保留同一约束，作为最终出站边界的防御校验。
-func validateVideoRouteParameters(providerValue account.Provider, operation provider.VideoOperation, upstreamModel, resolution string, referenceCount, duration int) error {
+func validateVideoRouteParameters(operation provider.VideoOperation, providerValue account.Provider, upstreamModel, resolution string, referenceCount, referenceAudioCount, duration int) error {
 	if operation != provider.VideoOperationGenerate {
 		return nil
 	}
 	trimmedModel := strings.TrimSpace(upstreamModel)
 	hasReferences := referenceCount > 0
+	hasReferenceMode := hasReferences || referenceAudioCount > 0
 	if providerValue == account.ProviderConsole && (trimmedModel == "grok-imagine-video" || trimmedModel == "grok-imagine-video-1.5") {
 		// 实测：8 张 reference_images 上游回 400
 		// "Too many reference images: 8. Maximum allowed is 7."（两个视频模型一致）。
@@ -264,8 +265,8 @@ func validateVideoRouteParameters(providerValue account.Provider, operation prov
 		if duration < 6 || duration > 15 {
 			return fmt.Errorf("%w: Web grok-imagine-video-1.5 duration 必须在 6 到 15 秒之间", ErrVideoOperationUnsupported)
 		}
-		if referenceCount > consoleVideoReferenceLimit {
-			return fmt.Errorf("%w: reference_images 最多 %d 张，当前为 %d 张", ErrVideoOperationUnsupported, consoleVideoReferenceLimit, referenceCount)
+		if referenceCount > media.MaxInputImages {
+			return fmt.Errorf("%w: Web reference_images 最多 %d 张，当前为 %d 张", ErrVideoOperationUnsupported, media.MaxInputImages, referenceCount)
 		}
 		resolution = strings.ToLower(strings.TrimSpace(resolution))
 		if resolution != "" && resolution != "480p" && resolution != "720p" && resolution != "1080p" {

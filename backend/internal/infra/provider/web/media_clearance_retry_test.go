@@ -68,6 +68,11 @@ func TestGenerateWSImageReacquiresAfterChallengeHandshake(t *testing.T) {
 			writeTestClearanceSolution(t, writer, solverCalls.Add(1))
 			return
 		}
+		if request.URL.Path == "/rest/media/segment" {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"cached":true,"map":{"objects":[]}}`))
+			return
+		}
 		if request.URL.Path != "/ws/imagine/listen" {
 			fhttp.NotFound(writer, request)
 			return
@@ -125,88 +130,6 @@ func TestGenerateWSImageReacquiresAfterChallengeHandshake(t *testing.T) {
 	}
 }
 
-func TestGenerateLiteImageReacquiresAfterChallengeHandshake(t *testing.T) {
-	var handshakes atomic.Int32
-	var solverCalls atomic.Int32
-	server := fhttptest.NewServer(fhttp.HandlerFunc(func(writer fhttp.ResponseWriter, request *fhttp.Request) {
-		if request.URL.Path == "/v1" {
-			writeTestClearanceSolution(t, writer, solverCalls.Add(1))
-			return
-		}
-		if request.URL.Path != "/ws/mgw/" {
-			fhttp.NotFound(writer, request)
-			return
-		}
-		handshake := handshakes.Add(1)
-		if !strings.Contains(request.Header.Get("Cookie"), fmt.Sprintf("cf_clearance=clearance-%d", handshake)) {
-			t.Errorf("handshake %d did not use refreshed Clearance: %q", handshake, request.Header.Get("Cookie"))
-		}
-		if handshake == 1 {
-			writer.Header().Set("Content-Type", "text/html")
-			writer.WriteHeader(http.StatusForbidden)
-			_, _ = writer.Write([]byte("<!doctype html><title>Just a moment...</title>"))
-			return
-		}
-		connection, err := (&websocket.Upgrader{CheckOrigin: func(*fhttp.Request) bool { return true }}).Upgrade(writer, request, nil)
-		if err != nil {
-			t.Errorf("upgrade Gateway WebSocket: %v", err)
-			return
-		}
-		defer connection.Close()
-		var initial map[string]any
-		if err := connection.ReadJSON(&initial); err != nil {
-			t.Errorf("read Gateway session: %v", err)
-			return
-		}
-		event, _ := initial["event"].(map[string]any)
-		eventID, _ := event["event_id"].(string)
-		_ = connection.WriteJSON(map[string]any{
-			"session_id": "session-1", "event": map[string]any{"type": "session.created", "client_event_id": eventID},
-		})
-		_ = connection.WriteJSON(map[string]any{
-			"session_id": "session-1", "event": map[string]any{"type": "conversation.attached", "conversation": map[string]any{"id": "session-1"}},
-		})
-		for range 2 {
-			var message map[string]any
-			if err := connection.ReadJSON(&message); err != nil {
-				t.Errorf("read Gateway turn: %v", err)
-				return
-			}
-		}
-		_ = connection.WriteJSON(map[string]any{
-			"session_id": "session-1",
-			"event": map[string]any{
-				"type": "response.grok.output",
-				"output": map[string]any{"card_attachment": map[string]any{"jsonData": map[string]any{
-					"id": "card-1", "image_chunk": map[string]any{"progress": 100, "imageUrl": "users/test/generated/image.jpg", "moderated": false},
-				}}},
-			},
-		})
-	}))
-	defer server.Close()
-
-	adapter, credential := testMediaAdapter(t, server.URL)
-	enableTestClearance(adapter, server.URL)
-	credential.UserID = "497f19f8-49d4-458a-bee4-43ec3dcaf8ca"
-	spec, ok := Resolve("grok-imagine-image")
-	if !ok {
-		t.Fatal("missing Lite image model")
-	}
-	rawURL, err := adapter.generateLiteImageURL(context.Background(), credential, spec, "draw a teapot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rawURL != "https://assets.grok.com/users/test/generated/image.jpg" {
-		t.Fatalf("url=%q", rawURL)
-	}
-	if got := handshakes.Load(); got != 2 {
-		t.Fatalf("handshakes=%d, want 2", got)
-	}
-	if got := solverCalls.Load(); got != 2 {
-		t.Fatalf("solver calls=%d, want 2", got)
-	}
-}
-
 func TestStructuredImageForbiddenDoesNotInvalidateClearance(t *testing.T) {
 	var handshakes atomic.Int32
 	var solverCalls atomic.Int32
@@ -229,7 +152,7 @@ func TestStructuredImageForbiddenDoesNotInvalidateClearance(t *testing.T) {
 	enableTestClearance(adapter, server.URL)
 	for range 2 {
 		response, err := adapter.GenerateImage(context.Background(), provider.ImageGenerationRequest{
-			Credential: credential, Model: "grok-imagine-image-quality", Prompt: "draw a teapot", Count: 1,
+			Credential: credential, Model: "grok-imagine-image-2.0", Prompt: "draw a teapot", Count: 1,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -248,14 +171,14 @@ func TestStructuredImageForbiddenDoesNotInvalidateClearance(t *testing.T) {
 	}
 }
 
-func TestLiteChallengeRetryExhaustionReturnsNormalizedJSON(t *testing.T) {
+func TestImagineChallengeRetryExhaustionReturnsNormalizedJSON(t *testing.T) {
 	var handshakes atomic.Int32
 	var solverCalls atomic.Int32
 	server := fhttptest.NewServer(fhttp.HandlerFunc(func(writer fhttp.ResponseWriter, request *fhttp.Request) {
 		switch request.URL.Path {
 		case "/v1":
 			writeTestClearanceSolution(t, writer, solverCalls.Add(1))
-		case "/ws/mgw/":
+		case "/ws/imagine/listen":
 			handshakes.Add(1)
 			writer.Header().Set("Content-Type", "text/html")
 			writer.WriteHeader(http.StatusForbidden)
@@ -268,9 +191,8 @@ func TestLiteChallengeRetryExhaustionReturnsNormalizedJSON(t *testing.T) {
 
 	adapter, credential := testMediaAdapter(t, server.URL)
 	enableTestClearance(adapter, server.URL)
-	credential.UserID = "497f19f8-49d4-458a-bee4-43ec3dcaf8ca"
 	response, err := adapter.GenerateImage(context.Background(), provider.ImageGenerationRequest{
-		Credential: credential, Model: "grok-imagine-image", Prompt: "draw a teapot", Count: 1,
+		Credential: credential, Model: "grok-imagine-image-2.0", Prompt: "draw a teapot", Count: 1,
 	})
 	if err != nil {
 		t.Fatal(err)

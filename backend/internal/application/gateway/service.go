@@ -858,7 +858,7 @@ func (s *Service) selectSchedulableMediaRouteWithQuotaModeAndTier(ctx context.Co
 	if err != nil {
 		return fallback, nil, err
 	}
-	return s.selectSchedulableEligibleMediaRouteWithQuotaMode(ctx, eligible, key, consumesQuota, resolveQuotaMode)
+	return s.selectSchedulableEligibleMediaRouteWithQuotaModeAndTier(ctx, eligible, key, consumesQuota, resolveQuotaMode, resolveRequiredWebTier)
 }
 
 // selectSchedulableEligibleMediaRouteWithQuotaMode selects an account plan
@@ -866,6 +866,12 @@ func (s *Service) selectSchedulableMediaRouteWithQuotaModeAndTier(ctx context.Co
 // checks. Callers may apply request-specific route constraints between the
 // eligibility and scheduling phases without evaluating disallowed routes.
 func (s *Service) selectSchedulableEligibleMediaRouteWithQuotaMode(ctx context.Context, eligible []modeldomain.Route, key clientkey.Key, consumesQuota bool, resolveQuotaMode func(modeldomain.Route) string) (modeldomain.Route, *selectionSession, error) {
+	return s.selectSchedulableEligibleMediaRouteWithQuotaModeAndTier(ctx, eligible, key, consumesQuota, resolveQuotaMode, nil)
+}
+
+// selectSchedulableEligibleMediaRouteWithQuotaModeAndTier 在已完成路由过滤后，
+// 按路由的额度模式和 Web 等级要求选择账号。
+func (s *Service) selectSchedulableEligibleMediaRouteWithQuotaModeAndTier(ctx context.Context, eligible []modeldomain.Route, key clientkey.Key, consumesQuota bool, resolveQuotaMode func(modeldomain.Route) string, resolveRequiredWebTier func(modeldomain.Route) accountdomain.WebTier) (modeldomain.Route, *selectionSession, error) {
 	if len(eligible) == 0 {
 		return modeldomain.Route{}, nil, ErrNoAvailableAccount
 	}
