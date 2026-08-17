@@ -269,8 +269,8 @@ func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGener
 	if count <= 0 {
 		count = 1
 	}
-	if count != 1 {
-		return invalidImageRequest("Grok Web 图片生成仅支持 n=1")
+	if request.Streaming && count != 1 {
+		return imageGenerationUserError("Streaming is only supported with n=1.", "input", "unsupported_parameter")
 	}
 	if request.PartialImages < 0 || request.PartialImages > 3 {
 		return invalidImageRequest("partial_images 必须在 0 到 3 之间")
@@ -737,9 +737,6 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 			continue
 		}
 		if message["type"] == "error" {
-			if _, _, frameErr := parseUpstreamFrame(data, &parsedChat{}); errors.Is(frameErr, errWebUsageLimit) {
-				return webUsageLimitProviderResponse(), nil
-			}
 			upstreamErr := fmt.Errorf("Imagine WebSocket 返回错误")
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, upstreamErr)
 			return nil, upstreamErr
@@ -901,9 +898,6 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 	capture := &boundedCapture{limit: 8 << 20}
 	parsed, consumeErr := consumeUpstream(io.TeeReader(response.Body, capture), nil)
 	if consumeErr != nil {
-		if errors.Is(consumeErr, errWebUsageLimit) {
-			return webUsageLimitProviderResponse(), nil
-		}
 		return nil, consumeErr
 	}
 	urls := imageEditResultURLs(&parsed, capture.Bytes())

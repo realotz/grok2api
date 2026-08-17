@@ -29,16 +29,23 @@ var catalog = []ModelSpec{
 	{PublicID: "grok-imagine-image-2.0", UpstreamModel: "grok-imagine-image-2.0", ProtocolModel: "imagine", ImaginePro: true, Capability: modeldomain.CapabilityImage, Mode: "image_pro", MinimumTier: account.WebTierBasic},
 	{PublicID: "grok-imagine-image-edit", UpstreamModel: "imagine-image-edit", Capability: modeldomain.CapabilityImageEdit, Mode: "image_edit", MinimumTier: account.WebTierBasic},
 	{PublicID: "grok-imagine-video", UpstreamModel: "grok-imagine-video", ProtocolModel: "imagine-video-gen", Capability: modeldomain.CapabilityVideo, Mode: "video", MinimumTier: account.WebTierBasic},
+	{PublicID: "grok-imagine-video-1.5", UpstreamModel: "grok-imagine-video-1.5", ProtocolModel: "imagine-video-gen", Capability: modeldomain.CapabilityVideo, Mode: "video", MinimumTier: account.WebTierBasic},
 }
 
 func Catalog() []ModelSpec { return append([]ModelSpec(nil), catalog...) }
 
 func Routes() []modeldomain.Route {
-	values := make([]modeldomain.Route, 0, len(catalog))
+	values := make([]modeldomain.Route, 0, len(catalog)+2)
 	for _, spec := range catalog {
 		publicID, _ := modeldomain.NormalizePublicID(account.ProviderWeb, spec.PublicID)
 		values = append(values, modeldomain.Route{PublicID: publicID, Provider: account.ProviderWeb, UpstreamModel: spec.UpstreamModel, Capability: spec.Capability, Enabled: true})
 	}
+	// 保留本地聚合模型：同一个公开 ID 同时承载 Image 2.0 生图与图片编辑。
+	publicID, _ := modeldomain.NormalizePublicID(account.ProviderWeb, "grok-imagine-image-2.0-web")
+	values = append(values,
+		modeldomain.Route{PublicID: publicID, Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-2.0", Capability: modeldomain.CapabilityImage, Enabled: true},
+		modeldomain.Route{PublicID: publicID, Provider: account.ProviderWeb, UpstreamModel: "imagine-image-edit", Capability: modeldomain.CapabilityImageEdit, Enabled: true},
+	)
 	return values
 }
 

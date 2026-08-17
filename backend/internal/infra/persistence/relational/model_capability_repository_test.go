@@ -119,7 +119,7 @@ func TestConsoleBuiltInModelIgnoresStaleAccountCapabilitySnapshot(t *testing.T) 
 	}
 }
 
-func TestWebImageModelIgnoresMissingStandaloneEditCapability(t *testing.T) {
+func TestWebMediaModelsIgnoreStaleCapabilitySnapshots(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
 	accounts := NewAccountRepository(database)
@@ -156,8 +156,8 @@ func TestWebImageModelIgnoresMissingStandaloneEditCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(video) != 1 || !video[0].ModelCapabilityKnown || video[0].SupportsModel {
-		t.Fatalf("Web video must retain capability gating: %#v", video)
+	if len(video) != 1 || !video[0].ModelCapabilityKnown || !video[0].SupportsModel {
+		t.Fatalf("Web Basic video must survive a stale account snapshot: %#v", video)
 	}
 }
 
@@ -951,11 +951,16 @@ func TestWebImageRediscoveryUsesProtocolProductNames(t *testing.T) {
 	tests := map[string]string{
 		"grok-imagine-image":         "Web/grok-imagine-image-lite",
 		"grok-imagine-image-quality": "Web/grok-imagine-image",
-		"grok-imagine-image-2.0":     "Web/grok-imagine-image-2.0",
+		"grok-imagine-image-2.0":     "Web/grok-imagine-image-2.0-web",
 	}
-	route, err := repo.GetByPublicIDIncludingDisabled(ctx, "Web/grok-imagine-image-2.0-web")
-	if err != nil || route.UpstreamModel != upstreamModel || route.Capability != model.CapabilityImage {
-		t.Fatalf("rediscovered %s as %#v, err=%v", upstreamModel, route, err)
+	for upstreamModel, publicID := range tests {
+		if err := repo.UpsertDiscovered(ctx, account.ProviderWeb, []string{upstreamModel}); err != nil {
+			t.Fatal(err)
+		}
+		route, err := repo.GetByPublicIDIncludingDisabled(ctx, publicID)
+		if err != nil || route.UpstreamModel != upstreamModel || route.Capability != model.CapabilityImage {
+			t.Fatalf("rediscovered %s as %#v, err=%v", upstreamModel, route, err)
+		}
 	}
 }
 

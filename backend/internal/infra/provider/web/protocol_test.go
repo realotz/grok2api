@@ -37,7 +37,7 @@ import (
 
 func TestCatalogMatchesSupportedSurface(t *testing.T) {
 	values := Catalog()
-	requiredModels := []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-lite", "grok-imagine-image", "grok-imagine-image-2.0", "grok-imagine-image-edit", "grok-imagine-video"}
+	requiredModels := []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-lite", "grok-imagine-image", "grok-imagine-image-2.0", "grok-imagine-image-edit", "grok-imagine-video", "grok-imagine-video-1.5"}
 	if len(values) != len(requiredModels) {
 		t.Fatalf("catalog size = %d", len(values))
 	}
@@ -66,6 +66,15 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 			t.Fatalf("missing supported route: %s", required)
 		}
 	}
+	localRoutes := make(map[string]struct{})
+	for _, route := range Routes() {
+		localRoutes[route.PublicID+"|"+string(route.Capability)] = struct{}{}
+	}
+	for _, required := range []string{"Web/grok-imagine-image-2.0-web|image", "Web/grok-imagine-image-2.0-web|image_edit"} {
+		if _, exists := localRoutes[required]; !exists {
+			t.Fatalf("missing local aggregate route: %s", required)
+		}
+	}
 	for _, removed := range []string{"grok-imagine-image-quality-lite", "grok-imagine-image-quality", "grok-imagine-image-quality-2.0", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
 		if _, exists := publicIDs[removed]; exists {
 			t.Fatalf("obsolete image model remains: %s", removed)
@@ -92,7 +101,7 @@ func TestWebImagePublicNamesMatchProtocolProducts(t *testing.T) {
 		}
 	}
 	spec, ok := Resolve("imagine-image-edit")
-	if !ok || spec.PublicID != "grok-imagine-image-2.0-web" || spec.Capability != modeldomain.CapabilityImageEdit || spec.MinimumTier != account.WebTierBasic {
+	if !ok || spec.PublicID != "grok-imagine-image-edit" || spec.Capability != modeldomain.CapabilityImageEdit || spec.MinimumTier != account.WebTierBasic {
 		t.Fatalf("edit upstream resolved as %#v ok=%v", spec, ok)
 	}
 	if alias, ok := provider.NewRegistry(&Adapter{}).ResolveModelAlias("grok-imagine-image-quality-lite"); ok {
@@ -1629,7 +1638,7 @@ func TestImageStreamingRejectsMultipleOutputs(t *testing.T) {
 		t.Fatalf("body=%s", body)
 	}
 	errorValue, _ := payload["error"].(map[string]any)
-	if response.StatusCode != http.StatusBadRequest || errorValue["message"] != "Grok Web 图片生成仅支持 n=1" || errorValue["type"] != "invalid_request_error" {
+	if response.StatusCode != http.StatusBadRequest || errorValue["message"] != "Streaming is only supported with n=1." || errorValue["type"] != "image_generation_user_error" || errorValue["code"] != "unsupported_parameter" {
 		t.Fatalf("status=%d error=%#v", response.StatusCode, errorValue)
 	}
 }
