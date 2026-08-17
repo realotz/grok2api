@@ -138,21 +138,8 @@ func (a *Adapter) TierOrder(upstreamModel string) []account.WebTier {
 }
 
 func (a *Adapter) TierOrderForQuotaMode(upstreamModel, quotaMode string) []account.WebTier {
-	order := a.TierOrder(upstreamModel)
-	spec, ok := Resolve(upstreamModel)
-	if !ok || spec.Capability != modeldomain.CapabilityVideo || quotaMode == account.QuotaModeWebVideo720p {
-		return order
-	}
-	// Basic video entitlement is currently confirmed only for the default
-	// 720p product. Other video quota products remain on paid Web tiers until
-	// independently verified upstream.
-	filtered := make([]account.WebTier, 0, len(order))
-	for _, tier := range order {
-		if tier != account.WebTierBasic {
-			filtered = append(filtered, tier)
-		}
-	}
-	return filtered
+	// Web 视频的 480p 与 720p 均允许 Basic 账号，1080p 仍由网关单独要求 Heavy。
+	return a.TierOrder(upstreamModel)
 }
 
 func (a *Adapter) PricingModel(upstreamModel string) string {
