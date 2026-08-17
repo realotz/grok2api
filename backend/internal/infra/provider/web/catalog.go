@@ -9,6 +9,7 @@ type ModelSpec struct {
 	PublicID      string
 	UpstreamModel string
 	ProtocolModel string
+	ImaginePro    bool
 	Capability    modeldomain.Capability
 	Mode          string
 	MinimumTier   account.WebTier
@@ -19,11 +20,15 @@ var catalog = []ModelSpec{
 	{PublicID: "grok-chat-auto", UpstreamModel: "grok-chat-auto", Capability: modeldomain.CapabilityChat, Mode: "auto", MinimumTier: account.WebTierSuper},
 	{PublicID: "grok-chat-expert", UpstreamModel: "grok-chat-expert", Capability: modeldomain.CapabilityChat, Mode: "expert", MinimumTier: account.WebTierSuper},
 	{PublicID: "grok-chat-heavy", UpstreamModel: "grok-chat-heavy", Capability: modeldomain.CapabilityChat, Mode: "heavy", MinimumTier: account.WebTierHeavy},
-	// Web 图片生成与编辑聚合为同一个公开模型，内部按能力路由到各自上游协议。
-	{PublicID: "grok-imagine-image-2.0-web", UpstreamModel: "grok-imagine-image-2.0", ProtocolModel: "imagine", Capability: modeldomain.CapabilityImage, Mode: "image_pro", MinimumTier: account.WebTierBasic},
-	{PublicID: "grok-imagine-image-2.0-web", UpstreamModel: "imagine-image-edit", Capability: modeldomain.CapabilityImageEdit, Mode: "image_edit", MinimumTier: account.WebTierBasic},
+	// Lite keeps the distinct fast/chat product name. Imagine WebSocket models
+	// share the Console-facing product names but select their protocol version
+	// through enable_pro. Media products are available to Basic accounts with
+	// runtime selection fenced by tier-specific upstream quota windows.
+	{PublicID: "grok-imagine-image-lite", UpstreamModel: "grok-imagine-image", ProtocolModel: "imagine-lite", Capability: modeldomain.CapabilityImage, Mode: "fast", MinimumTier: account.WebTierBasic},
+	{PublicID: "grok-imagine-image", UpstreamModel: "grok-imagine-image-quality", ProtocolModel: "imagine", Capability: modeldomain.CapabilityImage, Mode: "image_pro", MinimumTier: account.WebTierBasic},
+	{PublicID: "grok-imagine-image-2.0", UpstreamModel: "grok-imagine-image-2.0", ProtocolModel: "imagine", ImaginePro: true, Capability: modeldomain.CapabilityImage, Mode: "image_pro", MinimumTier: account.WebTierBasic},
+	{PublicID: "grok-imagine-image-edit", UpstreamModel: "imagine-image-edit", Capability: modeldomain.CapabilityImageEdit, Mode: "image_edit", MinimumTier: account.WebTierBasic},
 	{PublicID: "grok-imagine-video", UpstreamModel: "grok-imagine-video", ProtocolModel: "imagine-video-gen", Capability: modeldomain.CapabilityVideo, Mode: "video", MinimumTier: account.WebTierBasic},
-	{PublicID: "grok-imagine-video-1.5", UpstreamModel: "grok-imagine-video-1.5", ProtocolModel: "imagine-video-gen", Capability: modeldomain.CapabilityVideo, Mode: "video", MinimumTier: account.WebTierBasic},
 }
 
 func Catalog() []ModelSpec { return append([]ModelSpec(nil), catalog...) }

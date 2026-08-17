@@ -257,9 +257,13 @@ Web uses a built-in catalog filtered by account tier; higher tiers inherit lower
 | `grok-chat-auto` | Conversation | Super | Chat Completions, Responses, Messages |
 | `grok-chat-expert` | Conversation | Super | Chat Completions, Responses, Messages |
 | `grok-chat-heavy` | Conversation | Heavy | Chat Completions, Responses, Messages |
-| `grok-imagine-image-2.0-web` | Image / Image Edit | Basic | Images Generations / Images Edits (1K quality mode only; non-streaming generation responses include object segmentation; quota exhaustion rotates accounts automatically) |
-| `grok-imagine-video` | Video | Basic | Videos; retains the legacy Web protocol |
-| `grok-imagine-video-1.5` | Video | Basic; 1080p requires Heavy/H | Videos; new text-to-video, image-to-video, and image/audio reference protocol; 480p/720p/1080p, 6-15 seconds, reference mode up to 720p |
+| `grok-imagine-image-lite` | Image | Basic | Images Generations |
+| `grok-imagine-image` | Image | Basic | Images Generations (`enable_pro=false`) |
+| `grok-imagine-image-2.0` | Image | Basic | Images Generations (`enable_pro=true`) |
+| `grok-imagine-image-edit` | Image Edit | Basic | Images Edits |
+| `grok-imagine-video` | Video | Basic for 720p; Super for 480p | Videos |
+
+Web Imagine generation maps `aspect_ratio` and `n` to the browser protocol. `size` remains an OpenAI-compatible aspect-ratio alias, while generation-only `resolution` and `quality` are ignored on Web routes because the upstream product is selected by the model name rather than by those Console-oriented controls.
 
 ### Grok Console
 

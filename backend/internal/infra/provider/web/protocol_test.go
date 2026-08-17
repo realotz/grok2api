@@ -37,8 +37,8 @@ import (
 
 func TestCatalogMatchesSupportedSurface(t *testing.T) {
 	values := Catalog()
-	requiredModels := []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-2.0-web", "grok-imagine-video", "grok-imagine-video-1.5"}
-	if len(values) != 8 {
+	requiredModels := []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-lite", "grok-imagine-image", "grok-imagine-image-2.0", "grok-imagine-image-edit", "grok-imagine-video"}
+	if len(values) != len(requiredModels) {
 		t.Fatalf("catalog size = %d", len(values))
 	}
 	publicIDs := make(map[string]struct{}, len(values))
@@ -57,28 +57,37 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
-		"grok-imagine-image-2.0-web|image",
-		"grok-imagine-image-2.0-web|image_edit",
+		"grok-imagine-image-lite|image",
+		"grok-imagine-image|image",
+		"grok-imagine-image-2.0|image",
+		"grok-imagine-image-edit|image_edit",
 	} {
 		if _, exists := routeKeys[required]; !exists {
 			t.Fatalf("missing supported route: %s", required)
 		}
 	}
-	for _, removed := range []string{"grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-2.0", "grok-imagine-image-lite", "grok-imagine-image-quality-lite", "grok-imagine-image-quality-2.0", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
+	for _, removed := range []string{"grok-imagine-image-quality-lite", "grok-imagine-image-quality", "grok-imagine-image-quality-2.0", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
 		if _, exists := publicIDs[removed]; exists {
 			t.Fatalf("obsolete image model remains: %s", removed)
 		}
 	}
 }
 
-func TestWebImagePublicNamesPreserveGatewayModels(t *testing.T) {
-	tests := map[string]string{"grok-imagine-image-2.0": "grok-imagine-image-2.0-web"}
-	for upstreamModel, publicID := range tests {
+func TestWebImagePublicNamesMatchProtocolProducts(t *testing.T) {
+	tests := map[string]struct {
+		publicID string
+		pro      bool
+	}{
+		"grok-imagine-image":         {publicID: "grok-imagine-image-lite"},
+		"grok-imagine-image-quality": {publicID: "grok-imagine-image"},
+		"grok-imagine-image-2.0":     {publicID: "grok-imagine-image-2.0", pro: true},
+	}
+	for upstreamModel, expected := range tests {
 		spec, ok := Resolve(upstreamModel)
 		if !ok {
 			t.Fatalf("missing upstream model %s", upstreamModel)
 		}
-		if spec.PublicID != publicID || spec.UpstreamModel != upstreamModel || spec.Capability != modeldomain.CapabilityImage {
+		if spec.PublicID != expected.publicID || spec.UpstreamModel != upstreamModel || spec.Capability != modeldomain.CapabilityImage || spec.ImaginePro != expected.pro {
 			t.Fatalf("resolved %s as %#v", upstreamModel, spec)
 		}
 	}
@@ -86,17 +95,8 @@ func TestWebImagePublicNamesPreserveGatewayModels(t *testing.T) {
 	if !ok || spec.PublicID != "grok-imagine-image-2.0-web" || spec.Capability != modeldomain.CapabilityImageEdit || spec.MinimumTier != account.WebTierBasic {
 		t.Fatalf("edit upstream resolved as %#v ok=%v", spec, ok)
 	}
-	if got := (&Adapter{}).TierOrder("imagine-image-edit"); !slices.Equal(got, []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}) {
-		t.Fatalf("edit tier order = %#v", got)
-	}
-}
-
-func TestWebVideoModelsUseBasicTierAndSeparateProtocols(t *testing.T) {
-	for _, upstreamModel := range []string{"grok-imagine-video", "grok-imagine-video-1.5"} {
-		spec, ok := Resolve(upstreamModel)
-		if !ok || spec.PublicID != upstreamModel || spec.MinimumTier != account.WebTierBasic {
-			t.Fatalf("resolved %s as %#v ok=%v", upstreamModel, spec, ok)
-		}
+	if alias, ok := provider.NewRegistry(&Adapter{}).ResolveModelAlias("grok-imagine-image-quality-lite"); ok {
+		t.Fatalf("retired quality-lite alias remains registered: %#v", alias)
 	}
 }
 
@@ -126,7 +126,7 @@ func TestWebChatPricingUsesGrok45(t *testing.T) {
 		}
 	}
 	mediaModels := map[string]string{
-		"grok-imagine-image": "grok-imagine-image", "grok-imagine-image-quality": "grok-imagine-image-quality",
+		"grok-imagine-image": "grok-imagine-image", "grok-imagine-image-quality": "grok-imagine-image", "grok-imagine-image-2.0": "grok-imagine-image-2.0",
 		"imagine-image-edit": "grok-imagine-image-edit", "grok-imagine-video": "grok-imagine-video",
 	}
 	for upstreamModel, expected := range mediaModels {
@@ -208,10 +208,10 @@ func TestImageChatRejectsOnlyCurrentTurnAttachment(t *testing.T) {
 	}
 }
 
-func TestQualityImageResponsesUsesImageCompatibilityValidation(t *testing.T) {
+func TestImagineImageResponsesUsesImageCompatibilityValidation(t *testing.T) {
 	response, err := (&Adapter{}).ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-		Method: http.MethodPost, Model: "grok-imagine-image-2.0", Operation: conversation.OperationResponses,
-		Body: []byte(`{"model":"grok-imagine-image-2.0-web","input":[{"role":"user","content":[{"type":"input_text","text":"draw"}]}],"image_config":{"n":0}}`),
+		Method: http.MethodPost, Model: "grok-imagine-image-quality", Operation: conversation.OperationResponses,
+		Body: []byte(`{"model":"grok-imagine-image","input":[{"role":"user","content":[{"type":"input_text","text":"draw"}]}],"image_config":{"n":0}}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -859,11 +859,10 @@ func TestStreamingImageEditRejectsModeratedFinalImage(t *testing.T) {
 	}
 }
 
-func TestImageEditRejectsUnconfirmedCountAndResolution(t *testing.T) {
+func TestImageEditRejectsUnsupportedCountAndStreamingOptions(t *testing.T) {
 	adapter := &Adapter{}
 	for _, request := range []provider.ImageEditRequest{
 		{ImageURLs: []string{"data:image/png;base64,AA=="}, Count: 2, Resolution: "1k"},
-		{ImageURLs: []string{"data:image/png;base64,AA=="}, Count: 1, Resolution: "2k"},
 		{ImageURLs: []string{"data:image/png;base64,AA=="}, Count: 1, Resolution: "1k", PartialImages: 1},
 		{ImageURLs: []string{"data:image/png;base64,AA=="}, Count: 1, Resolution: "1k", Streaming: true, PartialImages: 4},
 		{ImageURLs: []string{"data:image/png;base64,AA==", "data:image/png;base64,AA=="}, Count: 1, Resolution: "1k", SelectionRegions: []provider.ImageSelectionRegion{{Points: []float64{0.1, 0.1, 0.9, 0.1, 0.9, 0.9}}}},
@@ -880,44 +879,34 @@ func TestImageEditRejectsUnconfirmedCountAndResolution(t *testing.T) {
 	}
 }
 
-func TestBuildImageEditPayloadMatchesCapturedMediaGenShape(t *testing.T) {
-	payload := buildImageEditPayload("改成兔子", []string{"asset_1", "asset_2"}, nil)
-	metadata, _ := payload["responseMetadata"].(map[string]any)
-	override, _ := metadata["modelConfigOverride"].(map[string]any)
-	modelMap, _ := override["modelMap"].(map[string]any)
-	mediaGenInput, _ := payload["mediaGenInput"].(map[string]any)
-	imageToImage, _ := mediaGenInput["imageToImage"].(map[string]any)
-	if payload["modelName"] != "imagine-image-edit" || payload["kind"] != "CONVERSATION_KIND_IMAGINE" || modelMap["imageEditModel"] != "imagine" {
+func TestBuildImageEditPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
+	assets := []string{"metadata-1", "metadata-2"}
+	payload := buildImageEditPayload("改成兔子", assets, "1:1")
+	mediaGenInput, ok := payload["mediaGenInput"].(map[string]any)
+	if !ok {
+		t.Fatalf("mediaGenInput = %#v", payload["mediaGenInput"])
+	}
+	imageToImage, ok := mediaGenInput["imageToImage"].(map[string]any)
+	if !ok {
+		t.Fatalf("imageToImage = %#v", mediaGenInput["imageToImage"])
+	}
+	if len(payload) != 6 || payload["modelName"] != "imagine-image-edit" || payload["message"] != "改成兔子" ||
+		payload["enableImageStreaming"] != true || payload["enableSideBySide"] != true || payload["sendFinalMetadata"] != true {
 		t.Fatalf("payload = %#v", payload)
 	}
-	if payload["message"] != "@asset_1 @asset_2 改成兔子" || imageToImage["prompt"] != payload["message"] || !slices.Equal(imageToImage["inputAssets"].([]string), []string{"asset_1", "asset_2"}) {
-		t.Fatalf("image-to-image payload = %#v", imageToImage)
+	if imageToImage["prompt"] != "改成兔子" || imageToImage["aspectRatio"] != "1:1" || !slices.Equal(imageToImage["inputAssets"].([]string), assets) {
+		t.Fatalf("imageToImage = %#v", imageToImage)
 	}
-	if _, exists := modelMap["imageEditModelConfig"]; exists {
-		t.Fatalf("legacy image edit config leaked into payload: %#v", modelMap)
+	for _, field := range []string{"temporary", "enableImageGeneration", "imageGenerationCount", "config", "responseMetadata", "kind", "parentPostId"} {
+		if _, exists := payload[field]; exists {
+			t.Fatalf("legacy field %q leaked into payload: %#v", field, payload)
+		}
 	}
-}
-
-func TestBuildImageEditPayloadIncludesSelectionRegionsInInitialRequest(t *testing.T) {
-	points := []float64{0.1, 0.2, 0.8, 0.2, 0.8, 0.9, 0.1, 0.9, 0.1, 0.2}
-	payload := buildImageEditPayload(
-		"只修改选中对象",
-		[]string{"asset_1"},
-		[]provider.ImageSelectionRegion{{Points: points}},
-	)
-	mediaGenInput, _ := payload["mediaGenInput"].(map[string]any)
-	imageToImage, _ := mediaGenInput["imageToImage"].(map[string]any)
-	regions, _ := imageToImage["selectionRegions"].([]any)
-	region, _ := regions[0].(map[string]any)
-	outer, _ := region["outer"].(map[string]any)
-	if payload["modelName"] != "imagine-image-edit" {
-		t.Fatalf("payload = %#v", payload)
-	}
-	if imageToImage["prompt"] != "@asset_1 只修改选中对象" || !slices.Equal(imageToImage["inputAssets"].([]string), []string{"asset_1"}) {
-		t.Fatalf("image-to-image payload = %#v", imageToImage)
-	}
-	if !slices.Equal(outer["points"].([]float64), points) {
-		t.Fatalf("selection region = %#v", region)
+	withoutRatio := buildImageEditPayload("edit", []string{"metadata-1"}, "")
+	mediaGenInput = withoutRatio["mediaGenInput"].(map[string]any)
+	imageToImage = mediaGenInput["imageToImage"].(map[string]any)
+	if _, exists := imageToImage["aspectRatio"]; exists {
+		t.Fatalf("empty aspect ratio leaked into payload: %#v", imageToImage)
 	}
 }
 
@@ -1406,12 +1395,16 @@ func TestDecodeDirectFileUploadResponse(t *testing.T) {
 		"uploadId":"upload-1",
 		"fileMetadata":{"fileMetadataId":"metadata-1","fileUri":"users/test/reference/content"}
 	}`))
-	if err != nil || uploaded.ID != "metadata-1" || uploaded.URI != "https://assets.grok.com/users/test/reference/content" {
+	if err != nil || uploaded.ID != "metadata-1" || uploaded.MetadataID != "metadata-1" || uploaded.URI != "https://assets.grok.com/users/test/reference/content" {
 		t.Fatalf("uploaded=%#v err=%v", uploaded, err)
 	}
 	uploaded, err = decodeDirectFileUploadResponse(strings.NewReader(`{"uploadId":"upload-1","terminalError":{}}`))
-	if err != nil || uploaded.ID != "upload-1" || uploaded.URI != "" {
+	if err != nil || uploaded.ID != "upload-1" || uploaded.MetadataID != "" || uploaded.URI != "" {
 		t.Fatalf("uploadId-only response: uploaded=%#v err=%v", uploaded, err)
+	}
+	uploaded, err = decodeDirectFileUploadResponse(strings.NewReader(`{"fileMetadata":{"fileId":"file-1"}}`))
+	if err != nil || uploaded.ID != "file-1" || uploaded.MetadataID != "" {
+		t.Fatalf("fileId-only response: uploaded=%#v err=%v", uploaded, err)
 	}
 	if _, err := decodeDirectFileUploadResponse(strings.NewReader(`{"uploadId":"upload-1","terminalError":{"message":"rejected"}}`)); err == nil {
 		t.Fatal("terminal upload error was accepted")
@@ -1476,16 +1469,30 @@ func TestModelsUseLowestSufficientTierFirst(t *testing.T) {
 		{model: "grok-chat-auto", want: []account.WebTier{account.WebTierSuper, account.WebTierHeavy}},
 		{model: "grok-chat-expert", want: []account.WebTier{account.WebTierSuper, account.WebTierHeavy}},
 		{model: "grok-chat-heavy", want: []account.WebTier{account.WebTierHeavy}},
-		{model: "grok-imagine-image-2.0", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
+		{model: "grok-imagine-image", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
+		{model: "grok-imagine-image-quality", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
 		{model: "imagine-image-edit", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
 		{model: "grok-imagine-video", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
-		{model: "grok-imagine-video-1.5", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
 	}
 	for _, test := range tests {
 		got := adapter.TierOrder(test.model)
 		if !slices.Equal(got, test.want) {
 			t.Fatalf("tier order for %s = %v, want %v", test.model, got, test.want)
 		}
+	}
+}
+
+func TestWebVideoTierOrderFollowsConfirmedQuotaProduct(t *testing.T) {
+	adapter := &Adapter{}
+	if got := adapter.TierOrderForQuotaMode("grok-imagine-video", account.QuotaModeWebVideo720p); !slices.Equal(got, []account.WebTier{
+		account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy,
+	}) {
+		t.Fatalf("720p video tier order = %v", got)
+	}
+	if got := adapter.TierOrderForQuotaMode("grok-imagine-video", account.QuotaModeWebVideo); !slices.Equal(got, []account.WebTier{
+		account.WebTierSuper, account.WebTierHeavy,
+	}) {
+		t.Fatalf("unverified video product tier order = %v", got)
 	}
 }
 
@@ -1514,7 +1521,10 @@ func TestOnlyChatModelsExposeRateLimitModes(t *testing.T) {
 
 func TestQuotaRefreshGroupUsesImagineEndpoint(t *testing.T) {
 	adapter := &Adapter{}
-	for _, model := range []string{"grok-imagine-image-2.0", "imagine-image-edit", "grok-imagine-video"} {
+	if got := adapter.QuotaRefreshGroup("grok-imagine-image"); got != "" {
+		t.Fatalf("lite refresh group = %q", got)
+	}
+	for _, model := range []string{"grok-imagine-image-quality", "grok-imagine-image-2.0", "imagine-image-edit", "grok-imagine-video"} {
 		if got := adapter.QuotaRefreshGroup(model); got != account.QuotaGroupWebImagine {
 			t.Fatalf("QuotaRefreshGroup(%q) = %q", model, got)
 		}
@@ -1574,30 +1584,34 @@ func TestPreflightClassifiesAntiBotRejection(t *testing.T) {
 }
 
 func TestImagineRequestContainsOnlyProtocolProperties(t *testing.T) {
-	message := imagineRequestMessage("request", "prompt", "16:9", false, true, 8)
-	item := message["item"].(map[string]any)
-	content := item["content"].([]any)[0].(map[string]any)
-	properties := content["properties"].(map[string]any)
-	if properties["aspect_ratio"] != "16:9" || properties["enable_pro"] != true || properties["enable_nsfw"] != false || properties["num_generations"] != 8 || properties["enable_watermark"] != false {
-		t.Fatalf("properties = %#v", properties)
+	for _, pro := range []bool{false, true} {
+		message := imagineRequestMessage("request", "prompt", "16:9", false, pro, 2)
+		item := message["item"].(map[string]any)
+		content := item["content"].([]any)[0].(map[string]any)
+		properties := content["properties"].(map[string]any)
+		if properties["aspect_ratio"] != "16:9" || properties["enable_pro"] != pro || properties["enable_nsfw"] != false || properties["num_generations"] != 2 {
+			t.Fatalf("pro=%v properties=%#v", pro, properties)
+		}
+		encoded := string(MarshalJSONBytes(message))
+		assertForbiddenFieldsAbsent(t, encoded)
 	}
-	encoded := string(MarshalJSONBytes(message))
-	assertForbiddenFieldsAbsent(t, encoded)
 }
 
-func TestImagineResolutionAndBatchMapping(t *testing.T) {
-	config, ok := resolveImagineModel("imagine", "1k", 1)
-	if !ok || !config.Pro || config.NativeBatchSize != 1 || config.MaxReturnCount != 1 {
-		t.Fatalf("config=%#v", config)
+func TestImagineModelAndGenerationCountMapping(t *testing.T) {
+	tests := []struct {
+		count int
+		pro   bool
+	}{
+		{count: 1},
+		{count: 2},
+		{count: 8, pro: true},
+		{count: 10, pro: true},
 	}
-	if _, ok := resolveImagineModel("imagine", "2k", 1); ok {
-		t.Fatal("Web Image 2.0 accepted unsupported 2k resolution")
-	}
-	if got := imagineUpstreamGenerationCount(true, 1, config); got != 1 {
-		t.Fatalf("streaming upstream count = %d, want 1", got)
-	}
-	if got := imagineUpstreamGenerationCount(false, 1, config); got != 1 {
-		t.Fatalf("non-streaming upstream count = %d, want 1", got)
+	for _, test := range tests {
+		config, ok := resolveImagineModel("imagine", test.pro, test.count)
+		if !ok || config.Pro != test.pro || config.ExpectedCount != test.count || config.MaxReturnCount != 10 {
+			t.Fatalf("pro=%v count=%d config=%#v", test.pro, test.count, config)
+		}
 	}
 }
 

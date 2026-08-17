@@ -818,7 +818,7 @@ func TestAssembleRoutingCandidatesAllowsRecognizedStaticConsoleModelWithStaleSna
 	}
 }
 
-func TestAssembleRoutingCandidatesAllowsWebImageWithMissingEditCapability(t *testing.T) {
+func TestAssembleRoutingCandidatesAllowsRecognizedWebImagineModelWithStaleSnapshot(t *testing.T) {
 	bases := []account.RoutingAccountBase{{Credential: account.Credential{
 		ID: 1, Provider: account.ProviderWeb, Enabled: true, AuthStatus: account.AuthStatusActive,
 	}}}
@@ -826,15 +826,13 @@ func TestAssembleRoutingCandidatesAllowsWebImageWithMissingEditCapability(t *tes
 		AccountID: 1, ModelCapabilityKnown: true, SupportsModel: false,
 	}}}
 
-	for _, mode := range []string{account.QuotaModeWebImagePro, account.QuotaModeWebImageEdit} {
-		candidates := assembleRoutingCandidates(account.ProviderWeb, mode, bases, overlay)
-		if len(candidates) != 1 || !candidates[0].ModelCapabilityKnown || !candidates[0].SupportsModel {
-			t.Fatalf("Web image candidates for %s = %#v", mode, candidates)
-		}
+	recognized := assembleRoutingCandidates(account.ProviderWeb, account.QuotaModeWebImagePro, bases, overlay)
+	if len(recognized) != 1 || !recognized[0].ModelCapabilityKnown || !recognized[0].SupportsModel {
+		t.Fatalf("recognized Web Imagine model = %#v", recognized)
 	}
-	video := assembleRoutingCandidates(account.ProviderWeb, account.QuotaModeWebVideo, bases, overlay)
-	if len(video) != 1 || !video[0].ModelCapabilityKnown || video[0].SupportsModel {
-		t.Fatalf("Web video must retain capability gating: %#v", video)
+	unknown := assembleRoutingCandidates(account.ProviderWeb, "", bases, overlay)
+	if len(unknown) != 1 || !unknown[0].ModelCapabilityKnown || unknown[0].SupportsModel {
+		t.Fatalf("unknown Web model = %#v", unknown)
 	}
 }
 
