@@ -146,6 +146,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, err
 	}
+	routes = preferWebVideo15Routes(routes)
 	allRefs := videoInputReferences(input.ImageURL, input.ReferenceURLs)
 	if err := s.validateVideoInputReferences(ctx, allRefs, "image"); err != nil {
 		return media.Job{}, err
@@ -211,6 +212,20 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 		s.logger.Warn("video_job_queue_full", "job_id", job.ID)
 	}
 	return job, nil
+}
+
+// preferWebVideo15Routes 让同名 1.5 视频优先使用 Web，Web 无可用账号时仍按原顺序回退。
+func preferWebVideo15Routes(routes []model.Route) []model.Route {
+	preferred := make([]model.Route, 0, len(routes))
+	fallback := make([]model.Route, 0, len(routes))
+	for _, route := range routes {
+		if route.Provider == account.ProviderWeb && strings.TrimSpace(route.UpstreamModel) == "grok-imagine-video-1.5" {
+			preferred = append(preferred, route)
+			continue
+		}
+		fallback = append(fallback, route)
+	}
+	return append(preferred, fallback...)
 }
 
 // routesForVideoParameters removes only routes that cannot accept this request.

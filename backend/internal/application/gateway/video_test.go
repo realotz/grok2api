@@ -227,6 +227,28 @@ func TestVideoRouteParametersRejectConsoleReferenceLimits(t *testing.T) {
 	}
 }
 
+func TestPreferWebVideo15Routes(t *testing.T) {
+	routes := []model.Route{
+		{ID: 1, Provider: account.ProviderBuild, UpstreamModel: "grok-imagine-video-1.5"},
+		{ID: 2, Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video-1.5"},
+		{ID: 3, Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-video-1.5"},
+		{ID: 4, Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-video"},
+	}
+	ordered := preferWebVideo15Routes(routes)
+	want := []uint64{3, 1, 2, 4}
+	if len(ordered) != len(want) {
+		t.Fatalf("ordered routes = %#v", ordered)
+	}
+	for index, id := range want {
+		if ordered[index].ID != id {
+			t.Fatalf("ordered routes = %#v", ordered)
+		}
+	}
+	if routes[0].ID != 1 {
+		t.Fatalf("input routes mutated = %#v", routes)
+	}
+}
+
 func TestRoutesForVideoParametersKeepsCompatibleSameNameProviders(t *testing.T) {
 	routes := []model.Route{
 		{ID: 1, PublicID: "shared-video", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video-1.5"},
