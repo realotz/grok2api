@@ -710,6 +710,38 @@ func (r *ModelRepository) ListStaleAccountSyncIDs(ctx context.Context, before ti
 	return ids, err
 }
 
+// ListSupportedForAccount returns enabled text/image/video routes this account can use.
+func (r *ModelRepository) ListSupportedForAccount(ctx context.Context, accountID uint64) ([]model.Route, error) {
+	if accountID == 0 {
+		return nil, repository.ErrNotFound
+	}
+	var exists int64
+	if err := r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", accountID).Count(&exists).Error; err != nil {
+		return nil, err
+	}
+	if exists == 0 {
+		return nil, repository.ErrNotFound
+	}
+	var rows []modelRouteModel
+	err := r.db.db.WithContext(ctx).
+		Table("model_routes").
+		Joins("JOIN provider_accounts AS account ON account.id = ? AND account.provider = model_routes.provider", accountID).
+		Where("model_routes.enabled = ?", true).
+		Where("model_routes.capability IN ?", []string{
+			string(model.CapabilityResponses),
+			string(model.CapabilityChat),
+			string(model.CapabilityImage),
+			string(model.CapabilityVideo),
+		}).
+		Where(modelRouteAccountCapabilityPredicate).
+		Order("model_routes.capability ASC, LOWER(model_routes.public_id) ASC, model_routes.id ASC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return mapModelRows(rows), nil
+}
+
 func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account.Provider, upstreamModels []string) error {
 	changed := false
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

@@ -90,6 +90,7 @@ func toAccountDomain(value accountModel) account.Credential {
 		BuildAPIFallback: value.BuildAPIFallback, BuildRouteMode: buildRouteMode,
 		BuildSuperEntitled: value.BuildSuperEntitled && account.Provider(value.Provider) == account.ProviderBuild,
 		BuildBotFlagSource: normalizedBuildBotFlagSource(account.Provider(value.Provider), value.Credential),
+		SSOBotFlagSource:   normalizedSSOBotFlagSource(account.Provider(value.Provider), value.Credential),
 		CreatedAt:          value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
@@ -171,6 +172,7 @@ func fromAccountCredentialDomain(value account.Credential) accountCredentialMode
 		ExpiresAt:                 expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: value.LastRefreshAt,
 		RefreshFailures: value.RefreshFailureCount, LastRefreshErrorStatus: value.LastRefreshErrorStatus, LastRefreshError: value.LastRefreshErrorCode, LastRefreshErrorMessage: value.LastRefreshErrorMessage, LastRefreshErrorResponse: value.LastRefreshErrorResponse, RefreshPermanent: value.RefreshPermanent,
 		BuildBotFlagSource: normalizeBuildBotFlagSource(value.Provider, value.BuildBotFlagSource),
+		SSOBotFlagSource:   normalizeSSOBotFlagSource(value.Provider, authType, value.SSOBotFlagSource),
 		UpdatedAt:          time.Now().UTC(),
 	}
 }
@@ -187,6 +189,17 @@ func normalizeBuildBotFlagSource(provider account.Provider, source int) int {
 		return source
 	}
 	return 0
+}
+
+func normalizedSSOBotFlagSource(provider account.Provider, credential *accountCredentialModel) int {
+	if credential == nil {
+		return 0
+	}
+	return normalizeSSOBotFlagSource(provider, account.AuthType(credential.AuthType), credential.SSOBotFlagSource)
+}
+
+func normalizeSSOBotFlagSource(provider account.Provider, authType account.AuthType, source int) int {
+	return account.NormalizeSSOBotFlagSource(provider, authType, source)
 }
 
 func fromWebProfileDomain(value account.Credential) *webAccountProfileModel {

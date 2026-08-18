@@ -26,6 +26,7 @@ type ModelRepository interface {
 	MarkAccountCapabilitySyncFailed(ctx context.Context, accountID uint64, attemptedAt time.Time, message string) error
 	HasSuccessfulAccountSync(ctx context.Context, accountID uint64) (bool, error)
 	ListStaleAccountSyncIDs(ctx context.Context, before time.Time, limit int) ([]uint64, error)
+	ListSupportedForAccount(ctx context.Context, accountID uint64) ([]model.Route, error)
 	Create(ctx context.Context, value model.Route, accountIDs []uint64) (model.Route, error)
 	Update(ctx context.Context, value model.Route, accountIDs *[]uint64) (model.Route, error)
 	Delete(ctx context.Context, id uint64) error

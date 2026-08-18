@@ -138,7 +138,7 @@ func (a *Adapter) TierOrder(upstreamModel string) []account.WebTier {
 }
 
 func (a *Adapter) TierOrderForQuotaMode(upstreamModel, quotaMode string) []account.WebTier {
-	// Web 视频的 480p 与 720p 均允许 Basic 账号，1080p 仍由网关单独要求 Heavy。
+	// 6s 480p/720p 优先 Basic；更长的 720p 与 1080p 由网关按最低档位过滤。
 	return a.TierOrder(upstreamModel)
 }
 

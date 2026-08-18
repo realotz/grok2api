@@ -37,6 +37,25 @@ func TestNewAccountResponseExposesBuildBotFlagOnlyForBuild(t *testing.T) {
 	}
 }
 
+func TestNewAccountResponseExposesSSOBotFlagOnlyForSSO(t *testing.T) {
+	web := newAccountResponse(accountapp.View{
+		Credential:       accountdomain.Credential{Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO},
+		SSOBotFlagged:    true,
+		SSOBotFlagSource: 2,
+	})
+	if !web.SSOBotFlagged || web.SSOBotFlagSource != 2 || web.BuildBotFlagged {
+		t.Fatalf("Web SSO metadata = %#v", web)
+	}
+	build := newAccountResponse(accountapp.View{
+		Credential:       accountdomain.Credential{Provider: accountdomain.ProviderBuild},
+		SSOBotFlagged:    true,
+		SSOBotFlagSource: 1,
+	})
+	if build.SSOBotFlagged || build.SSOBotFlagSource != 0 {
+		t.Fatalf("Build leaked SSO mark = %#v", build)
+	}
+}
+
 func TestNewAccountResponseExposesAllLinkedAccounts(t *testing.T) {
 	response := newAccountResponse(accountapp.View{Credential: accountdomain.Credential{
 		Provider: accountdomain.ProviderWeb,
@@ -311,5 +330,33 @@ func TestAccountSyncPipelineUsesFinalQueuedTotal(t *testing.T) {
 		if value[1] != 3 {
 			t.Fatalf("progress contains changing total: %#v", progress)
 		}
+	}
+}
+
+func TestTestAccountModelRejectsInvalidCapability(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(accountapp.NewService(nil, nil, nil, nil, nil, nil, nil), nil)
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Params = []gin.Param{{Key: "id", Value: "1"}}
+	ginContext.Request = httptest.NewRequest("POST", "/api/admin/v1/accounts/1/model-tests", strings.NewReader(`{"publicId":"grok-4","capability":"tts"}`))
+	ginContext.Request.Header.Set("Content-Type", "application/json")
+	handler.testAccountModel(ginContext)
+	if recorder.Code != 400 || !strings.Contains(recorder.Body.String(), `"code":"invalidCapability"`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestTestAccountModelRejectsMissingPublicID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(accountapp.NewService(nil, nil, nil, nil, nil, nil, nil), nil)
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Params = []gin.Param{{Key: "id", Value: "1"}}
+	ginContext.Request = httptest.NewRequest("POST", "/api/admin/v1/accounts/1/model-tests", strings.NewReader(`{"capability":"chat"}`))
+	ginContext.Request.Header.Set("Content-Type", "application/json")
+	handler.testAccountModel(ginContext)
+	if recorder.Code != 400 || !strings.Contains(recorder.Body.String(), `"code":"invalidModel"`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }

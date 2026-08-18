@@ -199,8 +199,31 @@ type Credential struct {
 	// BuildBotFlagSource 是从 Build access token 提取并持久化的非敏感路由元数据。
 	// 仅精确值 1、2 表示风控；0 表示未标记或非 Build 账号。
 	BuildBotFlagSource int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// SSOBotFlagSource 是 grok.com botFlagSource / policy=deny 的 SSO 风控标记。
+	// 仅 Web/Console SSO 使用：1=账号级机器人，2=IP 层软标记；0 表示未标记或非 SSO。
+	// 与 Build JWT bfs 独立。token refresh / 普通 upsert 不得清除；仅显式风控检测可改。
+	SSOBotFlagSource int
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+// NormalizeSSOBotFlagSource keeps exact values 1 and 2 for Web/Console SSO only.
+func NormalizeSSOBotFlagSource(provider Provider, authType AuthType, source int) int {
+	if source != 1 && source != 2 {
+		return 0
+	}
+	if provider != ProviderWeb && provider != ProviderConsole {
+		return 0
+	}
+	if authType != "" && authType != AuthTypeSSO {
+		return 0
+	}
+	return source
+}
+
+// SSOBotFlagged reports whether a persisted SSO risk source is a robot mark.
+func SSOBotFlagged(source int) bool {
+	return source == 1 || source == 2
 }
 
 // CredentialMaterial contains the encrypted provider secrets and refresh

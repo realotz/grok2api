@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
+import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, FlaskConical, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -88,6 +88,7 @@ import {
 } from "@/features/accounts/accounts-api";
 import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/account-quota";
 import { AccountNameCell } from "@/features/accounts/account-name-cell";
+import { AccountModelTestDialog } from "@/features/accounts/account-model-test-dialog";
 import { WebAccountScriptsDialog } from "@/features/accounts/web-account-scripts";
 import { WebAccountSettingsDialogs, WebAccountSettingsMenu, type WebAccountConfirmationTarget } from "@/features/accounts/web-account-settings";
 import { assignEgressAccounts, listAllEgressNodes, listEgressNodes, listEgressSources, unassignEgressAccounts, type EgressScope } from "@/features/settings/settings-api";
@@ -101,7 +102,7 @@ type BuildQuotaTask = "sync" | "reset";
 type EgressConfigurationTask = "bind" | "unbind";
 type BuildDetectCounts = Record<BuildDetectItemDTO["outcome"], number>;
 
-const emptyBuildDetectCounts = (): BuildDetectCounts => ({ ok: 0, invalid: 0, failed: 0 });
+const emptyBuildDetectCounts = (): BuildDetectCounts => ({ ok: 0, flagged: 0, invalid: 0, failed: 0 });
 
 const egressFilterNodePageSize = 100;
 const egressFilterSourcePageSize = 100;
@@ -181,6 +182,7 @@ export function AccountsPage() {
   const [renewAllOpen, setRenewAllOpen] = useState(false);
   const [renewalProgress, setRenewalProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [editing, setEditing] = useState<AccountDTO | null>(null);
+  const [testing, setTesting] = useState<AccountDTO | null>(null);
   const [deleting, setDeleting] = useState<AccountDTO | null>(null);
   const [linkedDeleteTargets, setLinkedDeleteTargets] = useState<AccountProvider[]>([]);
   const [linkedDeleteCounts, setLinkedDeleteCounts] = useState<Partial<Record<AccountProvider, number>>>({});
@@ -237,7 +239,7 @@ export function AccountsPage() {
     queryFn: () => listAccounts({
       provider, page, pageSize, search: debouncedSearch, type: typeFilter, status: statusFilter, egress: egressFilter,
       renewal: provider === "grok_build" ? renewalFilter : undefined,
-      risk: provider === "grok_build" ? riskFilter : undefined,
+      risk: provider === "grok_build" || provider === "grok_web" || provider === "grok_console" ? riskFilter : undefined,
       agreement: provider === "grok_web" ? agreementFilter : undefined,
       association: associationFilter || undefined,
       sortBy: sort.field, sortOrder: sort.order,
@@ -772,9 +774,9 @@ export function AccountsPage() {
         onItem: appendDetectItem,
       };
       if (mode === "all") {
-        return detectBuildAccounts({ all: true }, handlers, controller.signal);
+        return detectBuildAccounts({ provider, all: true }, handlers, controller.signal);
       }
-      return detectBuildAccounts({ ids: [...selected] }, handlers, controller.signal);
+      return detectBuildAccounts({ provider, ids: [...selected] }, handlers, controller.signal);
     },
     onSuccess: (result, mode) => {
       if (mode === "selected") clearSelection();
@@ -1239,8 +1241,9 @@ export function AccountsPage() {
     || webConfirmationMutation.isPending
     || webAccountScriptsMutation.isPending;
 
-  const detectInvalidItems = detectItems.filter((item) => item.outcome === "invalid");
+  const detectInvalidItems = detectItems.filter((item) => item.outcome === "invalid" || (provider !== "grok_build" && item.outcome === "flagged"));
   const detectVisibleItems = detectMode === "selected" ? detectItems : detectInvalidItems;
+  const isSSODetect = provider === "grok_web" || provider === "grok_console";
 
   return (
     <div className="space-y-5">
@@ -1361,7 +1364,7 @@ export function AccountsPage() {
                   { value: "refreshable", label: t("accountCredential.autoRefresh") },
                   { value: "unrefreshable", label: t("accountCredential.noAutoRefresh") },
                 ] }] : []),
-                ...(provider === "grok_build" ? [{ id: "risk", label: t("accounts.riskFilter"), value: riskFilter, onChange: (value: string) => { setRiskFilter(value); setPage(1); }, options: [
+                ...((provider === "grok_build" || provider === "grok_web" || provider === "grok_console") ? [{ id: "risk", label: t("accounts.riskFilter"), value: riskFilter, onChange: (value: string) => { setRiskFilter(value); setPage(1); }, options: [
                   { value: "flagged", label: t("accounts.botRisk") },
                   { value: "normal", label: t("accounts.riskNormal") },
                 ] }] : []),
@@ -1403,7 +1406,7 @@ export function AccountsPage() {
                 }}>{t("accounts.egressConfiguration")}</Button>
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConversion([...selected])}>{t("accountConversion.action")}</Button> : null}
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets([...selected])}>{t("webAccountScripts.action")}</Button> : null}
-                {provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openDetectDialog("selected")}>{t("accountCredential.detectAction")}</Button> : null}
+                {provider === "grok_build" || provider === "grok_web" || provider === "grok_console" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openDetectDialog("selected")}>{t("accountCredential.detectAction")}</Button> : null}
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
                   if (provider === "grok_build") {
                     setBatchQuotaTask("sync");
@@ -1419,7 +1422,7 @@ export function AccountsPage() {
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConversion("all")}>{t("accountConversion.action")}</Button> : null}
                 {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets("all")}>{t("webAccountScripts.action")}</Button> : null}
-                {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openDetectDialog("all")}>{t("accountCredential.detectAction")}</Button> : null}
+                {hasProviderAccounts && (provider === "grok_build" || provider === "grok_web" || provider === "grok_console") ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openDetectDialog("all")}>{t("accountCredential.detectAction")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => { setAllQuotaTask("sync"); setSyncAllOpen(true); }}>{t("accountCredential.quotaSyncAction")}</Button> : null}
                 {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setRenewAllOpen(true)}>{t("accountCredential.refreshAction")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={bulkTaskPending} onClick={() => { resetCleanupState(); setCleanupOpen(true); }}><Trash2 />{t("accounts.cleanupAction")}</Button> : null}
@@ -1493,6 +1496,7 @@ export function AccountsPage() {
                           ) : null}
                           {provider === "grok_build" ? <DropdownMenuItem onClick={() => tokenMutation.mutate(account.id)}><RotateCw />{t("accounts.refreshToken")}</DropdownMenuItem> : null}
                           <DropdownMenuItem onClick={() => provider === "grok_build" ? billingMutation.mutate(account.id) : quotaMutation.mutate(account.id)}><RefreshCw />{provider === "grok_build" ? t("accounts.refreshBilling") : t("accounts.refreshModeQuota")}</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => setTesting(account)}><FlaskConical />{t("accounts.modelTest.action")}</DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => { resetLinkedDeleteState(); setDeleting(account); }}><Trash2 />{t("common.delete")}</DropdownMenuItem>
                         </DropdownMenuContent>
@@ -1506,6 +1510,8 @@ export function AccountsPage() {
         ) : null}
         </DataTableShell>
       </div>
+
+      {testing ? <AccountModelTestDialog account={testing} onClose={() => setTesting(null)} /> : null}
 
       <WebAccountSettingsDialogs
         confirmationTarget={webConfirmationTarget}
@@ -1564,8 +1570,8 @@ export function AccountsPage() {
       <Dialog open={detectDialogOpen} onOpenChange={closeDetectDialog}>
         <DialogContent className="max-w-xl gap-4 sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{detectMode === "all" ? t("accounts.detectAllTitle") : t("accounts.detectSelectedTitle", { count: selected.size })}</DialogTitle>
-            <DialogDescription>{detectMode === "all" ? t("accounts.detectAllDescription") : t("accounts.detectSelectedDescription", { count: selected.size })}</DialogDescription>
+            <DialogTitle>{detectMode === "all" ? t(isSSODetect ? "accounts.detectSSOAllTitle" : "accounts.detectAllTitle") : t(isSSODetect ? "accounts.detectSSOSelectedTitle" : "accounts.detectSelectedTitle", { count: selected.size })}</DialogTitle>
+            <DialogDescription>{detectMode === "all" ? t(isSSODetect ? "accounts.detectSSOAllDescription" : "accounts.detectAllDescription") : t(isSSODetect ? "accounts.detectSSOSelectedDescription" : "accounts.detectSelectedDescription", { count: selected.size })}</DialogDescription>
           </DialogHeader>
           {(detectMutation.isPending || detectProgress || detectVisibleItems.length > 0) ? (
             <div className="space-y-3">
@@ -1575,27 +1581,28 @@ export function AccountsPage() {
                   {detectProgress ? `${detectProgress.completed} / ${detectProgress.total}` : detectMutation.isPending ? t("common.loading") : "—"}
                 </span>
               </div>
-              {detectMode === "all" && detectCounts.invalid > 0 ? (
-                <p className="text-xs text-muted-foreground">{t("accounts.detectInvalidCount", { count: detectCounts.invalid })}</p>
+              {detectMode === "all" && (detectCounts.invalid + (isSSODetect ? detectCounts.flagged : 0)) > 0 ? (
+                <p className="text-xs text-muted-foreground">{t(isSSODetect ? "accounts.detectSSOFlaggedCount" : "accounts.detectInvalidCount", { count: detectCounts.invalid + (isSSODetect ? detectCounts.flagged : 0) })}</p>
               ) : null}
-              {detectMode === "selected" && (detectCounts.ok + detectCounts.invalid + detectCounts.failed) > 0 ? (
+              {detectMode === "selected" && (detectCounts.ok + detectCounts.flagged + detectCounts.invalid + detectCounts.failed) > 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  {t("accounts.detectSelectedSummary", {
+                  {t(isSSODetect ? "accounts.detectSSOSelectedSummary" : "accounts.detectSelectedSummary", {
                     ok: detectCounts.ok,
+                    flagged: detectCounts.flagged,
                     invalid: detectCounts.invalid,
                     failed: detectCounts.failed,
                   })}
                 </p>
               ) : null}
-              {(detectCounts.ok + detectCounts.invalid + detectCounts.failed) > detectVisibleItems.length ? (
+              {(detectCounts.ok + detectCounts.flagged + detectCounts.invalid + detectCounts.failed) > detectVisibleItems.length ? (
                 <p className="text-xs text-muted-foreground">{t("accounts.detectResultsLimited", { count: 200 })}</p>
               ) : null}
               <div className="max-h-64 overflow-y-auto rounded-md border">
                 {detectVisibleItems.length === 0 ? (
                   <div className="px-3 py-6 text-center text-sm text-muted-foreground">
                     {detectMutation.isPending
-                      ? t(detectMode === "all" ? "accounts.detectWaitingInvalid" : "accounts.detectWaitingResults")
-                      : t(detectMode === "all" ? "accounts.detectNoInvalid" : "accounts.detectNoResults")}
+                      ? t(detectMode === "all" ? (isSSODetect ? "accounts.detectWaitingSSOFlagged" : "accounts.detectWaitingInvalid") : "accounts.detectWaitingResults")
+                      : t(detectMode === "all" ? (isSSODetect ? "accounts.detectNoSSOFlagged" : "accounts.detectNoInvalid") : "accounts.detectNoResults")}
                   </div>
                 ) : (
                   <ul className="divide-y">
@@ -1606,6 +1613,7 @@ export function AccountsPage() {
                           className={cn(
                             "mt-0.5 shrink-0",
                             item.outcome === "ok" && "border-emerald-500/40 text-emerald-700 dark:text-emerald-300",
+                            item.outcome === "flagged" && "border-rose-500/40 text-rose-700 dark:text-rose-300",
                             item.outcome === "invalid" && "border-destructive/40 text-destructive",
                             item.outcome === "failed" && "border-amber-500/40 text-amber-700 dark:text-amber-300",
                           )}

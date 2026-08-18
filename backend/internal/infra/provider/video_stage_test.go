@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 type videoStageStatusError struct{ status int }
@@ -24,5 +25,25 @@ func TestVideoCreateFailureStageIsFailClosed(t *testing.T) {
 	}
 	if stage := VideoCreateFailureStage(videoStageStatusError{status: http.StatusInternalServerError}); stage != VideoStageSubmitted {
 		t.Fatalf("explicit 500 stage = %q", stage)
+	}
+}
+
+func TestIsFastRemoteVideoRisk(t *testing.T) {
+	t.Parallel()
+	remote := VideoResult{URL: "https://cdn.example/scenery.mp4"}
+	if !IsFastRemoteVideoRisk(time.Second, remote) {
+		t.Fatal("1s remote video should be risk")
+	}
+	if IsFastRemoteVideoRisk(VideoRiskReadyWithin, remote) {
+		t.Fatal("exactly 10s should not be risk")
+	}
+	if IsFastRemoteVideoRisk(11*time.Second, remote) {
+		t.Fatal("slow remote video should not be risk")
+	}
+	if IsFastRemoteVideoRisk(time.Second, VideoResult{URL: "https://cdn.example/a.mp4", AssetID: "vid_local"}) {
+		t.Fatal("local asset must not be treated as scenery")
+	}
+	if IsFastRemoteVideoRisk(time.Second, VideoResult{}) {
+		t.Fatal("empty result should not be risk")
 	}
 }

@@ -2033,6 +2033,24 @@ func normalizedRoutingWebTier(tier account.WebTier) account.WebTier {
 	return tier
 }
 
+func webTierRank(tier account.WebTier) int {
+	switch normalizedRoutingWebTier(tier) {
+	case account.WebTierSuper:
+		return 2
+	case account.WebTierHeavy:
+		return 3
+	default:
+		return 1
+	}
+}
+
+func webTierMeetsMinimum(tier, minimum account.WebTier) bool {
+	if minimum == "" {
+		return true
+	}
+	return webTierRank(tier) >= webTierRank(minimum)
+}
+
 func webTierInOrder(order []account.WebTier, tier account.WebTier) bool {
 	tier = normalizedRoutingWebTier(tier)
 	for _, allowed := range order {

@@ -17,6 +17,7 @@ import (
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountsyncapp "github.com/chenyme/grok2api/backend/internal/application/accountsync"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
@@ -168,6 +169,8 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/:id/refresh-token", h.refreshToken)
 	router.POST("/accounts/:id/refresh-billing", h.refreshBilling)
 	router.POST("/accounts/:id/refresh-quota", h.refreshWebQuota)
+	router.GET("/accounts/:id/models", h.listAccountModels)
+	router.POST("/accounts/:id/model-tests", h.testAccountModel)
 }
 
 type updateRequest struct {
@@ -248,7 +251,8 @@ type accountTaskProgressResponse struct {
 	Phase     string `json:"phase,omitempty"`
 }
 
-// accountDetectItemResponse 是检测任务的单账号增量事件；全量检测仅推送 invalid。
+// accountDetectItemResponse 是检测任务的单账号增量事件。
+// Build 全量检测仅推送 invalid；SSO 全量检测推送 flagged 与 invalid。
 type accountDetectItemResponse struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
@@ -256,6 +260,7 @@ type accountDetectItemResponse struct {
 	Outcome    string `json:"outcome"`
 	Reason     string `json:"reason,omitempty"`
 	HTTPStatus int    `json:"httpStatus,omitempty"`
+	Source     int    `json:"source,omitempty"`
 }
 
 type accountBatchResponse struct {
@@ -319,6 +324,8 @@ type accountResponse struct {
 	BuildRouteMode             string                  `json:"buildRouteMode"`
 	BuildBotFlagged            bool                    `json:"buildBotFlagged"`
 	BuildBotFlagSource         int                     `json:"buildBotFlagSource,omitempty"`
+	SSOBotFlagged              bool                    `json:"ssoBotFlagged"`
+	SSOBotFlagSource           int                     `json:"ssoBotFlagSource,omitempty"`
 	EgressNodeID               uint64                  `json:"egressNodeId,omitempty,string"`
 	EgressAssignmentMode       string                  `json:"egressAssignmentMode,omitempty"`
 	ModelSyncFailed            bool                    `json:"modelSyncFailed,omitempty"`
@@ -564,8 +571,12 @@ func (h *Handler) detectBuildAccounts(c *gin.Context) {
 			return
 		}
 	}
-	if request.Provider != "" && request.Provider != string(accountdomain.ProviderBuild) {
-		response.Error(c, http.StatusBadRequest, "invalidProvider", "仅 Grok Build 账号支持可用性检测")
+	providerValue := request.Provider
+	if providerValue == "" {
+		providerValue = string(accountdomain.ProviderBuild)
+	}
+	if providerValue != string(accountdomain.ProviderBuild) && providerValue != string(accountdomain.ProviderWeb) && providerValue != string(accountdomain.ProviderConsole) {
+		response.Error(c, http.StatusBadRequest, "invalidProvider", "仅 Grok Build、Web 与 Console 账号支持检测")
 		return
 	}
 	hasIDs := len(request.IDs) > 0
@@ -580,13 +591,33 @@ func (h *Handler) detectBuildAccounts(c *gin.Context) {
 			response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
 			return
 		}
-		if !h.validateProviderIDs(c, parsed, string(accountdomain.ProviderBuild)) {
+		if !h.validateProviderIDs(c, parsed, providerValue) {
 			return
 		}
 		ids = parsed
 	}
 	stream := newAccountEventStream(c)
 	defer stream.Close()
+	if providerValue == string(accountdomain.ProviderWeb) || providerValue == string(accountdomain.ProviderConsole) {
+		itemObserver := func(item accountapp.SSODetectItemResult) error {
+			return stream.Write("item", accountDetectItemResponse{
+				ID:         strconv.FormatUint(item.AccountID, 10),
+				Name:       item.Name,
+				Email:      item.Email,
+				Outcome:    string(item.Outcome),
+				Reason:     item.Reason,
+				HTTPStatus: item.HTTPStatus,
+				Source:     item.Source,
+			})
+		}
+		succeeded, failed, err := h.service.DetectSSOAccountsWithProgress(c.Request.Context(), accountdomain.Provider(providerValue), ids, request.All, stream.ProgressObserver(), itemObserver)
+		if err != nil {
+			stream.WriteError("accountDetectFailed", "检测 SSO 账号风控失败")
+			return
+		}
+		_ = stream.Write("complete", accountBatchResponse{Succeeded: succeeded, Failed: failed})
+		return
+	}
 	itemObserver := func(item accountapp.BuildDetectItemResult) error {
 		return stream.Write("item", accountDetectItemResponse{
 			ID:         strconv.FormatUint(item.AccountID, 10),
@@ -768,6 +799,78 @@ func (h *Handler) get(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, newAccountResponse(value))
+}
+
+type accountModelProbeItemResponse struct {
+	PublicID      string `json:"publicId"`
+	UpstreamModel string `json:"upstreamModel"`
+	Capability    string `json:"capability"`
+}
+
+type accountModelTestRequest struct {
+	PublicID   string `json:"publicId"`
+	Capability string `json:"capability"`
+	Prompt     string `json:"prompt"`
+}
+
+type accountModelTestResponse struct {
+	Outcome    string `json:"outcome"`
+	PublicID   string `json:"publicId"`
+	Capability string `json:"capability"`
+	Text       string `json:"text,omitempty"`
+	PreviewURL string `json:"previewUrl,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+func (h *Handler) listAccountModels(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	items, err := h.service.ListAccountTestModels(c.Request.Context(), id)
+	if err != nil {
+		h.writeServiceError(c, "accountModelsFailed", err, http.StatusInternalServerError, "读取账号可用模型失败")
+		return
+	}
+	result := make([]accountModelProbeItemResponse, 0, len(items))
+	for _, item := range items {
+		result = append(result, accountModelProbeItemResponse{
+			PublicID: item.PublicID, UpstreamModel: item.UpstreamModel, Capability: string(item.Capability),
+		})
+	}
+	response.Success(c, http.StatusOK, gin.H{"items": result})
+}
+
+func (h *Handler) testAccountModel(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var request accountModelTestRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidBody", "请求体无效")
+		return
+	}
+	capability := modeldomain.Capability(strings.TrimSpace(request.Capability))
+	if request.PublicID = strings.TrimSpace(request.PublicID); request.PublicID == "" {
+		response.Error(c, http.StatusBadRequest, "invalidModel", "模型名称无效")
+		return
+	}
+	switch capability {
+	case modeldomain.CapabilityResponses, modeldomain.CapabilityChat, modeldomain.CapabilityImage, modeldomain.CapabilityVideo:
+	default:
+		response.Error(c, http.StatusBadRequest, "invalidCapability", "仅支持测试文本、图片或视频模型")
+		return
+	}
+	result, err := h.service.TestAccountModel(c.Request.Context(), id, request.PublicID, capability, request.Prompt)
+	if err != nil {
+		h.writeServiceError(c, "accountModelTestFailed", err, http.StatusBadGateway, "账号模型测试失败")
+		return
+	}
+	response.Success(c, http.StatusOK, accountModelTestResponse{
+		Outcome: string(result.Outcome), PublicID: result.PublicID, Capability: string(result.Capability),
+		Text: result.Text, PreviewURL: result.PreviewURL, Error: result.Error,
+	})
 }
 
 func (h *Handler) startDevice(c *gin.Context) {
@@ -1496,6 +1599,8 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		BuildRouteMode:             string(buildRouteMode),
 		BuildBotFlagged:            value.BuildBotFlagged && c.Provider == accountdomain.ProviderBuild,
 		BuildBotFlagSource:         buildBotFlagSourceResponse(c.Provider, value.BuildBotFlagged, value.BuildBotFlagSource),
+		SSOBotFlagged:              value.SSOBotFlagged && (c.Provider == accountdomain.ProviderWeb || c.Provider == accountdomain.ProviderConsole),
+		SSOBotFlagSource:           ssoBotFlagSourceResponse(c.Provider, value.SSOBotFlagged, value.SSOBotFlagSource),
 		EgressNodeID:               c.EgressNodeID,
 		EgressAssignmentMode:       string(c.EgressAssignmentMode),
 		Quota:                      newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
@@ -1534,6 +1639,13 @@ func buildBotFlagSourceResponse(provider accountdomain.Provider, flagged bool, s
 		return 0
 	}
 	return source
+}
+
+func ssoBotFlagSourceResponse(provider accountdomain.Provider, flagged bool, source int) int {
+	if !flagged || (provider != accountdomain.ProviderWeb && provider != accountdomain.ProviderConsole) {
+		return 0
+	}
+	return accountdomain.NormalizeSSOBotFlagSource(provider, accountdomain.AuthTypeSSO, source)
 }
 
 func newQuotaResponse(value accountapp.QuotaView) quotaResponse {

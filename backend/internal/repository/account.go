@@ -34,6 +34,15 @@ type BuildBotFlagSourceUpdate struct {
 	Source                       int
 }
 
+// SSOBotFlagSourceUpdate persists grok.com SSO robot marks without rewriting tokens.
+// ExpectedEncryptedAccessToken is a compare-and-swap guard: a concurrent token
+// replacement leaves the new secret untouched.
+type SSOBotFlagSourceUpdate struct {
+	AccountID                    uint64
+	ExpectedEncryptedAccessToken string
+	Source                       int
+}
+
 // CredentialRefreshFailure is the bounded diagnostic state persisted for the
 // latest failed OAuth refresh. Response must already be redacted by the
 // provider adapter before it reaches persistence.

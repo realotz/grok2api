@@ -119,7 +119,7 @@ export function AccountNameCell({ account }: { account: AccountDTO }) {
             </span>
           </>
         ) : null}
-        {account.buildBotFlagged ? (
+        {account.buildBotFlagged || account.ssoBotFlagged ? (
           <>
             <span className="mx-2 h-3 w-px shrink-0 bg-border" aria-hidden="true" />
             <Tooltip>
@@ -128,7 +128,7 @@ export function AccountNameCell({ account }: { account: AccountDTO }) {
                   tabIndex={0}
                   aria-label={t("accounts.botRisk")}
                   className={
-                    account.buildBotFlagSource === 2
+                    (account.ssoBotFlagged ? account.ssoBotFlagSource : account.buildBotFlagSource) === 2
                       ? "inline-flex cursor-help text-rose-500 focus-visible:outline-none dark:text-rose-400"
                       : "inline-flex cursor-help text-amber-500 focus-visible:outline-none dark:text-amber-400"
                   }
@@ -137,11 +137,17 @@ export function AccountNameCell({ account }: { account: AccountDTO }) {
                 </span>
               </TooltipTrigger>
               <TooltipContent>
-                {account.buildBotFlagSource === 2
-                  ? t("accounts.botRiskTooltipSource2")
-                  : account.buildBotFlagSource === 1
-                    ? t("accounts.botRiskTooltipSource1")
-                    : t("accounts.botRiskTooltip")}
+                {account.ssoBotFlagged
+                  ? (account.ssoBotFlagSource === 2
+                    ? t("accounts.ssoBotRiskTooltipSource2")
+                    : account.ssoBotFlagSource === 1
+                      ? t("accounts.ssoBotRiskTooltipSource1")
+                      : t("accounts.ssoBotRiskTooltip"))
+                  : account.buildBotFlagSource === 2
+                    ? t("accounts.botRiskTooltipSource2")
+                    : account.buildBotFlagSource === 1
+                      ? t("accounts.botRiskTooltipSource1")
+                      : t("accounts.botRiskTooltip")}
               </TooltipContent>
             </Tooltip>
           </>

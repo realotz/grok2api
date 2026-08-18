@@ -49,8 +49,25 @@ func TestWebHeadersOnlyUseSSOAndCloudflareCookies(t *testing.T) {
 	}
 	for name := range headers {
 		if strings.HasPrefix(strings.ToLower(name), "sec-ch-ua") {
-			t.Fatalf("synthetic client hint must not be sent: %s", name)
+			t.Fatalf("non-chromium UA must not send client hints: %s", name)
 		}
+	}
+}
+
+func TestWebHeadersIncludeLowEntropyHintsForChrome(t *testing.T) {
+	lease := &infraegress.Lease{UserAgent: infraegress.DefaultUserAgent}
+	headers := buildHeaders("sso=token-value", lease, "application/json")
+	if headers.Get("Sec-Ch-Ua-Platform") != `"macOS"` {
+		t.Fatalf("platform = %q", headers.Get("Sec-Ch-Ua-Platform"))
+	}
+	if headers.Get("Sec-Ch-Ua-Mobile") != "?0" {
+		t.Fatalf("mobile = %q", headers.Get("Sec-Ch-Ua-Mobile"))
+	}
+	if !strings.Contains(headers.Get("Sec-Ch-Ua"), `v="146"`) {
+		t.Fatalf("sec-ch-ua = %q", headers.Get("Sec-Ch-Ua"))
+	}
+	if headers.Get("Sec-Ch-Ua-Arch") != "" || headers.Get("Sec-Ch-Ua-Bitness") != "" {
+		t.Fatal("low-entropy headers must not include arch or bitness")
 	}
 }
 

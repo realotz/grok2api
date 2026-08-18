@@ -101,6 +101,9 @@ type buildBotFlagIndexRepository interface {
 	UpdateBuildBotFlagSources(ctx context.Context, values []repository.BuildBotFlagSourceUpdate) error
 	CountBuildBotFlagged(ctx context.Context) (int64, error)
 	CountAvailableBuildBotFlagged(ctx context.Context, now time.Time) (int64, error)
+	CountSSOBotFlagged(ctx context.Context) (int64, error)
+	ListSSOBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error)
+	UpdateSSOBotFlagSources(ctx context.Context, values []repository.SSOBotFlagSourceUpdate) error
 }
 
 type quotaRefreshState struct {
@@ -183,6 +186,8 @@ type View struct {
 	QuotaWindows       []accountdomain.QuotaWindow
 	BuildBotFlagged    bool
 	BuildBotFlagSource int
+	SSOBotFlagged      bool
+	SSOBotFlagSource   int
 }
 
 type UpdateInput struct {
@@ -353,16 +358,29 @@ func (s *Service) Summary(ctx context.Context) (Summary, error) {
 	result.Attention = result.Issues.Disabled + result.Issues.ReauthRequired
 	indexed, hasIndex := s.accounts.(buildBotFlagIndexRepository)
 	var flaggedIDs []uint64
+	var buildRisk int64
 	if hasIndex {
-		result.Risk, err = indexed.CountBuildBotFlagged(ctx)
+		buildRisk, err = indexed.CountBuildBotFlagged(ctx)
 	} else {
 		flaggedIDs, err = s.buildBotFlaggedAccountIDs(ctx)
-		result.Risk = int64(len(flaggedIDs))
+		buildRisk = int64(len(flaggedIDs))
 	}
 	if err != nil {
 		return Summary{}, err
 	}
-	if s.excludeBuildBotFlaggedFromSchedulingEnabled() && result.Risk > 0 {
+	var ssoRisk int64
+	if hasIndex {
+		ssoRisk, err = indexed.CountSSOBotFlagged(ctx)
+	} else {
+		ssoIDs, ssoErr := s.ssoBotFlaggedAccountIDs(ctx)
+		err = ssoErr
+		ssoRisk = int64(len(ssoIDs))
+	}
+	if err != nil {
+		return Summary{}, err
+	}
+	result.Risk = buildRisk + ssoRisk
+	if s.excludeBuildBotFlaggedFromSchedulingEnabled() && buildRisk > 0 {
 		var excluded int64
 		if hasIndex {
 			excluded, err = indexed.CountAvailableBuildBotFlagged(ctx, now)
@@ -419,6 +437,8 @@ type Service struct {
 	refreshPool         *batch.Pool
 	// detectPool 专用于管理端「检测账号」，与额度同步/续期隔离，默认并发 32。
 	detectPool             *batch.Pool
+	models                 repository.ModelRepository
+	modelSyncer            modelCapabilitySyncer
 	credentialRefreshWake  chan struct{}
 	autoCleanMu            sync.RWMutex
 	autoClean              AutoCleanConfig
@@ -514,6 +534,16 @@ func (s *Service) SetDetectPool(pool *batch.Pool) {
 	}
 }
 
+// SetModels 绑定模型仓储，供管理端按账号列出可测模型。
+func (s *Service) SetModels(models repository.ModelRepository) {
+	s.models = models
+}
+
+// SetModelSyncer 绑定账号模型能力同步；列表为空时补一次快照。
+func (s *Service) SetModelSyncer(syncer modelCapabilitySyncer) {
+	s.modelSyncer = syncer
+}
+
 func (s *Service) SetLogger(logger *slog.Logger) {
 	if logger != nil {
 		s.logger = logger
@@ -537,7 +567,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		!egressValid ||
 		!oneOf(filter.Renewal, "", "refreshable", "unrefreshable") ||
 		!oneOf(filter.Risk, "", "flagged", "normal") ||
-		(filter.Risk != "" && filter.Provider != string(accountdomain.ProviderBuild)) ||
+		(filter.Risk != "" && !supportsRiskFilter(filter.Provider)) ||
 		!oneOf(filter.Agreement, "", "nsfwEnabled", "nsfwDisabled", "termsAccepted", "termsNotAccepted", "allAccepted", "allNotAccepted") ||
 		(filter.Agreement != "" && filter.Provider != string(accountdomain.ProviderWeb)) ||
 		!validAssociationFilter(filter.Provider, filter.Association) ||
@@ -558,7 +588,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		if _, ok := s.accounts.(buildBotFlagIndexRepository); ok {
 			repositoryFilter.Risk = filter.Risk
 		} else {
-			flaggedIDs, err := s.buildBotFlaggedAccountIDs(ctx)
+			flaggedIDs, err := s.riskFlaggedAccountIDs(ctx, accountdomain.Provider(filter.Provider))
 			if err != nil {
 				return nil, 0, err
 			}
@@ -599,8 +629,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 	}
 	views := make([]View, 0, len(values))
 	for _, value := range values {
-		metadata := s.buildBotFlagMetadata(value)
-		view := View{Credential: value, BuildBotFlagged: metadata.BuildBotFlagged, BuildBotFlagSource: metadata.BuildBotFlagSource}
+		view := s.newAccountView(value)
 		if billing, ok := billings[value.ID]; ok {
 			view.Billing = &billing
 		}
@@ -1032,8 +1061,7 @@ func (s *Service) Get(ctx context.Context, id uint64) (View, error) {
 	if err != nil {
 		return View{}, mapRepositoryError(err)
 	}
-	metadata := s.buildBotFlagMetadata(value)
-	view := View{Credential: value, BuildBotFlagged: metadata.BuildBotFlagged, BuildBotFlagSource: metadata.BuildBotFlagSource}
+	view := s.newAccountView(value)
 	if billing, err := s.accounts.GetBilling(ctx, id); err == nil {
 		view.Billing = &billing
 	} else if !errors.Is(err, repository.ErrNotFound) {
@@ -1077,6 +1105,56 @@ func (s *Service) buildBotFlagMetadata(value accountdomain.Credential) provider.
 	metadata.BuildBotFlagSource = source
 	metadata.BuildBotFlagged = source != 0
 	return metadata
+}
+
+func (s *Service) newAccountView(value accountdomain.Credential) View {
+	metadata := s.buildBotFlagMetadata(value)
+	source := accountdomain.NormalizeSSOBotFlagSource(value.Provider, value.AuthType, value.SSOBotFlagSource)
+	return View{
+		Credential:         value,
+		BuildBotFlagged:    metadata.BuildBotFlagged,
+		BuildBotFlagSource: metadata.BuildBotFlagSource,
+		SSOBotFlagged:      accountdomain.SSOBotFlagged(source),
+		SSOBotFlagSource:   source,
+	}
+}
+
+func supportsRiskFilter(provider string) bool {
+	return provider == string(accountdomain.ProviderBuild) || provider == string(accountdomain.ProviderWeb) || provider == string(accountdomain.ProviderConsole)
+}
+
+func (s *Service) riskFlaggedAccountIDs(ctx context.Context, provider accountdomain.Provider) ([]uint64, error) {
+	if provider == accountdomain.ProviderWeb || provider == accountdomain.ProviderConsole {
+		return s.ssoBotFlaggedAccountIDs(ctx)
+	}
+	return s.buildBotFlaggedAccountIDs(ctx)
+}
+
+func (s *Service) ssoBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
+	if indexed, ok := s.accounts.(buildBotFlagIndexRepository); ok {
+		return indexed.ListSSOBotFlaggedAccountIDs(ctx)
+	}
+	const batchSize = 500
+	result := make([]uint64, 0)
+	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderWeb, accountdomain.ProviderConsole} {
+		var afterID uint64
+		for {
+			values, _, err := s.accounts.ListProviderAccountBatch(ctx, providerValue, afterID, batchSize)
+			if err != nil {
+				return nil, err
+			}
+			for _, value := range values {
+				if accountdomain.SSOBotFlagged(value.SSOBotFlagSource) {
+					result = append(result, value.ID)
+				}
+			}
+			if len(values) < batchSize {
+				break
+			}
+			afterID = values[len(values)-1].ID
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) ObserveResponseModel(ctx context.Context, id uint64, model string) error {
@@ -3762,6 +3840,169 @@ func (s *Service) BatchRefreshBilling(ctx context.Context, ids []uint64) (int, i
 		return 0, 0, err
 	}
 	return s.refreshBillings(ctx, values, nil)
+}
+
+type SSODetectOutcome string
+
+const (
+	SSODetectOutcomeOK      SSODetectOutcome = "ok"
+	SSODetectOutcomeFlagged SSODetectOutcome = "flagged"
+	SSODetectOutcomeInvalid SSODetectOutcome = "invalid"
+	SSODetectOutcomeFailed  SSODetectOutcome = "failed"
+)
+
+type SSODetectItemResult struct {
+	AccountID  uint64
+	Name       string
+	Email      string
+	Outcome    SSODetectOutcome
+	Reason     string
+	HTTPStatus int
+	Source     int
+}
+
+type SSODetectItemObserver func(item SSODetectItemResult) error
+
+// DetectSSOAccountsWithProgress inspects grok.com botFlagSource for Web/Console SSO
+// accounts and persists robot marks. It never refreshes or rewrites SSO tokens.
+func (s *Service) DetectSSOAccountsWithProgress(ctx context.Context, provider accountdomain.Provider, ids []uint64, all bool, progress BatchProgressObserver, itemObserver SSODetectItemObserver) (int, int, error) {
+	if provider != accountdomain.ProviderWeb && provider != accountdomain.ProviderConsole {
+		return 0, 0, invalidInput("仅 Grok Web 与 Console SSO 账号支持风控检测")
+	}
+	if all == (len(ids) > 0) {
+		return 0, 0, invalidInput("必须明确选择全部账号或提供非空账号 ID")
+	}
+	if s.providers == nil {
+		return 0, 0, fmt.Errorf("Provider 注册表未初始化")
+	}
+	inspector, ok := s.providers.SSORisk(provider)
+	if !ok {
+		return 0, 0, fmt.Errorf("Provider %s 未注册风控检测", provider)
+	}
+	selectedMode := !all
+	var err error
+	if all {
+		ids, err = s.accounts.ListEnabledAccountIDs(ctx, provider, false)
+		if err != nil {
+			return 0, 0, err
+		}
+	} else {
+		ids, err = normalizeBatchIDs(ids)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	if len(ids) == 0 {
+		return 0, 0, nil
+	}
+	pool := s.detectPool
+	if pool == nil {
+		pool = s.syncPool
+	}
+	if progress != nil {
+		if err := progress(0, len(ids)); err != nil {
+			return 0, 0, err
+		}
+	}
+	var observerMu sync.Mutex
+	var progressErr error
+	completed := 0
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	summary, err := batch.ForEachObserved(runCtx, ids, batch.Options{Workers: pool.Limit(), Pool: pool}, func(workCtx context.Context, id uint64) (SSODetectItemResult, error) {
+		item := s.detectSSOAccount(workCtx, inspector, id)
+		if itemObserver != nil && (selectedMode || item.Outcome == SSODetectOutcomeFlagged || item.Outcome == SSODetectOutcomeInvalid) {
+			notifyErr := func() error {
+				observerMu.Lock()
+				defer observerMu.Unlock()
+				return itemObserver(item)
+			}()
+			if notifyErr != nil {
+				return item, notifyErr
+			}
+		}
+		if item.Outcome == SSODetectOutcomeOK || item.Outcome == SSODetectOutcomeFlagged {
+			return item, nil
+		}
+		if item.Reason != "" {
+			return item, fmt.Errorf("%s", item.Reason)
+		}
+		return item, fmt.Errorf("SSO 风控检测失败")
+	}, func(index int, result batch.Result[SSODetectItemResult]) {
+		var panicErr *batch.PanicError
+		if errors.As(result.Err, &panicErr) {
+			s.logger.Error("account_bulk_task_panicked", "operation", "sso_detect", "account_id", ids[index], "error", panicErr, "stack", string(panicErr.Stack))
+		}
+		observerMu.Lock()
+		defer observerMu.Unlock()
+		completed++
+		if progress != nil {
+			if notifyErr := progress(completed, len(ids)); notifyErr != nil && progressErr == nil {
+				progressErr = notifyErr
+				cancel()
+			}
+		}
+	})
+	s.logBatchSummary("sso_detect", pool, summary, err)
+	return summary.Succeeded, summary.Failed, errors.Join(err, progressErr)
+}
+
+func (s *Service) detectSSOAccount(ctx context.Context, inspector provider.SSORiskAdapter, id uint64) SSODetectItemResult {
+	item := SSODetectItemResult{AccountID: id, Outcome: SSODetectOutcomeFailed}
+	value, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		item.Reason = err.Error()
+		return item
+	}
+	item.Name = value.Name
+	item.Email = value.Email
+	if value.AuthType != accountdomain.AuthTypeSSO {
+		item.Reason = "账号不是 SSO 凭据"
+		return item
+	}
+	risk, err := inspector.InspectSSORisk(ctx, value)
+	item.HTTPStatus = risk.StatusCode
+	item.Source = risk.Source
+	if risk.Unauthorized || errors.Is(err, provider.ErrUnauthorized) {
+		reason := "SSO 会话已失效"
+		if markErr := s.markSSOCredentialRejected(ctx, value, reason); markErr != nil {
+			item.Reason = markErr.Error()
+			return item
+		}
+		item.Outcome = SSODetectOutcomeInvalid
+		item.Reason = reason
+		return item
+	}
+	if err != nil || !risk.Inspected {
+		if risk.Error != "" {
+			item.Reason = risk.Error
+		} else if err != nil {
+			item.Reason = err.Error()
+		} else {
+			item.Reason = "未解析到 grok.com 风控字段"
+		}
+		return item
+	}
+	source := accountdomain.NormalizeSSOBotFlagSource(value.Provider, value.AuthType, risk.Source)
+	if indexed, ok := s.accounts.(buildBotFlagIndexRepository); ok {
+		if updateErr := indexed.UpdateSSOBotFlagSources(ctx, []repository.SSOBotFlagSourceUpdate{{
+			AccountID: value.ID, ExpectedEncryptedAccessToken: value.EncryptedAccessToken, Source: source,
+		}}); updateErr != nil {
+			item.Reason = updateErr.Error()
+			return item
+		}
+	}
+	if risk.Flagged || accountdomain.SSOBotFlagged(source) {
+		item.Outcome = SSODetectOutcomeFlagged
+		if risk.Details != "" {
+			item.Reason = risk.Details
+		} else {
+			item.Reason = fmt.Sprintf("botFlagSource=%d", source)
+		}
+		return item
+	}
+	item.Outcome = SSODetectOutcomeOK
+	return item
 }
 
 // DetectBuildAccountsWithProgress 对指定或全部 Grok Build 账号发起探测请求；all 与 ids 必须且只能提供一个。

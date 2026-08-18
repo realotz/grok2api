@@ -78,7 +78,8 @@ type AccountListFilter struct {
 	EgressNodeID   uint64
 	EgressSourceID uint64
 	Refreshable    *bool
-	// Risk filters Build accounts by persisted bot_flag_source/bfs metadata.
+	// Risk filters persisted robot marks: Build uses build_bot_flag_source/bfs,
+	// Web/Console SSO uses sso_bot_flag_source from grok.com botFlagSource.
 	Risk string
 	// Agreement filters grok_web accounts by NSFW and current terms acceptance.
 	Agreement string

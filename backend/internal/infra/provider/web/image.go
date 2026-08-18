@@ -1481,6 +1481,10 @@ func parseMediaPostResponseWithDiagnostics(response *http.Response, onUpstreamEr
 	return strings.TrimSpace(value.Post.ID), nil
 }
 
+func isStatsigAntiBotJSON(body []byte) bool {
+	return strings.Contains(strings.ToLower(string(body)), "anti-bot")
+}
+
 func (a *Adapter) postJSON(ctx context.Context, cfg Config, lease *egress.Lease, token, endpoint string, payload any, timeout time.Duration) (*http.Response, error) {
 	return a.postJSONWithReferer(ctx, cfg, lease, token, endpoint, payload, timeout, cfg.BaseURL+"/imagine")
 }
@@ -1520,6 +1524,10 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 				lease.InvalidateClearance()
 				_ = a.invalidateSignedStatsig(http.MethodPost, endpoint)
 				return response, nil
+			}
+			// code 7 anti-bot is often a stale (seed, HEX) pair, not a policy block.
+			if isStatsigAntiBotJSON(body) && attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, endpoint) {
+				continue
 			}
 			// Structured JSON responses are application policy decisions. They
 			// must not invalidate Clearance, affect egress health, or be replayed.

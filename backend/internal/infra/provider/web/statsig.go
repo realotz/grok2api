@@ -70,8 +70,15 @@ func newStatsigSigner() *statsigSigner {
 	}
 }
 
+func leaseUserAgent(lease *infraegress.Lease) string {
+	if lease == nil {
+		return ""
+	}
+	return strings.TrimSpace(lease.UserAgent)
+}
+
 func (s *statsigSigner) Sign(ctx context.Context, baseURL, signerURL, token string, lease *infraegress.Lease, method, target string) (string, string, error) {
-	key, path, err := statsigSignatureKey(baseURL, signerURL, method, target)
+	key, path, err := statsigSignatureKey(baseURL, signerURL, method, target, leaseUserAgent(lease))
 	if err != nil {
 		return "", "", err
 	}
@@ -83,7 +90,7 @@ func (s *statsigSigner) Sign(ctx context.Context, baseURL, signerURL, token stri
 		if cached, ok := s.cached(key, now); ok {
 			return statsigSignResult{value: cached, source: "cache"}, nil
 		}
-		fresh, refreshErr := s.freshSignature(ctx, baseURL, signerURL, token, lease, method, path)
+		fresh, refreshErr := s.freshSignature(ctx, baseURL, signerURL, token, lease, method, path, leaseUserAgent(lease))
 		if refreshErr != nil {
 			if stale, ok := s.stale(key); ok {
 				return statsigSignResult{value: stale, source: "stale"}, nil
@@ -109,8 +116,9 @@ func (s *statsigSigner) Warm(ctx context.Context, baseURL, signerURL, token stri
 		path   string
 	}
 	pending := make([]pendingTarget, 0, len(targets))
+	userAgent := leaseUserAgent(lease)
 	for _, target := range targets {
-		key, path, err := statsigSignatureKey(baseURL, signerURL, target.method, target.target)
+		key, path, err := statsigSignatureKey(baseURL, signerURL, target.method, target.target, userAgent)
 		if err != nil {
 			return 0, err
 		}
@@ -128,7 +136,7 @@ func (s *statsigSigner) Warm(ctx context.Context, baseURL, signerURL, token stri
 	}
 	warmed := 0
 	for _, target := range pending {
-		value, signErr := s.requestSignature(ctx, signerURL, target.method, target.path, meta)
+		value, signErr := s.requestSignature(ctx, signerURL, target.method, target.path, meta, userAgent)
 		if signErr != nil {
 			return warmed, signErr
 		}
@@ -138,12 +146,12 @@ func (s *statsigSigner) Warm(ctx context.Context, baseURL, signerURL, token stri
 	return warmed, nil
 }
 
-func (s *statsigSigner) freshSignature(ctx context.Context, baseURL, signerURL, token string, lease *infraegress.Lease, method, path string) (string, error) {
+func (s *statsigSigner) freshSignature(ctx context.Context, baseURL, signerURL, token string, lease *infraegress.Lease, method, path, userAgent string) (string, error) {
 	meta, err := s.fetchMeta(ctx, baseURL, token, lease)
 	if err != nil {
 		return "", err
 	}
-	signature, err := s.requestSignature(ctx, signerURL, method, path, meta)
+	signature, err := s.requestSignature(ctx, signerURL, method, path, meta, userAgent)
 	if err == nil {
 		return signature, nil
 	}
@@ -152,7 +160,7 @@ func (s *statsigSigner) freshSignature(ctx context.Context, baseURL, signerURL, 
 	if refreshErr != nil {
 		return "", fmt.Errorf("刷新 Statsig metaContent: %w", refreshErr)
 	}
-	signature, retryErr := s.requestSignature(ctx, signerURL, method, path, meta)
+	signature, retryErr := s.requestSignature(ctx, signerURL, method, path, meta, userAgent)
 	if retryErr != nil {
 		return "", fmt.Errorf("Statsig 签名失败: %w", retryErr)
 	}
@@ -160,12 +168,16 @@ func (s *statsigSigner) freshSignature(ctx context.Context, baseURL, signerURL, 
 }
 
 func (s *statsigSigner) Invalidate(baseURL, signerURL, method, target string) {
-	key, _, err := statsigSignatureKey(baseURL, signerURL, method, target)
+	prefix, _, err := statsigSignaturePrefix(baseURL, signerURL, method, target)
 	if err != nil {
 		return
 	}
 	s.mu.Lock()
-	delete(s.entries, key)
+	for key := range s.entries {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.entries, key)
+		}
+	}
 	s.mu.Unlock()
 }
 
@@ -213,7 +225,7 @@ func (s *statsigSigner) store(key, value string, expiresAt, now time.Time) {
 	s.entries[key] = statsigCacheEntry{value: value, expiresAt: expiresAt}
 }
 
-func statsigSignatureKey(baseURL, signerURL, method, target string) (string, string, error) {
+func statsigSignaturePrefix(baseURL, signerURL, method, target string) (string, string, error) {
 	parsed, err := url.Parse(target)
 	if err != nil {
 		return "", "", fmt.Errorf("解析 Statsig 目标地址: %w", err)
@@ -223,19 +235,31 @@ func statsigSignatureKey(baseURL, signerURL, method, target string) (string, str
 		path = "/"
 	}
 	method = strings.ToUpper(strings.TrimSpace(method))
-	return strings.TrimRight(baseURL, "/") + "\x00" + strings.TrimSpace(signerURL) + "\x00" + method + "\x00" + path, path, nil
+	return strings.TrimRight(baseURL, "/") + "\x00" + strings.TrimSpace(signerURL) + "\x00" + method + "\x00" + path + "\x00", path, nil
 }
 
-func (s *statsigSigner) requestSignature(ctx context.Context, endpoint, method, path, metaContent string) (string, error) {
+func statsigSignatureKey(baseURL, signerURL, method, target, userAgent string) (string, string, error) {
+	prefix, path, err := statsigSignaturePrefix(baseURL, signerURL, method, target)
+	if err != nil {
+		return "", "", err
+	}
+	return prefix + strings.TrimSpace(userAgent), path, nil
+}
+
+func (s *statsigSigner) requestSignature(ctx context.Context, endpoint, method, path, metaContent, userAgent string) (string, error) {
 	if err := s.validateEndpoint(ctx, endpoint); err != nil {
 		return "", err
 	}
+	environment := map[string]string{
+		"metaContent": metaContent,
+	}
+	if userAgent = strings.TrimSpace(userAgent); userAgent != "" {
+		environment["userAgent"] = userAgent
+	}
 	payload, _ := json.Marshal(map[string]any{
-		"method": strings.ToUpper(strings.TrimSpace(method)),
-		"path":   path,
-		"environment": map[string]string{
-			"metaContent": metaContent,
-		},
+		"method":      strings.ToUpper(strings.TrimSpace(method)),
+		"path":        path,
+		"environment": environment,
 	})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
@@ -430,6 +454,21 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 		}
 		return
 	}
+	nowUnix := time.Now().Unix()
+	if a.statsig != nil && a.statsig.now != nil {
+		nowUnix = a.statsig.now().Unix()
+	}
+	if lease != nil && strings.TrimSpace(token) != "" && statsigPairNeedsRefresh() {
+		if err := a.refreshStatsigPair(ctx, token, lease); err != nil {
+			a.log().Warn("web_statsig_pair_refresh_failed", "method", request.Method, "path", request.URL.EscapedPath(), "error", err)
+		}
+	}
+	if value, err := generateLocalStatsig(request.Method, request.URL.EscapedPath(), nowUnix); err == nil {
+		request.Header.Set("x-statsig-id", value)
+		return
+	} else {
+		a.log().Warn("web_statsig_local_failed", "method", request.Method, "path", request.URL.EscapedPath(), "error", err)
+	}
 	if a.statsig == nil {
 		return
 	}
@@ -455,9 +494,6 @@ func (a *Adapter) WarmStatsig(ctx context.Context, credential account.Credential
 		}
 		return 0, nil
 	}
-	if a.statsig == nil {
-		return 0, fmt.Errorf("Statsig 签名器未初始化")
-	}
 	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
 		return 0, err
@@ -467,9 +503,19 @@ func (a *Adapter) WarmStatsig(ctx context.Context, credential account.Credential
 		return 0, err
 	}
 	defer lease.Release()
+	if refreshErr := a.refreshStatsigPair(ctx, token, lease); refreshErr != nil {
+		a.log().Warn("web_statsig_pair_refresh_failed", "error", refreshErr)
+	}
+	if _, err := generateLocalStatsig(http.MethodPost, "/rest/app-chat/conversations/new", time.Now().Unix()); err == nil {
+		return 1, nil
+	}
+	if a.statsig == nil {
+		return 0, fmt.Errorf("Statsig 签名器未初始化")
+	}
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	return a.statsig.Warm(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, []statsigWarmTarget{
 		{method: http.MethodPost, target: baseURL + "/rest/app-chat/conversations/new"},
+		{method: http.MethodPost, target: baseURL + "/rest/media/imagine/quota_info"},
 		{method: http.MethodPost, target: baseURL + "/rest/rate-limits"},
 		{method: http.MethodPost, target: baseURL + "/rest/media/post/create"},
 	})
@@ -477,12 +523,15 @@ func (a *Adapter) WarmStatsig(ctx context.Context, credential account.Credential
 
 func (a *Adapter) invalidateSignedStatsig(method, target string) bool {
 	cfg := a.config()
-	if cfg.StatsigMode == "url" && a.statsig != nil {
-		a.statsig.Invalidate(cfg.BaseURL, cfg.StatsigSignerURL, method, target)
-		if parsed, err := url.Parse(target); err == nil {
-			a.log().Info("web_statsig_invalidated", "method", method, "path", parsed.EscapedPath())
-		}
-		return true
+	if cfg.StatsigMode == "manual" {
+		return false
 	}
-	return false
+	markStatsigPairStale()
+	if a.statsig != nil {
+		a.statsig.Invalidate(cfg.BaseURL, cfg.StatsigSignerURL, method, target)
+	}
+	if parsed, err := url.Parse(target); err == nil {
+		a.log().Info("web_statsig_invalidated", "method", method, "path", parsed.EscapedPath())
+	}
+	return true
 }

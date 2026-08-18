@@ -1367,7 +1367,7 @@ func TestWebVideoExtensionUploadsSourceAndStartsNewConversation(t *testing.T) {
 	manager := infraegress.NewManager(egressRepositoryStub{}, cipher)
 	adapter := NewAdapter(Config{BaseURL: server.URL, VideoTimeoutSeconds: 30}, manager, cipher, nil, nil)
 	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
-		Credential:              account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encrypted},
+		Credential:              account.Credential{ID: 1, Provider: account.ProviderWeb, WebTier: account.WebTierSuper, EncryptedAccessToken: encrypted},
 		Model:                   "grok-imagine-video-1.5",
 		Operation:               provider.VideoOperationExtend,
 		Prompt:                  "猫落地",
@@ -1914,7 +1914,7 @@ func TestGenerateVideoClassifiesOnlyExplicitHTTPRejectionAsCreateFailure(t *test
 	manager := infraegress.NewManager(egressRepositoryStub{}, cipher)
 	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test"}, manager, cipher, nil, nil)
 	request := provider.VideoRequest{
-		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encryptedToken},
+		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, WebTier: account.WebTierSuper, EncryptedAccessToken: encryptedToken},
 		Prompt:     "test",
 		Duration:   5,
 	}
@@ -1961,6 +1961,85 @@ func TestParseVideoStreamUsesModelResponseAttachment(t *testing.T) {
 	}
 	if postID != "post_1" || result.URL != "https://assets.grok.com/users/user_1/generated/video_1/generated_video.mp4" || result.ContentType != "video/mp4" {
 		t.Fatalf("result = %#v, post = %q", result, postID)
+	}
+}
+
+func TestParseVideoStreamUsesFileAttachmentAssetMetadata(t *testing.T) {
+	fixture := `{"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"post_1"},"modelResponse":{"fileAttachmentAssetMetadata":[{"assetId":"video_1","mimeType":"video/mp4","key":"users/user_1/generated/video_1/generated_video.mp4"}]}}}}`
+	response := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(fixture))}
+	result, postID, err := parseVideoStream(response, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if postID != "post_1" || result.URL != "https://assets.grok.com/users/user_1/generated/video_1/generated_video.mp4" || result.ContentType != "video/mp4" {
+		t.Fatalf("result = %#v, post = %q", result, postID)
+	}
+}
+
+func TestRejectUnsupportedWebFreeVideo(t *testing.T) {
+	free := provider.VideoRequest{Credential: account.Credential{WebTier: account.WebTierBasic}, Duration: 8, Resolution: "720p"}
+	if err := rejectUnsupportedWebFreeVideo(free, false); err == nil {
+		t.Fatal("expected free 8s generate to be rejected")
+	}
+	if err := rejectUnsupportedWebFreeVideo(provider.VideoRequest{Credential: account.Credential{WebTier: account.WebTierBasic}, Duration: 8}, true); err == nil {
+		t.Fatal("expected free 8s extend to be rejected")
+	}
+	if err := rejectUnsupportedWebFreeVideo(provider.VideoRequest{Credential: account.Credential{WebTier: account.WebTierBasic}, Duration: 6, Resolution: "1080p"}, false); err == nil {
+		t.Fatal("expected free 1080p to be rejected")
+	}
+	if err := rejectUnsupportedWebFreeVideo(provider.VideoRequest{Credential: account.Credential{WebTier: account.WebTierBasic}, Duration: 6, Resolution: "720p"}, false); err != nil {
+		t.Fatalf("free 6s 720p generate = %v", err)
+	}
+	if err := rejectUnsupportedWebFreeVideo(provider.VideoRequest{Credential: account.Credential{WebTier: account.WebTierSuper}, Duration: 8, Resolution: "720p"}, false); err != nil {
+		t.Fatalf("super 8s 720p = %v", err)
+	}
+}
+
+func TestResolveWebVideoV15ResolutionMatchesOfficialFreeDefault(t *testing.T) {
+	tests := []struct {
+		tier      account.WebTier
+		requested string
+		want      string
+	}{
+		{tier: account.WebTierBasic, requested: "", want: "480p"},
+		{tier: account.WebTierBasic, requested: "720p", want: "720p"},
+		{tier: account.WebTierBasic, requested: "1080p", want: "480p"},
+		{tier: account.WebTierAuto, requested: "720P", want: "720p"},
+		{tier: "", requested: "720p", want: "720p"},
+		{tier: account.WebTierSuper, requested: "", want: "480p"},
+		{tier: account.WebTierSuper, requested: "720p", want: "720p"},
+		{tier: account.WebTierHeavy, requested: "1080p", want: "1080p"},
+	}
+	for _, test := range tests {
+		if got := resolveWebVideoV15Resolution(test.tier, test.requested); got != test.want {
+			t.Fatalf("tier=%q requested=%q got=%q want=%q", test.tier, test.requested, got, test.want)
+		}
+	}
+}
+
+func TestVideoV15CreatePayloadMatchesOfficialImagineRequest(t *testing.T) {
+	payload := videoV15CreatePayload("武松打虎", "2:3", "720p", 6, "", nil, nil)
+	if payload["modelName"] != "imagine-video-gen" || payload["message"] != "武松打虎 --mode=custom" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if payload["enableImageStreaming"] != true || payload["enableSideBySide"] != true || payload["sendFinalMetadata"] != true {
+		t.Fatalf("flags = %#v", payload)
+	}
+	if payload["kind"] != "CONVERSATION_KIND_IMAGINE" {
+		t.Fatalf("kind = %#v", payload["kind"])
+	}
+	if _, exists := payload["temporary"]; exists {
+		t.Fatalf("legacy temporary leaked into 1.5 payload: %#v", payload)
+	}
+	metadata := payload["responseMetadata"].(map[string]any)
+	modelMap := metadata["modelConfigOverride"].(map[string]any)["modelMap"].(map[string]any)
+	if len(modelMap) != 0 {
+		t.Fatalf("modelMap = %#v", modelMap)
+	}
+	mediaInput := payload["mediaGenInput"].(map[string]any)
+	parameters := mediaInput["textToVideo"].(map[string]any)
+	if parameters["prompt"] != "武松打虎" || parameters["aspectRatio"] != "2:3" || parameters["duration"] != 6 || parameters["resolutionName"] != "720p" {
+		t.Fatalf("textToVideo = %#v", parameters)
 	}
 }
 

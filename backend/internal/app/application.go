@@ -291,6 +291,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	modelService := modelapp.NewService(modelRepo, accountRepo, accountService, providers)
 	modelService.SetBulkPool(syncPool)
 	modelService.SetLogger(logger)
+	accountService.SetModels(modelRepo)
+	accountService.SetModelSyncer(modelService)
 	if err := modelRepo.ReplaceProviderRoutes(ctx, account.ProviderWeb, webprovider.Routes()); err != nil {
 		if runtimeStore != nil {
 			_ = runtimeStore.Close()

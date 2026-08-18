@@ -72,7 +72,7 @@ func (s *Selector) beginSelectionSessionForKeyAndTier(ctx context.Context, provi
 
 	for index, candidate := range values {
 		value := applyHealthSnapshot(candidate.Credential, healthOverrides)
-		if provider == account.ProviderWeb && requiredWebTier != "" && value.WebTier != requiredWebTier {
+		if provider == account.ProviderWeb && requiredWebTier != "" && !webTierMeetsMinimum(value.WebTier, requiredWebTier) {
 			continue
 		}
 		if !accountScopeAllowsCandidate(provider, accountScope, candidate) {

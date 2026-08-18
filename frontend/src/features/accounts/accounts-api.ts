@@ -86,6 +86,9 @@ export type AccountDTO = {
   buildBotFlagged: boolean;
   /** Numeric bot_flag_source/bfs claim when risk-flagged: 1 or 2. */
   buildBotFlagSource?: number;
+  ssoBotFlagged: boolean;
+  /** grok.com botFlagSource when SSO risk-flagged: 1 or 2. */
+  ssoBotFlagSource?: number;
   egressNodeId?: string;
   egressAssignmentMode?: "manual" | "auto";
   modelSyncFailed?: boolean;
@@ -189,7 +192,7 @@ const accountValidator = hasShape({
   id: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), authType: isOneOf("oauth", "sso"), webTier: isOptional(isOneOf("auto", "basic", "super", "heavy")),
   webTierSyncedAt: isOptional(isString), nsfwEnabledAt: isOptional(isString), termsAcceptedAt: isOptional(isString), name: isString, email: isOptional(isString), userId: isOptional(isString), teamId: isOptional(isString),
   enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), expiresAt: isOptional(isString), refreshable: isBoolean, cloudflareCookieConfigured: isBoolean,
-  buildSuperEntitled: isBoolean, buildRouteMode: isOneOf("auto", "build", "xai"), buildBotFlagged: isBoolean, buildBotFlagSource: isOptional(isNumber), modelSyncFailed: isOptional(isBoolean), refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
+  buildSuperEntitled: isBoolean, buildRouteMode: isOneOf("auto", "build", "xai"), buildBotFlagged: isBoolean, buildBotFlagSource: isOptional(isNumber), ssoBotFlagged: isBoolean, ssoBotFlagSource: isOptional(isNumber), modelSyncFailed: isOptional(isBoolean), refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
   egressNodeId: isOptional(isString), egressAssignmentMode: isOptional(isOneOf("manual", "auto")),
   lastRefreshErrorStatus: isOptional(isNumber), lastRefreshErrorCode: isOptional(isString), lastRefreshErrorMessage: isOptional(isString), lastRefreshErrorResponse: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
   failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
@@ -324,14 +327,15 @@ export function enableWebAccountNSFW(id: string): Promise<{ completed: boolean }
 export type AccountBatchResultDTO = { succeeded: number; failed: number };
 export type AccountTokenRefreshResultDTO = AccountBatchResultDTO & { skipped: number };
 
-/** 管理端 Grok Build 检测的单账号增量结果（SSE event: item）。 */
+/** 管理端账号检测的单账号增量结果（SSE event: item）。 */
 export type BuildDetectItemDTO = {
   id: string;
   name: string;
   email?: string;
-  outcome: "ok" | "invalid" | "failed";
+  outcome: "ok" | "flagged" | "invalid" | "failed";
   reason?: string;
   httpStatus?: number;
+  source?: number;
 };
 
 export type BuildDetectHandlers = {
@@ -396,7 +400,7 @@ const decodeAccountTaskStreamPayload = createObjectDecoder<AccountTaskStreamPayl
   phase: isOptional(isOneOf("importing", "converting", "syncing")), updated: isOptional(isNumber), succeeded: isOptional(isNumber),
   code: isOptional(isString), message: isOptional(isString),
   id: isOptional(isString), name: isOptional(isString), email: isOptional(isString),
-  outcome: isOptional(isOneOf("ok", "invalid", "failed")), reason: isOptional(isString), httpStatus: isOptional(isNumber),
+  outcome: isOptional(isOneOf("ok", "flagged", "invalid", "failed")), reason: isOptional(isString), httpStatus: isOptional(isNumber), source: isOptional(isNumber),
 });
 
 function hasNumericResult(value: AccountTaskStreamPayload, fields: string[]): boolean {
@@ -454,11 +458,12 @@ export function refreshAllAccountBilling(onProgress?: (value: AccountTaskProgres
 }
 
 export type DetectBuildAccountsInput =
-  | { all: true; ids?: never }
-  | { all?: false; ids: string[] };
+  | { provider?: AccountProvider; all: true; ids?: never }
+  | { provider?: AccountProvider; all?: false; ids: string[] };
 
 export function detectBuildAccounts(input: DetectBuildAccountsInput, handlers?: BuildDetectHandlers | ((value: AccountTaskProgressDTO) => void), signal?: AbortSignal): Promise<AccountBatchResultDTO> {
-  const body = input.all ? { provider: "grok_build" as const, all: true } : { provider: "grok_build" as const, ids: input.ids };
+  const provider = input.provider ?? "grok_build";
+  const body = input.all ? { provider, all: true } : { provider, ids: input.ids };
   const resolved: BuildDetectHandlers = typeof handlers === "function" ? { onProgress: handlers } : (handlers ?? {});
   return runDetectBuildAccountsTask(body, resolved, signal);
 }
@@ -698,4 +703,47 @@ export function startDeviceAuthorization(): Promise<DeviceSessionDTO> {
 
 export function pollDeviceAuthorization(sessionId: string, signal: AbortSignal): Promise<DevicePollDTO> {
   return apiRequest(`/api/admin/v1/accounts/device/${sessionId}/poll`, { method: "POST", signal }, decodeDevicePoll);
+}
+
+export type AccountTestCapability = "responses" | "chat" | "image" | "video";
+export type AccountModelTestOutcome = "ok" | "flagged" | "error";
+
+export type AccountTestModelDTO = {
+  publicId: string;
+  upstreamModel: string;
+  capability: AccountTestCapability;
+};
+
+export type AccountModelTestResultDTO = {
+  outcome: AccountModelTestOutcome;
+  publicId: string;
+  capability: AccountTestCapability;
+  text?: string;
+  previewUrl?: string;
+  error?: string;
+};
+
+const accountTestModelValidator = hasShape({
+  publicId: isString,
+  upstreamModel: isString,
+  capability: isOneOf("responses", "chat", "image", "video"),
+});
+const decodeAccountTestModels = createObjectDecoder<{ items: AccountTestModelDTO[] }>("account test models", {
+  items: isArrayOf(accountTestModelValidator),
+});
+const decodeAccountModelTestResult = createObjectDecoder<AccountModelTestResultDTO>("account model test", {
+  outcome: isOneOf("ok", "flagged", "error"),
+  publicId: isString,
+  capability: isOneOf("responses", "chat", "image", "video"),
+  text: isOptional(isString),
+  previewUrl: isOptional(isString),
+  error: isOptional(isString),
+});
+
+export function listAccountModels(id: string): Promise<{ items: AccountTestModelDTO[] }> {
+  return apiRequest(`/api/admin/v1/accounts/${id}/models`, {}, decodeAccountTestModels);
+}
+
+export function testAccountModel(id: string, input: { publicId: string; capability: AccountTestCapability; prompt?: string }, signal?: AbortSignal): Promise<AccountModelTestResultDTO> {
+  return apiRequest(`/api/admin/v1/accounts/${id}/model-tests`, { method: "POST", body: input, signal }, decodeAccountModelTestResult);
 }

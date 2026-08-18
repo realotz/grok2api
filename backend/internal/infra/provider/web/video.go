@@ -285,6 +285,9 @@ func (a *Adapter) generateLegacyVideo(ctx context.Context, request provider.Vide
 	if len(segments) == 0 {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("duration 必须在 1 到 15 秒之间"))
 	}
+	if err := rejectUnsupportedWebFreeVideo(request, false); err != nil {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
+	}
 	ratio := resolveAspectRatio(request.AspectRatio)
 	resolution := request.Resolution
 	if resolution == "" {
@@ -368,11 +371,11 @@ func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRe
 	if len(segments) == 0 {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("duration 必须在 1 到 15 秒之间"))
 	}
-	ratio := resolveAspectRatio(request.AspectRatio)
-	resolution := request.Resolution
-	if resolution == "" {
-		resolution = "720p"
+	if err := rejectUnsupportedWebFreeVideo(request, false); err != nil {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
+	ratio := resolveAspectRatio(request.AspectRatio)
+	resolution := resolveWebVideoV15Resolution(request.Credential.WebTier, request.Resolution)
 	payload := videoV15CreatePayload(request.Prompt, ratio, resolution, segments[0], imageAssetID, referenceAssetIDs, audioAssetIDs)
 	referer := cfg.BaseURL + "/imagine"
 	if parentID != "" {
@@ -389,6 +392,9 @@ func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRe
 func (a *Adapter) extendVideoV15(ctx context.Context, cfg Config, lease *egress.Lease, token string, request provider.VideoRequest) (provider.VideoResult, error) {
 	if request.Duration < 6 || request.Duration > 10 {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Web 视频延长 duration 必须在 6 到 10 秒之间"))
+	}
+	if err := rejectUnsupportedWebFreeVideo(request, true); err != nil {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
 	if request.VideoExtensionStartTime <= 0 {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Web 视频延长必须提供大于 0 的 video_extension_start_time"))
@@ -869,6 +875,23 @@ func videoFileAttachments(root map[string]any) []string {
 			attachments = append(attachments, attachment)
 		}
 	}
+	// Official Imagine now also finishes via fileAttachmentAssetMetadata
+	// (mimeType=video/* plus key/hdKey) when streamingVideoGenerationResponse.videoUrl
+	// is omitted. Treat those the same as fileAttachments.
+	metadata, _ := modelResponse["fileAttachmentAssetMetadata"].([]any)
+	for _, value := range metadata {
+		item, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		mimeType := strings.ToLower(strings.TrimSpace(firstString(item, "mimeType")))
+		if mimeType != "" && !strings.HasPrefix(mimeType, "video/") {
+			continue
+		}
+		if candidate := firstString(item, "key", "hdKey", "hd1080Key", "fileUri", "fileURL"); candidate != "" {
+			attachments = append(attachments, candidate)
+		}
+	}
 	return attachments
 }
 
@@ -878,7 +901,8 @@ func setVideoResultURL(result *provider.VideoResult, value string) bool {
 		return false
 	}
 	lower := strings.ToLower(value)
-	if !strings.HasSuffix(strings.SplitN(lower, "?", 2)[0], ".mp4") && !strings.Contains(lower, "/content") {
+	pathOnly := strings.SplitN(lower, "?", 2)[0]
+	if !strings.HasSuffix(pathOnly, ".mp4") && !strings.Contains(lower, "/content") && !strings.HasPrefix(strings.TrimPrefix(pathOnly, "https://assets.grok.com/"), "users/") {
 		return false
 	}
 	result.URL = absoluteAssetURL(value)
@@ -949,6 +973,44 @@ func videoSegments(seconds int) []int {
 		return nil
 	}
 	return []int{seconds}
+}
+
+func isWebFreeVideoTier(tier account.WebTier) bool {
+	return tier == "" || tier == account.WebTierAuto || tier == account.WebTierBasic
+}
+
+func rejectUnsupportedWebFreeVideo(request provider.VideoRequest, extend bool) error {
+	if !isWebFreeVideoTier(request.Credential.WebTier) {
+		return nil
+	}
+	if request.Duration != 6 {
+		if extend {
+			return fmt.Errorf("免费 Web 账号视频延长仅支持 6 秒")
+		}
+		return fmt.Errorf("免费 Web 账号仅支持 6 秒视频")
+	}
+	if strings.EqualFold(strings.TrimSpace(request.Resolution), "1080p") {
+		return fmt.Errorf("免费 Web 账号不支持 1080p")
+	}
+	return nil
+}
+
+// resolveWebVideoV15Resolution matches grok.com Imagine: default 480p.
+// Free/Basic 仅 480p/720p；1080p 只给 Super/Heavy。
+func resolveWebVideoV15Resolution(tier account.WebTier, requested string) string {
+	value := strings.ToLower(strings.TrimSpace(requested))
+	if value == "" {
+		value = "480p"
+	}
+	if value == "720p" {
+		return "720p"
+	}
+	switch tier {
+	case account.WebTierSuper, account.WebTierHeavy:
+		return value
+	default:
+		return "480p"
+	}
 }
 
 func videoCreatePayload(prompt, parentID, ratio, resolution string, seconds int, references []string) map[string]any {

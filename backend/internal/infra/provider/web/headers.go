@@ -6,24 +6,30 @@ import (
 	"net/http"
 
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/browserheaders"
 )
 
 func buildHeaders(token string, lease *infraegress.Lease, contentType string) http.Header {
 	if contentType == "" {
 		contentType = "application/json"
 	}
+	userAgent := ""
+	if lease != nil {
+		userAgent = lease.UserAgent
+	}
 	value := http.Header{}
 	value.Set("Content-Type", contentType)
 	value.Set("Accept", "*/*")
 	value.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	value.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	value.Set("User-Agent", lease.UserAgent)
+	value.Set("User-Agent", userAgent)
 	value.Set("Cookie", infraegress.BuildSSOCookie(token, lease.CFCookies))
 	value.Set("x-xai-request-id", newRequestUUID())
+	browserheaders.ApplyChromiumLowEntropyHints(value, userAgent)
 	return value
 }
 
-// applyAppHeaders 补齐真实浏览器同源 fetch 会携带的稳定请求头，不伪造 Sentry 或 Client Hints。
+// applyAppHeaders 补齐真实浏览器同源 fetch 会携带的稳定请求头，不伪造 Sentry。
 func applyAppHeaders(value http.Header, origin, referer string) {
 	value.Set("Origin", origin)
 	value.Set("Referer", referer)

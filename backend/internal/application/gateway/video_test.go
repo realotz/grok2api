@@ -28,6 +28,33 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
+func TestWebVideoRequiredTierPrefersFreeForSixSecond720(t *testing.T) {
+	tests := []struct {
+		provider   account.Provider
+		model      string
+		resolution string
+		duration   int
+		want       account.WebTier
+	}{
+		{account.ProviderWeb, "grok-imagine-video-1.5", "720p", 6, ""},
+		{account.ProviderWeb, "grok-imagine-video-1.5", "480p", 6, ""},
+		{account.ProviderWeb, "grok-imagine-video-1.5", "", 6, ""},
+		{account.ProviderWeb, "grok-imagine-video", "720p", 6, ""},
+		{account.ProviderWeb, "grok-imagine-video-1.5", "720p", 8, account.WebTierSuper},
+		{account.ProviderWeb, "grok-imagine-video-1.5", "480p", 10, account.WebTierSuper},
+		{account.ProviderWeb, "grok-imagine-video-1.5", "720p", 15, account.WebTierSuper},
+		{account.ProviderWeb, "grok-imagine-video-1.5", "", 8, account.WebTierSuper},
+		{account.ProviderWeb, "grok-imagine-video-1.5", "1080p", 6, account.WebTierHeavy},
+		{account.ProviderWeb, "grok-imagine-video-1.5", "1080p", 8, account.WebTierHeavy},
+		{account.ProviderConsole, "grok-imagine-video-1.5", "720p", 8, ""},
+	}
+	for _, test := range tests {
+		if got := webVideoRequiredTier(test.provider, test.model, test.resolution, test.duration); got != test.want {
+			t.Fatalf("webVideoRequiredTier(%s,%s,%q,%d)=%q want %q", test.provider, test.model, test.resolution, test.duration, got, test.want)
+		}
+	}
+}
+
 func TestVideoQuotaModeUsesWeb720pProduct(t *testing.T) {
 	tests := []struct {
 		provider   account.Provider
@@ -36,7 +63,7 @@ func TestVideoQuotaModeUsesWeb720pProduct(t *testing.T) {
 	}{
 		{account.ProviderWeb, "", account.QuotaModeWebVideo720p},
 		{account.ProviderWeb, "720p", account.QuotaModeWebVideo720p},
-		{account.ProviderWeb, "480p", account.QuotaModeWebVideo},
+		{account.ProviderWeb, "480p", account.QuotaModeWebVideo720p},
 		{account.ProviderConsole, "720p", account.QuotaModeWebVideo},
 	}
 	for _, test := range tests {
@@ -966,5 +993,149 @@ func TestVideoWebForbiddenRetriesPinnedAccountOnceThenFailsOver(t *testing.T) {
 	}
 	if stored.Status != media.StatusFailed || stored.AccountID != first.ID {
 		t.Fatalf("unclassified failed job = %#v", stored)
+	}
+}
+
+type videoFastRiskAdapter struct {
+	mu        sync.Mutex
+	attempts  []uint64
+	downloads int
+}
+
+func (a *videoFastRiskAdapter) Provider() account.Provider { return account.ProviderWeb }
+
+func (a *videoFastRiskAdapter) Definition() provider.Definition {
+	definition := testConversationDefinition(account.ProviderWeb)
+	definition.Media.VideoGeneration = true
+	return definition
+}
+
+func (a *videoFastRiskAdapter) GenerateVideo(_ context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
+	a.mu.Lock()
+	a.attempts = append(a.attempts, request.Credential.ID)
+	name := request.Credential.Name
+	a.mu.Unlock()
+	if name == "first" {
+		return provider.VideoResult{URL: "https://cdn.example/scenery.mp4", ContentType: "video/mp4"}, nil
+	}
+	return provider.VideoResult{AssetID: "video_asset_00002", ContentType: "video/mp4"}, nil
+}
+
+func (a *videoFastRiskAdapter) DownloadVideo(context.Context, account.Credential, string) (io.ReadCloser, string, int64, error) {
+	a.mu.Lock()
+	a.downloads++
+	a.mu.Unlock()
+	return nil, "", 0, errors.New("scenery video must not be downloaded")
+}
+
+func (a *videoFastRiskAdapter) Attempts() []uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]uint64(nil), a.attempts...)
+}
+
+func (a *videoFastRiskAdapter) Downloads() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.downloads
+}
+
+func TestFastRemoteVideoIsRiskAndFailsOverWithoutDownload(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "video-risk.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	mediaRepo := relational.NewMediaJobRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "video-risk", Prefix: "video-risk", SecretHash: strings.Repeat("b", 64),
+		EncryptedSecret: "encrypted", Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createAccount := func(name string, priority int) account.Credential {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+			Name: name, SourceKey: name, EncryptedAccessToken: name + "-token", ExpiresAt: time.Now().Add(time.Hour),
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: priority, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return credential
+	}
+	first := createAccount("first", 200)
+	second := createAccount("second", 100)
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderWeb, []string{"grok-imagine-video"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{first.ID, second.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{"grok-imagine-video"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route, err := modelRepo.GetByProviderUpstream(ctx, account.ProviderWeb, "grok-imagine-video")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &videoFastRiskAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, nil, 3)
+	service.ConfigureMedia(mediaRepo, 1)
+	service.UpdateVideoMaxAttempts(5)
+
+	now := time.Now().UTC()
+	job := media.Job{
+		ID: "video_risk_scenery", RequestID: "request-video-risk", ClientKeyID: key.ID, ClientKeyName: key.Name,
+		AccountID: first.ID, AccountName: first.Name, Provider: string(account.ProviderWeb),
+		Model: route.PublicID, ModelRouteID: route.ID, UpstreamModel: route.UpstreamModel,
+		Operation: provider.VideoOperationGenerate, Prompt: "test", Seconds: 5, Quality: "720p",
+		Status: media.StatusInProgress, InputJSON: `{}`, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := mediaRepo.CreateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	service.runVideoJob(ctx, job, route)
+
+	if adapter.Downloads() != 0 {
+		t.Fatalf("downloads = %d, want 0", adapter.Downloads())
+	}
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != first.ID || attempts[1] != second.ID {
+		t.Fatalf("video attempts = %#v, want first then second", attempts)
+	}
+	stored, err := mediaRepo.GetMediaJob(ctx, job.ID, job.ClientKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != media.StatusCompleted || stored.AccountID != second.ID || stored.ResultAssetID != "video_asset_00002" {
+		t.Fatalf("completed job = %#v", stored)
+	}
+	flagged, err := accountRepo.Get(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flagged.SSOBotFlagSource != 1 {
+		t.Fatalf("first account risk source = %d", flagged.SSOBotFlagSource)
+	}
+	clean, err := accountRepo.Get(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean.SSOBotFlagSource != 0 {
+		t.Fatalf("second account risk source = %d", clean.SSOBotFlagSource)
 	}
 }

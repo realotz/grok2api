@@ -547,6 +547,27 @@ type VideoResult struct {
 	AssetID string
 }
 
+// VideoRiskReadyWithin is the window used to detect canned risk-control scenery
+// videos. Real generation is slower; a remote URL ready this quickly is treated
+// as a risk result and must not be downloaded.
+const VideoRiskReadyWithin = 10 * time.Second
+
+// ErrVideoRiskScenery is returned when a remote video becomes available too quickly.
+var ErrVideoRiskScenery = errors.New("视频过快完成，判定为风控风景片")
+
+// IsFastRemoteVideoRisk reports whether a remote video URL became available
+// inside VideoRiskReadyWithin. Local AssetID results are not scenery probes:
+// those bytes were already received through the upload path.
+func IsFastRemoteVideoRisk(elapsed time.Duration, result VideoResult) bool {
+	if strings.TrimSpace(result.AssetID) != "" {
+		return false
+	}
+	if strings.TrimSpace(result.URL) == "" {
+		return false
+	}
+	return elapsed >= 0 && elapsed < VideoRiskReadyWithin
+}
+
 type TTSOutputFormat struct {
 	Codec      string
 	SampleRate int
@@ -712,6 +733,24 @@ type AccountIdentity struct {
 type AccountIdentityAdapter interface {
 	Adapter
 	SyncAccountIdentity(ctx context.Context, credential account.Credential) (AccountIdentity, error)
+}
+
+// SSOAccountRisk is the grok.com botFlagSource / policy snapshot for one SSO.
+// It is not derived from Build JWT bfs and must not be written during token refresh.
+type SSOAccountRisk struct {
+	Inspected    bool
+	Flagged      bool
+	Source       int
+	Details      string
+	Policy       string
+	Unauthorized bool
+	StatusCode   int
+	Error        string
+}
+
+type SSORiskAdapter interface {
+	Adapter
+	InspectSSORisk(ctx context.Context, credential account.Credential) (SSOAccountRisk, error)
 }
 
 type BuildCredentialConverter interface {
@@ -1138,6 +1177,15 @@ func (r *Registry) AccountIdentity(value account.Provider) (AccountIdentityAdapt
 		return nil, false
 	}
 	result, ok := adapter.(AccountIdentityAdapter)
+	return result, ok
+}
+
+func (r *Registry) SSORisk(value account.Provider) (SSORiskAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(SSORiskAdapter)
 	return result, ok
 }
 

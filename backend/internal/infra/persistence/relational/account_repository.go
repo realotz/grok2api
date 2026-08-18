@@ -104,12 +104,7 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 			query = query.Where("NOT EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND credential.encrypted_refresh <> '')")
 		}
 	}
-	switch input.Filter.Risk {
-	case "flagged":
-		query = query.Where("EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND credential.build_bot_flag_source IN (1,2))")
-	case "normal":
-		query = query.Where("NOT EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND credential.build_bot_flag_source IN (1,2))")
-	}
+	query = applyRiskFilter(query, input.Filter.Provider, input.Filter.Risk)
 	query = applyWebAgreementFilter(query, input.Filter.Agreement)
 	query = applyAssociationFilter(query, input.Filter.Provider, input.Filter.Association)
 	if input.Filter.RestrictIDs {
@@ -303,6 +298,71 @@ func (r *AccountRepository) UpdateBuildBotFlagSources(ctx context.Context, value
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountCredentialChanged, Provider: account.ProviderBuild})
 	}
 	return err
+}
+
+// CountSSOBotFlagged counts persisted Web/Console SSO robot marks.
+func (r *AccountRepository) CountSSOBotFlagged(ctx context.Context) (int64, error) {
+	var count int64
+	err := r.db.db.WithContext(ctx).
+		Table("provider_accounts").
+		Joins("JOIN account_credentials credential ON credential.account_id = provider_accounts.id").
+		Where("provider_accounts.provider IN ? AND credential.sso_bot_flag_source IN (1,2)", []account.Provider{account.ProviderWeb, account.ProviderConsole}).
+		Count(&count).Error
+	return count, err
+}
+
+// ListSSOBotFlaggedAccountIDs reads persisted SSO robot marks without decrypting tokens.
+func (r *AccountRepository) ListSSOBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
+	var ids []uint64
+	err := r.db.db.WithContext(ctx).
+		Table("provider_accounts AS account").
+		Joins("JOIN account_credentials AS credential ON credential.account_id = account.id").
+		Where("account.provider IN ? AND credential.sso_bot_flag_source IN (1,2)", []account.Provider{account.ProviderWeb, account.ProviderConsole}).
+		Order("account.id ASC").
+		Pluck("account.id", &ids).Error
+	if err != nil {
+		return nil, err
+	}
+	if ids == nil {
+		return []uint64{}, nil
+	}
+	return ids, nil
+}
+
+// UpdateSSOBotFlagSources writes SSO robot marks with compare-and-swap on the
+// encrypted SSO token so a concurrent token replacement is left untouched.
+func (r *AccountRepository) UpdateSSOBotFlagSources(ctx context.Context, values []repository.SSOBotFlagSourceUpdate) error {
+	if len(values) == 0 {
+		return nil
+	}
+	changedProviders := make(map[account.Provider]struct{})
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, value := range values {
+			var providerRow struct{ Provider string }
+			if err := tx.Model(&accountModel{}).Select("provider").Where("id = ?", value.AccountID).Take(&providerRow).Error; err != nil {
+				return err
+			}
+			providerValue := account.Provider(providerRow.Provider)
+			source := normalizeSSOBotFlagSource(providerValue, account.AuthTypeSSO, value.Source)
+			result := tx.Model(&accountCredentialModel{}).
+				Where("account_id = ? AND encrypted_primary = ?", value.AccountID, value.ExpectedEncryptedAccessToken).
+				Update("sso_bot_flag_source", source)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected > 0 {
+				changedProviders[providerValue] = struct{}{}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for providerValue := range changedProviders {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountCredentialChanged, Provider: providerValue})
+	}
+	return nil
 }
 
 func (r *AccountRepository) Summarize(ctx context.Context, now time.Time) ([]repository.AccountSummary, error) {
@@ -586,7 +646,7 @@ func qualifiedColumnList(alias string, columns []string) string {
 // access token, refresh token, and Cloudflare cookie.
 var routingCredentialMetadataColumns = []string{
 	"account_id", "auth_type", "client_id", "expires_at", "refresh_due_at", "last_refresh_at",
-	"refresh_failures", "last_refresh_error", "refresh_permanent", "build_bot_flag_source", "updated_at",
+	"refresh_failures", "last_refresh_error", "refresh_permanent", "build_bot_flag_source", "sso_bot_flag_source", "updated_at",
 }
 
 var routingBillingColumns = []string{
@@ -1408,6 +1468,14 @@ func applyReauthMarkedAtTransition(row *accountModel, existing accountModel) {
 func saveAccountRelations(tx *gorm.DB, value account.Credential, accountID uint64) error {
 	value.ID = accountID
 	credential := fromAccountCredentialDomain(value)
+	if credential.SSOBotFlagSource == 0 {
+		var stored accountCredentialModel
+		if err := tx.Select("sso_bot_flag_source").Where("account_id = ?", accountID).First(&stored).Error; err == nil {
+			credential.SSOBotFlagSource = stored.SSOBotFlagSource
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
 	if err := tx.Save(&credential).Error; err != nil {
 		return err
 	}
@@ -1893,6 +1961,21 @@ func applyWebAgreementFilter(query *gorm.DB, agreement string) *gorm.DB {
 	}
 }
 
+func applyRiskFilter(query *gorm.DB, providerValue, risk string) *gorm.DB {
+	column := "credential.build_bot_flag_source"
+	if providerValue == string(account.ProviderWeb) || providerValue == string(account.ProviderConsole) {
+		column = "credential.sso_bot_flag_source"
+	}
+	switch risk {
+	case "flagged":
+		return query.Where("EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND " + column + " IN (1,2))")
+	case "normal":
+		return query.Where("NOT EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND " + column + " IN (1,2))")
+	default:
+		return query
+	}
+}
+
 // applyAssociationFilter applies provider-specific association predicates.
 // Web supports Build, Console, and combined filters; Build and Console use
 // provider-specific foreign keys for webLinked and webUnlinked.
@@ -1925,6 +2008,9 @@ func applyAssociationFilter(query *gorm.DB, providerValue, association string) *
 	}
 }
 
+// UpdateTokens replaces OAuth/SSO secrets. It never writes sso_bot_flag_source:
+// SSO robot marks are updated only by UpdateSSOBotFlagSources so a token
+// refresh cannot drop or overwrite an independent grok.com risk verdict.
 func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time, buildBotFlagSource int) (account.Credential, error) {
 	now := time.Now().UTC()
 	refreshDueAt := account.CredentialRefreshDueAt(id, expiresAt)

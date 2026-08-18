@@ -163,10 +163,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	route, selection, err := s.selectSchedulableEligibleMediaRouteWithQuotaModeAndTier(ctx, routes, input.ClientKey, true, func(route model.Route) string {
 		return videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), input.Resolution)
 	}, func(route model.Route) account.WebTier {
-		if route.Provider == account.ProviderWeb && strings.TrimSpace(route.UpstreamModel) == "grok-imagine-video-1.5" && strings.EqualFold(strings.TrimSpace(input.Resolution), "1080p") {
-			return account.WebTierHeavy
-		}
-		return ""
+		return webVideoRequiredTier(route.Provider, route.UpstreamModel, input.Resolution, input.Duration)
 	})
 	if err != nil {
 		return media.Job{}, err
@@ -619,7 +616,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		}
 		if lease == nil {
 			if selection == nil {
-				selection, err = s.selector.beginSelectionSession(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false)
+				selection, err = s.selector.beginSelectionSessionForKeyAndTier(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, clientkey.AccountScope{}, webVideoRequiredTier(route.Provider, route.UpstreamModel, job.Quality, job.Seconds))
 			}
 			if err == nil {
 				lease, err = selection.Acquire(ctx, excluded, false)
@@ -675,6 +672,16 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 				updateCancel()
 			},
 		})
+		if err == nil && provider.IsFastRemoteVideoRisk(time.Since(attemptStarted), result) {
+			// 10 秒内可访问的远程成片大概率是风控风景视频：不下载，按创建失败换号。
+			s.logger.Warn("video_risk_scenery_detected", "job_id", job.ID, "account_id", lease.Credential.ID, "provider", lease.Credential.Provider, "elapsed_ms", time.Since(attemptStarted).Milliseconds())
+			markCtx, markCancel := context.WithTimeout(context.Background(), accountStateWriteTimeout)
+			if markErr := s.accounts.MarkAccountRisk(markCtx, lease.Credential); markErr != nil {
+				s.logger.Error("video_risk_mark_failed", "job_id", job.ID, "account_id", lease.Credential.ID, "error", markErr)
+			}
+			markCancel()
+			err = provider.WrapVideoStage(provider.VideoStageCreate, 0, provider.ErrVideoRiskScenery)
+		}
 		if err == nil && result.AssetID == "" && result.URL != "" {
 			result, err = s.persistRemoteVideo(ctx, job.ID, adapter, lease.Credential, result)
 		}
@@ -818,10 +825,48 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	s.releaseVideoInputs(job)
 }
 
+// webVideoFitsFreeAccount is the Web Imagine free-tier contract: 6s at 480p/720p.
+// Generate and extend share the same limit. Empty resolution is treated as 480p.
+func webVideoFitsFreeAccount(resolution string, duration int) bool {
+	if duration != 6 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(resolution)) {
+	case "", "480p", "720p":
+		return true
+	default:
+		return false
+	}
+}
+
+// webVideoRequiredTier is the lowest Web tier allowed to serve this request.
+// 6s 480p/720p prefers Basic via the default order; longer 480p/720p starts at Super;
+// 1080p is Heavy only.
+func webVideoRequiredTier(providerValue account.Provider, upstreamModel, resolution string, duration int) account.WebTier {
+	if providerValue != account.ProviderWeb {
+		return ""
+	}
+	switch strings.TrimSpace(upstreamModel) {
+	case "grok-imagine-video", "grok-imagine-video-1.5":
+	default:
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(resolution), "1080p") {
+		return account.WebTierHeavy
+	}
+	if webVideoFitsFreeAccount(resolution, duration) {
+		return ""
+	}
+	return account.WebTierSuper
+}
+
 func videoQuotaMode(providerValue account.Provider, catalogMode, resolution string) string {
 	if providerValue == account.ProviderWeb && catalogMode == account.QuotaModeWebVideo {
 		resolution = strings.ToLower(strings.TrimSpace(resolution))
-		if resolution == "" || resolution == "720p" {
+		// Official free Imagine keeps video=null and only exposes video720p,
+		// but the browser still submits 480p. Route 480p onto that product so
+		// Basic accounts remain schedulable.
+		if resolution == "" || resolution == "480p" || resolution == "720p" {
 			return account.QuotaModeWebVideo720p
 		}
 	}
