@@ -126,11 +126,11 @@ func TestSSOBotFlagIndexDrivesListFilter(t *testing.T) {
 	_, total, err = repo.List(ctx, repository.AccountListQuery{
 		Page: repository.PageQuery{Limit: 20},
 		Filter: repository.AccountListFilter{
-			Provider: string(account.ProviderWeb), Risk: "normal", Now: now,
+			Provider: string(account.ProviderWeb), Risk: "unknown", Now: now,
 		},
 	})
 	if err != nil || total != 1 {
-		t.Fatalf("normal list total = %d, err=%v", total, err)
+		t.Fatalf("unknown list total = %d, err=%v", total, err)
 	}
 	history, _, err := repo.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "history", SourceKey: "history",
@@ -157,6 +157,12 @@ func TestSSORiskLevelFilter(t *testing.T) {
 	if _, _, err := repo.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "clean", SourceKey: "lvl-clean",
 		EncryptedAccessToken: "sso-clean", AuthStatus: account.AuthStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "ok", SourceKey: "lvl-ok",
+		EncryptedAccessToken: "sso-ok", AuthStatus: account.AuthStatusActive, SSOBotRiskSet: true, SSOBotRisk: 0, SSOBotInspectedAt: &now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -189,14 +195,17 @@ func TestSSORiskLevelFilter(t *testing.T) {
 			t.Fatalf("%s %s total = %d, err=%v", provider, risk, total, err)
 		}
 	}
+	assertRiskTotal(string(account.ProviderWeb), "unknown", 1)
 	assertRiskTotal(string(account.ProviderWeb), "normal", 1)
 	assertRiskTotal(string(account.ProviderWeb), "low", 1)
 	assertRiskTotal(string(account.ProviderWeb), "high", 0)
 	assertRiskTotal(string(account.ProviderBuild), "high", 1)
 	assertRiskTotal(string(account.ProviderBuild), "low", 0)
 	assertRiskTotal(string(account.ProviderBuild), "normal", 0)
+	assertRiskTotal(string(account.ProviderBuild), "unknown", 0)
 	assertRiskTotal(string(account.ProviderConsole), "low", 1)
 	assertRiskTotal(string(account.ProviderConsole), "normal", 0)
+	assertRiskTotal(string(account.ProviderConsole), "unknown", 0)
 	assertRiskTotal(string(account.ProviderConsole), "high", 0)
 }
 

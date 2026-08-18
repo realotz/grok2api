@@ -95,11 +95,11 @@ func TestBuildBotFlagIndexDrivesRoutingFilteringAndAvailableCount(t *testing.T) 
 	_, total, err = repo.List(ctx, repository.AccountListQuery{
 		Page: repository.PageQuery{Limit: 20},
 		Filter: repository.AccountListFilter{
-			Provider: string(account.ProviderBuild), Risk: "normal", Now: now,
+			Provider: string(account.ProviderBuild), Risk: "unknown", Now: now,
 		},
 	})
 	if err != nil || total != 1 {
-		t.Fatalf("normal list total = %d, err=%v", total, err)
+		t.Fatalf("unknown list total = %d, err=%v", total, err)
 	}
 }
 

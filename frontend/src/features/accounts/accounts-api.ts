@@ -491,7 +491,7 @@ async function runDetectBuildAccountsTask(body: object, handlers: BuildDetectHan
         progress.report({ completed: data.completed, total: data.total });
         return;
       }
-      if (event === "item" && typeof data.id === "string" && typeof data.name === "string" && (data.outcome === "ok" || data.outcome === "invalid" || data.outcome === "failed")) {
+      if (event === "item" && typeof data.id === "string" && typeof data.name === "string" && (data.outcome === "ok" || data.outcome === "flagged" || data.outcome === "invalid" || data.outcome === "failed")) {
         handlers.onItem?.({
           id: data.id,
           name: data.name,
@@ -499,6 +499,7 @@ async function runDetectBuildAccountsTask(body: object, handlers: BuildDetectHan
           outcome: data.outcome,
           reason: data.reason,
           httpStatus: data.httpStatus,
+          source: data.source,
         });
         return;
       }

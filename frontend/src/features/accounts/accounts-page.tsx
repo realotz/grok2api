@@ -1365,6 +1365,7 @@ export function AccountsPage() {
                   { value: "unrefreshable", label: t("accountCredential.noAutoRefresh") },
                 ] }] : []),
                 ...((provider === "grok_build" || provider === "grok_web" || provider === "grok_console") ? [{ id: "risk", label: t("accounts.riskFilter"), value: riskFilter, onChange: (value: string) => { setRiskFilter(value); setPage(1); }, options: [
+                  { value: "unknown", label: t("accounts.riskUnknown") },
                   { value: "normal", label: t("accounts.riskNormal") },
                   { value: "low", label: t("accounts.riskLow") },
                   { value: "high", label: t("accounts.riskHigh") },

@@ -574,7 +574,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		!oneOf(filter.Status, "", "active", "disabled", "reauthRequired", "cooldown", "waitingReset", "probing") ||
 		!egressValid ||
 		!oneOf(filter.Renewal, "", "refreshable", "unrefreshable") ||
-		!oneOf(filter.Risk, "", "flagged", "normal", "low", "high", "ever") ||
+		!oneOf(filter.Risk, "", "flagged", "unknown", "normal", "low", "high", "ever") ||
 		(filter.Risk != "" && !supportsRiskFilter(filter.Provider)) ||
 		!oneOf(filter.Agreement, "", "nsfwEnabled", "nsfwDisabled", "termsAccepted", "termsNotAccepted", "allAccepted", "allNotAccepted") ||
 		(filter.Agreement != "" && filter.Provider != string(accountdomain.ProviderWeb)) ||

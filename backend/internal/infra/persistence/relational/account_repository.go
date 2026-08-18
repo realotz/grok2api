@@ -1990,9 +1990,10 @@ func applyWebAgreementFilter(query *gorm.DB, agreement string) *gorm.DB {
 }
 
 var (
-	ssoRiskHighPredicate    = fmt.Sprintf("(credential.sso_bot_risk_set AND credential.sso_bot_risk >= %g)", account.SSORiskHighThreshold)
-	ssoRiskLowPredicate     = fmt.Sprintf("((credential.sso_bot_risk_set AND credential.sso_bot_risk > 0 AND credential.sso_bot_risk < %g) OR (credential.sso_bot_flag_source IN (1,2) AND NOT (credential.sso_bot_risk_set AND credential.sso_bot_risk >= %g)))", account.SSORiskHighThreshold, account.SSORiskHighThreshold)
-	ssoRiskFlaggedPredicate = fmt.Sprintf("(credential.sso_bot_flag_source IN (1,2) OR (credential.sso_bot_risk_set AND credential.sso_bot_risk >= %g))", account.SSORiskHighThreshold)
+	ssoRiskInspectedPredicate = "(credential.sso_bot_inspected_at IS NOT NULL OR credential.sso_bot_risk_set OR credential.sso_bot_flag_source IN (1,2))"
+	ssoRiskHighPredicate      = fmt.Sprintf("(credential.sso_bot_risk_set AND credential.sso_bot_risk >= %g)", account.SSORiskHighThreshold)
+	ssoRiskLowPredicate       = fmt.Sprintf("((credential.sso_bot_risk_set AND credential.sso_bot_risk > 0 AND credential.sso_bot_risk < %g) OR (credential.sso_bot_flag_source IN (1,2) AND NOT (credential.sso_bot_risk_set AND credential.sso_bot_risk >= %g)))", account.SSORiskHighThreshold, account.SSORiskHighThreshold)
+	ssoRiskFlaggedPredicate   = fmt.Sprintf("(credential.sso_bot_flag_source IN (1,2) OR (credential.sso_bot_risk_set AND credential.sso_bot_risk >= %g))", account.SSORiskHighThreshold)
 )
 
 const ssoRiskEverPredicate = "credential.sso_bot_risk_ever"
@@ -2010,8 +2011,10 @@ func applyRiskFilter(query *gorm.DB, _, risk string) *gorm.DB {
 		return query.Where(exists(ssoRiskLowPredicate))
 	case "ever":
 		return query.Where(exists(ssoRiskEverPredicate))
+	case "unknown":
+		return query.Where("NOT " + exists(ssoRiskInspectedPredicate))
 	case "normal":
-		return query.Where("NOT " + exists(ssoRiskHighPredicate) + " AND NOT " + exists(ssoRiskLowPredicate))
+		return query.Where(exists(ssoRiskInspectedPredicate) + " AND NOT " + exists(ssoRiskHighPredicate) + " AND NOT " + exists(ssoRiskLowPredicate))
 	default:
 		return query
 	}
