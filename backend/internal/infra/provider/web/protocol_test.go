@@ -1644,7 +1644,7 @@ func TestImageStreamingRejectsMultipleOutputs(t *testing.T) {
 }
 
 func TestImageAspectRatioFollowsXAIContractAndSizeAlias(t *testing.T) {
-	for input, expected := range map[string]string{"auto": "auto", "19.5:9": "19.5:9", "9:20": "9:20", "1536x1024": "3:2", "1024x1536": "2:3"} {
+	for input, expected := range map[string]string{"auto": "auto", "19.5:9": "19.5:9", "9:20": "9:20", "21:9": "21:9", "5:2": "5:2", "2:5": "2:5", "2560x1080": "21:9", "1280x512": "5:2", "1536x1024": "3:2", "1024x1536": "2:3"} {
 		got, err := resolveImageAspectRatio(input, "")
 		if err != nil || got != expected {
 			t.Fatalf("aspect ratio %q = %q, err=%v", input, got, err)

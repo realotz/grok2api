@@ -148,6 +148,10 @@ type AccountsConfig struct {
 	BuildForbiddenReauthCodesProvided bool
 	// ExcludeBuildBotFlaggedFromSchedulingProvided preserves the value when an older management client omits the field.
 	ExcludeBuildBotFlaggedFromSchedulingProvided bool
+	SSOVideoRiskThreshold                        float64
+	SSOLLMRiskThreshold                          float64
+	SSOVideoRiskThresholdProvided                bool
+	SSOLLMRiskThresholdProvided                  bool
 }
 
 // EditableConfig 聚合管理端允许修改的运行参数。
@@ -427,7 +431,22 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		base.Accounts.BuildForbiddenReauthCodes = append([]string(nil), value.Accounts.BuildForbiddenReauthCodes...)
 	}
 	base.Accounts.ExcludeBuildBotFlaggedFromScheduling = value.Accounts.ExcludeBuildBotFlaggedFromScheduling
+	base.Accounts.SSOVideoRiskThreshold = ssoRiskThresholdOrDefault(value.Accounts.SSOVideoRiskThreshold, settingsdomain.DefaultSSOVideoRiskThreshold)
+	base.Accounts.SSOLLMRiskThreshold = ssoRiskThresholdOrDefault(value.Accounts.SSOLLMRiskThreshold, settingsdomain.DefaultSSOLLMRiskThreshold)
 	return base
+}
+
+func ssoRiskThresholdOrDefault(value *float64, fallback float64) float64 {
+	if value == nil {
+		return fallback
+	}
+	if *value < 0 {
+		return 0
+	}
+	if *value > 1 {
+		return 1
+	}
+	return *value
 }
 
 func toDomainConfig(value config.Config) settingsdomain.Config {
@@ -495,6 +514,8 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			AutoCleanReauthInterval:              value.Accounts.AutoCleanReauthInterval.Value(),
 			AutoCleanReauthMinAge:                value.Accounts.AutoCleanReauthMinAge.Value(),
 			AutoCleanIncludeDisabled:             value.Accounts.AutoCleanIncludeDisabled,
+			SSOVideoRiskThreshold:                float64Pointer(value.Accounts.SSOVideoRiskThreshold),
+			SSOLLMRiskThreshold:                  float64Pointer(value.Accounts.SSOLLMRiskThreshold),
 		},
 	}
 }
@@ -587,6 +608,12 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		}
 		if input.Accounts.ExcludeBuildBotFlaggedFromSchedulingProvided {
 			next.Accounts.ExcludeBuildBotFlaggedFromScheduling = input.Accounts.ExcludeBuildBotFlaggedFromScheduling
+		}
+		if input.Accounts.SSOVideoRiskThresholdProvided {
+			next.Accounts.SSOVideoRiskThreshold = input.Accounts.SSOVideoRiskThreshold
+		}
+		if input.Accounts.SSOLLMRiskThresholdProvided {
+			next.Accounts.SSOLLMRiskThreshold = input.Accounts.SSOLLMRiskThreshold
 		}
 		next.Accounts.AutoCleanReauthEnabled = input.Accounts.AutoCleanReauthEnabled
 		next.Accounts.AutoCleanIncludeDisabled = input.Accounts.AutoCleanIncludeDisabled
@@ -726,6 +753,10 @@ func toEditable(cfg config.Config) EditableConfig {
 			AutoCleanReauthInterval:                      cfg.Accounts.AutoCleanReauthInterval.String(),
 			AutoCleanReauthMinAge:                        cfg.Accounts.AutoCleanReauthMinAge.String(),
 			AutoCleanIncludeDisabled:                     cfg.Accounts.AutoCleanIncludeDisabled,
+			SSOVideoRiskThreshold:                        cfg.Accounts.SSOVideoRiskThreshold,
+			SSOLLMRiskThreshold:                          cfg.Accounts.SSOLLMRiskThreshold,
+			SSOVideoRiskThresholdProvided:                true,
+			SSOLLMRiskThresholdProvided:                  true,
 		},
 		AccountsProvided: true,
 	}
@@ -746,4 +777,8 @@ func normalizeForbiddenCodes(values []string) []string {
 		result = append(result, code)
 	}
 	return result
+}
+
+func float64Pointer(value float64) *float64 {
+	return &value
 }

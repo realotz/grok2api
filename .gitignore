@@ -50,3 +50,7 @@ __pycache__/
 /.tmp/
 /tmp/
 /Dockerfile.local
+
+# Local research dumps and test fixtures
+/briefs/
+/output/

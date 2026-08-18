@@ -1688,18 +1688,25 @@ func (f failingConcurrencyLimiter) Current(context.Context, string) (int, error)
 	return 0, nil
 }
 
-func TestApplySSOVideoRiskFilterBlocksExactOne(t *testing.T) {
+func TestApplySSOVideoRiskFilterKeepsHighRiskAccounts(t *testing.T) {
 	values := []account.RoutingCandidate{
 		{Credential: account.Credential{ID: 1, SSOBotRiskSet: true, SSOBotRisk: 0.8}},
 		{Credential: account.Credential{ID: 2, SSOBotRiskSet: true, SSOBotRisk: 0.79}},
 		{Credential: account.Credential{ID: 3, SSOBotFlagSource: 1}},
+		{Credential: account.Credential{ID: 4, SSOBotRiskSet: true, SSOBotRisk: 1}},
 	}
 	filtered := applySSOVideoRiskFilter(account.QuotaModeWebVideo720p, values)
-	if len(filtered) != 2 || filtered[0].Credential.ID != 2 || filtered[1].Credential.ID != 3 {
-		t.Fatalf("filtered = %#v", filtered)
+	if len(filtered) != 3 || filtered[0].Credential.ID != 1 || filtered[1].Credential.ID != 2 || filtered[2].Credential.ID != 3 {
+		t.Fatalf("video default cutoff 1 must keep risk<1, filtered = %#v", filtered)
 	}
-	if kept := applySSOVideoRiskFilter(account.QuotaModeWebImagePro, values); len(kept) != 3 {
+	if kept := applySSOVideoRiskFilter(account.QuotaModeWebImagePro, values); len(kept) != 4 {
 		t.Fatalf("non-video should keep all, got %#v", kept)
+	}
+	if kept := applySSORiskFilter(account.ProviderWeb, "", account.QuotaModeWebVideo720p, values, 0, 0.8); len(kept) != 4 {
+		t.Fatalf("video threshold 0 must not restrict, got %#v", kept)
+	}
+	if kept := applySSORiskFilter(account.ProviderWeb, "", account.QuotaModeWebVideo720p, values, 0.8, 0.8); len(kept) != 2 {
+		t.Fatalf("video threshold 0.8 should drop risk>=0.8, got %#v", kept)
 	}
 }
 
@@ -1709,15 +1716,18 @@ func TestApplySSORiskFilterBlocksGrok45BuildLLM(t *testing.T) {
 		{Credential: account.Credential{ID: 2, Provider: account.ProviderBuild, SSOBotRiskSet: true, SSOBotRisk: 0.4}},
 		{Credential: account.Credential{ID: 3, Provider: account.ProviderBuild}},
 	}
-	filtered := applySSORiskFilter(account.ProviderBuild, "grok-4.5", "", values)
+	filtered := applySSORiskFilter(account.ProviderBuild, "grok-4.5", "", values, 1, 0.8)
 	if len(filtered) != 2 || filtered[0].Credential.ID != 2 || filtered[1].Credential.ID != 3 {
 		t.Fatalf("grok-4.5 filtered = %#v", filtered)
 	}
-	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.6-xhigh", "", values); len(kept) != 2 {
+	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.6-xhigh", "", values, 1, 0.8); len(kept) != 2 {
 		t.Fatalf("grok-4.6 should also exclude risk>=0.8, got %#v", kept)
 	}
-	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.3", "", values); len(kept) != 3 {
+	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.3", "", values, 1, 0.8); len(kept) != 3 {
 		t.Fatalf("other Build LLM should keep red accounts, got %#v", kept)
+	}
+	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.5", "", values, 1, 0); len(kept) != 3 {
+		t.Fatalf("LLM threshold 0 must not restrict, got %#v", kept)
 	}
 }
 
@@ -1734,5 +1744,18 @@ func TestCandidateScorePrefersLowerSSORiskThenFreeBuild(t *testing.T) {
 	high := candidateScore{index: 0, ssoRisk: ssoRiskRank(paidHigh.Credential), preferFreeBuild: false}
 	if !candidateScoreBetter(values, right, high) {
 		t.Fatal("lower SSO risk should win before paid/free")
+	}
+}
+
+func TestCandidateScorePrefersEarlierImportAtSameSSORisk(t *testing.T) {
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+	early := account.RoutingCandidate{Credential: account.Credential{ID: 2, Priority: 1, CreatedAt: older, SSOBotRiskSet: true, SSOBotRisk: 0.9}}
+	late := account.RoutingCandidate{Credential: account.Credential{ID: 1, Priority: 100, CreatedAt: newer, SSOBotRiskSet: true, SSOBotRisk: 0.9}}
+	values := []account.RoutingCandidate{late, early}
+	left := candidateScore{index: 1, ssoRisk: ssoRiskRank(early.Credential), preferEarlierImport: true}
+	right := candidateScore{index: 0, ssoRisk: ssoRiskRank(late.Credential), preferEarlierImport: true}
+	if !candidateScoreBetter(values, left, right) {
+		t.Fatal("same SSO risk should prefer the earlier imported account")
 	}
 }

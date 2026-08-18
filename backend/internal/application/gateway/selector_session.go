@@ -186,7 +186,7 @@ func (session *selectionSession) acquireQuotaProbe(ctx context.Context, excluded
 		return nil, nil
 	}
 	if session.probePlan == nil {
-		plan, err := session.selector.planCandidateIndexesWithHints(ctx, session.values, session.probeCandidates, time.Now().UTC(), session.selector.resolveTierOrder(session.provider, session.upstreamModel, session.quotaMode), nil, session.selector.preferFreeBuildForModel(session.upstreamModel))
+		plan, err := session.selector.planCandidateIndexesWithHints(ctx, session.values, session.probeCandidates, time.Now().UTC(), session.selector.resolveTierOrder(session.provider, session.upstreamModel, session.quotaMode), nil, session.selector.preferFreeBuildForModel(session.upstreamModel), isSSOVideoRequest(session.quotaMode, session.upstreamModel))
 		if err != nil {
 			return nil, err
 		}
@@ -277,7 +277,7 @@ func (session *selectionSession) acquireNormal(ctx context.Context, excluded map
 	deadline := time.Now().Add(capacityWait)
 	for {
 		if session.normalPlan == nil {
-			plan, err := session.selector.planCandidateIndexesWithHints(ctx, session.values, session.normalCandidates, time.Now().UTC(), session.selector.resolveTierOrder(session.provider, session.upstreamModel, session.quotaMode), nil, session.selector.preferFreeBuildForModel(session.upstreamModel))
+			plan, err := session.selector.planCandidateIndexesWithHints(ctx, session.values, session.normalCandidates, time.Now().UTC(), session.selector.resolveTierOrder(session.provider, session.upstreamModel, session.quotaMode), nil, session.selector.preferFreeBuildForModel(session.upstreamModel), isSSOVideoRequest(session.quotaMode, session.upstreamModel))
 			if err != nil {
 				return nil, err
 			}

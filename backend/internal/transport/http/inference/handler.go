@@ -1121,7 +1121,7 @@ func validVideoAspectRatio(value string) bool {
 
 func validImageAspectRatio(value string) bool {
 	switch value {
-	case "auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20":
+	case "auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "21:9", "9:21", "5:2", "2:5", "19.5:9", "9:19.5", "20:9", "9:20":
 		return true
 	default:
 		return false

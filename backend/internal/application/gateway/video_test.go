@@ -1156,3 +1156,344 @@ func TestFastRemoteVideoIsRiskAndFailsOverWithoutDownload(t *testing.T) {
 		t.Fatalf("second account risk source = %d", clean.SSOBotFlagSource)
 	}
 }
+
+func TestPinnedOnlyVideoDoesNotFailOverOnCreateFailure(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "video-pinned-only.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	mediaRepo := relational.NewMediaJobRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "video-pinned", Prefix: "video-pinned", SecretHash: strings.Repeat("c", 64),
+		EncryptedSecret: "encrypted", Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createAccount := func(name string, priority int) account.Credential {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+			Name: name, SourceKey: name, EncryptedAccessToken: name + "-token", ExpiresAt: time.Now().Add(time.Hour),
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: priority, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return credential
+	}
+	first := createAccount("first", 200)
+	second := createAccount("second", 100)
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderWeb, []string{"grok-imagine-video"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{first.ID, second.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{"grok-imagine-video"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route, err := modelRepo.GetByProviderUpstream(ctx, account.ProviderWeb, "grok-imagine-video")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &videoCreateFailoverAdapter{
+		failures: map[uint64]int{first.ID: 2},
+		status:   http.StatusForbidden,
+	}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, nil, 3)
+	service.ConfigureMedia(mediaRepo, 1)
+	service.UpdateVideoMaxAttempts(10)
+
+	now := time.Now().UTC()
+	job := media.Job{
+		ID: "video_pinned_only_forbidden", RequestID: "request-video-pinned", ClientKeyID: key.ID, ClientKeyName: key.Name,
+		AccountID: first.ID, AccountName: first.Name, Provider: string(account.ProviderWeb),
+		Model: route.PublicID, ModelRouteID: route.ID, UpstreamModel: route.UpstreamModel,
+		Operation: provider.VideoOperationGenerate, Prompt: "test", Seconds: 5, Quality: "720p",
+		Status: media.StatusInProgress, InputJSON: `{"pinned_only":true}`, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := mediaRepo.CreateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	service.runVideoJob(ctx, job, route)
+
+	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != first.ID {
+		t.Fatalf("pinned video attempts = %#v, want pinned account once", attempts)
+	}
+	stored, err := mediaRepo.GetMediaJob(ctx, job.ID, job.ClientKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != media.StatusFailed || stored.AccountID != first.ID || stored.ResultAssetID != "" {
+		t.Fatalf("pinned failed job = %#v", stored)
+	}
+
+	adapter.mu.Lock()
+	adapter.failures = map[uint64]int{}
+	adapter.status = 0
+	adapter.attempts = nil
+	adapter.mu.Unlock()
+	first.Enabled = false
+	if _, err := accountRepo.Update(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	unavailableJob := job
+	unavailableJob.ID = "video_pinned_only_unavailable"
+	unavailableJob.RequestID = "request-video-pinned-unavailable"
+	unavailableJob.AccountID = first.ID
+	unavailableJob.AccountName = first.Name
+	unavailableJob.Status = media.StatusInProgress
+	unavailableJob.Progress = 0
+	unavailableJob.ErrorCode = ""
+	unavailableJob.ErrorMessage = ""
+	unavailableJob.CompletedAt = nil
+	unavailableJob.CreatedAt = time.Now().UTC()
+	unavailableJob.UpdatedAt = unavailableJob.CreatedAt
+	if err := mediaRepo.CreateMediaJob(ctx, unavailableJob); err != nil {
+		t.Fatal(err)
+	}
+	service.runVideoJob(ctx, unavailableJob, route)
+	if attempts := adapter.Attempts(); len(attempts) != 0 {
+		t.Fatalf("unavailable pinned attempts = %#v, want none", attempts)
+	}
+	stored, err = mediaRepo.GetMediaJob(ctx, unavailableJob.ID, unavailableJob.ClientKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != media.StatusFailed || stored.AccountID != first.ID || stored.ResultAssetID != "" {
+		t.Fatalf("unavailable pinned job = %#v", stored)
+	}
+}
+
+func TestPinnedOnlyVideoDoesNotFailOverOnSceneryRisk(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "video-pinned-scenery.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	mediaRepo := relational.NewMediaJobRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "video-pinned-scenery", Prefix: "video-pinned-scenery", SecretHash: strings.Repeat("d", 64),
+		EncryptedSecret: "encrypted", Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createAccount := func(name string, priority int) account.Credential {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+			Name: name, SourceKey: name, EncryptedAccessToken: name + "-token", ExpiresAt: time.Now().Add(time.Hour),
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: priority, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return credential
+	}
+	first := createAccount("first", 200)
+	second := createAccount("second", 100)
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderWeb, []string{"grok-imagine-video"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{first.ID, second.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{"grok-imagine-video"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route, err := modelRepo.GetByProviderUpstream(ctx, account.ProviderWeb, "grok-imagine-video")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &videoFastRiskAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, nil, 3)
+	service.ConfigureMedia(mediaRepo, 1)
+	service.UpdateVideoMaxAttempts(5)
+
+	now := time.Now().UTC()
+	job := media.Job{
+		ID: "video_pinned_scenery", RequestID: "request-video-pinned-scenery", ClientKeyID: key.ID, ClientKeyName: key.Name,
+		AccountID: first.ID, AccountName: first.Name, Provider: string(account.ProviderWeb),
+		Model: route.PublicID, ModelRouteID: route.ID, UpstreamModel: route.UpstreamModel,
+		Operation: provider.VideoOperationGenerate, Prompt: "test", Seconds: 5, Quality: "720p",
+		Status: media.StatusInProgress, InputJSON: `{"pinned_only":true}`, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := mediaRepo.CreateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	service.runVideoJob(ctx, job, route)
+
+	if adapter.Downloads() != 0 {
+		t.Fatalf("downloads = %d, want 0", adapter.Downloads())
+	}
+	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != first.ID {
+		t.Fatalf("pinned scenery attempts = %#v, want pinned account once", attempts)
+	}
+	stored, err := mediaRepo.GetMediaJob(ctx, job.ID, job.ClientKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != media.StatusFailed || stored.AccountID != first.ID || stored.ResultAssetID != "" {
+		t.Fatalf("pinned scenery job = %#v", stored)
+	}
+	if !strings.Contains(stored.ErrorMessage, provider.ErrVideoRiskScenery.Error()) {
+		t.Fatalf("pinned scenery error = %q", stored.ErrorMessage)
+	}
+	flagged, err := accountRepo.Get(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flagged.SSOBotFlagSource != 1 || !flagged.SSOBotRiskSet || flagged.SSOBotRisk != 1 || !flagged.SSOBotRiskEver {
+		t.Fatalf("first account scenery risk = %#v", flagged)
+	}
+	clean, err := accountRepo.Get(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean.SSOBotFlagSource != 0 {
+		t.Fatalf("second account risk source = %d", clean.SSOBotFlagSource)
+	}
+}
+
+func TestPinnedOnlyVideoIgnoresSSOVideoRiskBlock(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "video-pinned-risk.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	mediaRepo := relational.NewMediaJobRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "video-pinned-risk", Prefix: "video-pinned-risk", SecretHash: strings.Repeat("e", 64),
+		EncryptedSecret: "encrypted", Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createAccount := func(name string, priority int) account.Credential {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+			Name: name, SourceKey: name, EncryptedAccessToken: name + "-token", ExpiresAt: time.Now().Add(time.Hour),
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: priority, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return credential
+	}
+	first := createAccount("first", 200)
+	second := createAccount("second", 100)
+	first.SSOBotRiskSet = true
+	first.SSOBotRisk = 1
+	first, err = accountRepo.Update(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderWeb, []string{"grok-imagine-video"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{first.ID, second.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{"grok-imagine-video"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route, err := modelRepo.GetByProviderUpstream(ctx, account.ProviderWeb, "grok-imagine-video")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &videoCreateFailoverAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, nil, 3)
+	service.ConfigureMedia(mediaRepo, 1)
+	service.UpdateVideoMaxAttempts(5)
+
+	now := time.Now().UTC()
+	job := media.Job{
+		ID: "video_pinned_risk_ok", RequestID: "request-video-pinned-risk", ClientKeyID: key.ID, ClientKeyName: key.Name,
+		AccountID: first.ID, AccountName: first.Name, Provider: string(account.ProviderWeb),
+		Model: route.PublicID, ModelRouteID: route.ID, UpstreamModel: route.UpstreamModel,
+		Operation: provider.VideoOperationGenerate, Prompt: "test", Seconds: 5, Quality: "720p",
+		Status: media.StatusInProgress, InputJSON: `{"pinned_only":true}`, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := mediaRepo.CreateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	service.runVideoJob(ctx, job, route)
+	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != first.ID {
+		t.Fatalf("pinned high-risk attempts = %#v, want pinned account once", attempts)
+	}
+	stored, err := mediaRepo.GetMediaJob(ctx, job.ID, job.ClientKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != media.StatusCompleted || stored.AccountID != first.ID || stored.ResultAssetID != "video_asset_00001" {
+		t.Fatalf("pinned high-risk job = %#v", stored)
+	}
+
+	adapter.mu.Lock()
+	adapter.attempts = nil
+	adapter.mu.Unlock()
+	productionJob := job
+	productionJob.ID = "video_risk_blocked_failover"
+	productionJob.RequestID = "request-video-risk-failover"
+	productionJob.InputJSON = `{}`
+	productionJob.Status = media.StatusInProgress
+	productionJob.Progress = 0
+	productionJob.ResultAssetID = ""
+	productionJob.CompletedAt = nil
+	productionJob.CreatedAt = time.Now().UTC()
+	productionJob.UpdatedAt = productionJob.CreatedAt
+	if err := mediaRepo.CreateMediaJob(ctx, productionJob); err != nil {
+		t.Fatal(err)
+	}
+	service.runVideoJob(ctx, productionJob, route)
+	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != second.ID {
+		t.Fatalf("production high-risk attempts = %#v, want second account only", attempts)
+	}
+	stored, err = mediaRepo.GetMediaJob(ctx, productionJob.ID, productionJob.ClientKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != media.StatusCompleted || stored.AccountID != second.ID {
+		t.Fatalf("production failover job = %#v", stored)
+	}
+}

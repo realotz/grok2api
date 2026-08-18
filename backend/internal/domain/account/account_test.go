@@ -147,9 +147,18 @@ func TestSSORiskHighStartsAtPointEight(t *testing.T) {
 		t.Fatal("risk 0.8 and above must be high risk")
 	}
 	if (Credential{SSOBotRiskSet: true, SSOBotRisk: 0.79}).BlocksBySSORisk() {
-		t.Fatal("risk 0.79 must not block video or grok-4.5/4.6")
+		t.Fatal("risk 0.79 must not block grok-4.5/4.6")
 	}
 	if !(Credential{SSOBotRiskSet: true, SSOBotRisk: 0.8}).BlocksBySSORisk() {
-		t.Fatal("risk 0.8 must block video and grok-4.5/4.6")
+		t.Fatal("risk 0.8 must block grok-4.5/4.6")
+	}
+	if (Credential{SSOBotRiskSet: true, SSOBotRisk: 0.8}).BlocksVideoBySSORisk() {
+		t.Fatal("risk 0.8 must not block video at the default video cutoff")
+	}
+	if !(Credential{SSOBotRiskSet: true, SSOBotRisk: 1}).BlocksVideoBySSORisk() {
+		t.Fatal("risk 1 must block video at the default video cutoff")
+	}
+	if (Credential{SSOBotRiskSet: true, SSOBotRisk: 1}).BlocksAtSSORisk(0) {
+		t.Fatal("threshold 0 must disable SSO risk blocking")
 	}
 }

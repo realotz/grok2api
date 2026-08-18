@@ -103,7 +103,7 @@ export async function generateImage(input: {
   prompt: string;
   count: number;
   aspectRatio: string;
-  resolution: string;
+  size?: string;
   quality?: "low" | "medium";
   signal?: AbortSignal;
 }): Promise<ImageResult[]> {
@@ -117,7 +117,7 @@ export async function generateImage(input: {
         prompt: input.prompt,
         n: input.count,
         aspect_ratio: input.aspectRatio,
-        resolution: input.resolution,
+        size: input.size || "auto",
         ...(input.quality ? { quality: input.quality } : {}),
         response_format: "url",
         stream: false,

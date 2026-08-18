@@ -34,6 +34,8 @@ export type SettingsConfigDTO = {
     autoCleanReauthInterval: string;
     autoCleanReauthMinAge: string;
     autoCleanIncludeDisabled: boolean;
+    ssoVideoRiskThreshold: number;
+    ssoLLMRiskThreshold: number;
   };
 };
 
@@ -129,6 +131,8 @@ const settingsConfigValidator = hasShape({
     autoCleanReauthInterval: isString,
     autoCleanReauthMinAge: isString,
     autoCleanIncludeDisabled: isBoolean,
+    ssoVideoRiskThreshold: isOptional(isNumber),
+    ssoLLMRiskThreshold: isOptional(isNumber),
   })),
 });
 const defaultAccountsConfig = (): SettingsConfigDTO["accounts"] => ({
@@ -139,6 +143,8 @@ const defaultAccountsConfig = (): SettingsConfigDTO["accounts"] => ({
   autoCleanReauthInterval: "10m",
   autoCleanReauthMinAge: "1h",
   autoCleanIncludeDisabled: false,
+  ssoVideoRiskThreshold: 1,
+  ssoLLMRiskThreshold: 0.8,
 });
 function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDTO {
   const accounts = snapshot.config.accounts ?? defaultAccountsConfig();
@@ -177,6 +183,8 @@ function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDT
         autoCleanReauthInterval: accounts.autoCleanReauthInterval || "10m",
         autoCleanReauthMinAge: accounts.autoCleanReauthMinAge || "1h",
         autoCleanIncludeDisabled: accounts.autoCleanIncludeDisabled ?? false,
+        ssoVideoRiskThreshold: accounts.ssoVideoRiskThreshold ?? 1,
+        ssoLLMRiskThreshold: accounts.ssoLLMRiskThreshold ?? 0.8,
       },
     },
   };

@@ -175,6 +175,8 @@ export const settingsSchema = z.object({
       return seconds >= 60 && seconds <= 30 * 86_400;
     }),
     autoCleanIncludeDisabled: z.boolean(),
+    ssoVideoRiskThreshold: z.number().min(0).max(1),
+    ssoLLMRiskThreshold: z.number().min(0).max(1),
   }),
 });
 
@@ -220,6 +222,8 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       autoCleanReauthInterval: parseDuration(config.accounts.autoCleanReauthInterval),
       autoCleanReauthMinAge: parseDuration(config.accounts.autoCleanReauthMinAge),
       autoCleanIncludeDisabled: config.accounts.autoCleanIncludeDisabled,
+      ssoVideoRiskThreshold: config.accounts.ssoVideoRiskThreshold,
+      ssoLLMRiskThreshold: config.accounts.ssoLLMRiskThreshold,
     },
   };
 }
@@ -263,6 +267,8 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
       autoCleanReauthInterval: formatDuration(config.accounts.autoCleanReauthInterval),
       autoCleanReauthMinAge: formatDuration(config.accounts.autoCleanReauthMinAge),
       autoCleanIncludeDisabled: config.accounts.autoCleanIncludeDisabled,
+      ssoVideoRiskThreshold: config.accounts.ssoVideoRiskThreshold,
+      ssoLLMRiskThreshold: config.accounts.ssoLLMRiskThreshold,
     },
   };
 }

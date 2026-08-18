@@ -88,9 +88,18 @@ type ChatSession = {
   messages: ConversationMessage[];
 };
 
-const imageAspectRatios = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"] as const;
+const imageAspectRatios = [
+  { value: "auto", label: "Auto" },
+  { value: "2:3", label: "2:3 Poster" },
+  { value: "3:2", label: "3:2 Photo Print" },
+  { value: "4:3", label: "4:3 Presentation" },
+  { value: "1:1", label: "1:1 Square" },
+  { value: "9:16", label: "9:16 Story" },
+  { value: "16:9", label: "16:9 Widescreen" },
+  { value: "21:9", label: "21:9 Cinematic" },
+  { value: "5:2", label: "5:2 Banner" },
+] as const;
 const videoAspectRatios = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"] as const;
-const imageResolutions = ["1k"] as const;
 const videoResolutions = ["480p", "720p", "1080p"] as const;
 const videoDurations = ["6", "10", "15"] as const;
 const videoExtendDurations = ["2", "4", "6", "8", "10"] as const;
@@ -875,8 +884,7 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
 function ImagePanel({ apiKey, model, modelOptions, onModelChange }: CreativePanelProps) {
   const { t } = useTranslation();
   const [prompt, setPrompt] = useState("");
-  const [aspectRatio, setAspectRatio] = useState("1:1");
-  const [resolution, setResolution] = useState("1k");
+  const [aspectRatio, setAspectRatio] = useState("auto");
   const [images, setImages] = useState<ImageResult[]>([]);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editPrompt, setEditPrompt] = useState("");
@@ -949,7 +957,7 @@ function ImagePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
     event.preventDefault();
     if (!apiKey || !generationModel || !prompt.trim() || mutation.isPending) return;
     mutation.reset();
-    mutation.mutate({ apiKey, model: generationModel, prompt: prompt.trim(), count: 1, aspectRatio, resolution });
+    mutation.mutate({ apiKey, model: generationModel, prompt: prompt.trim(), count: 1, aspectRatio });
   }
 
   function beginEdit(index: number): void {
@@ -1089,7 +1097,7 @@ function ImagePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2" aria-live="polite">
               {images.map((image, index) => (
                 <figure key={`${image.url}-${index}`} className="group min-w-0 overflow-hidden">
-                  <img src={image.url} alt={t("creativeConsole.generatedImageAlt", { index: index + 1 })} className="aspect-square w-full rounded-xl bg-muted object-contain" loading="lazy" />
+                  <img src={image.url} alt={t("creativeConsole.generatedImageAlt", { index: index + 1 })} className="max-h-[28rem] w-full rounded-xl bg-muted object-contain" loading="lazy" />
                   <figcaption className="flex min-w-0 items-center justify-between gap-2 py-1.5">
                     <span className="truncate text-xs text-muted-foreground">{t("creativeConsole.imageNumber", { index: index + 1 })}</span>
                     <div className="flex items-center gap-1">
@@ -1111,7 +1119,7 @@ function ImagePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
           <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3">
             <div className="flex min-w-0 flex-wrap items-center gap-1">
               <CompactModelSelect value={generationModel} models={generationModels} onChange={onModelChange} />
-              <CompactSelect value={aspectRatio} options={imageAspectRatios} onChange={setAspectRatio} ariaLabel={t("creativeConsole.aspectRatio")} icon={<TvMinimal />} /><CompactSelect value={resolution} options={imageResolutions} onChange={setResolution} ariaLabel={t("creativeConsole.resolution")} icon={<ImageUpscale />} />
+              <CompactSelect value={aspectRatio} options={imageAspectRatios} onChange={setAspectRatio} ariaLabel={t("creativeConsole.aspectRatio")} icon={<TvMinimal />} />
             </div>
             <Button type="submit" size="icon" aria-label={t("creativeConsole.generateImage")} disabled={!apiKey || !generationModel || !prompt.trim() || mutation.isPending}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ArrowUp />}</Button>
           </div>
@@ -1860,13 +1868,14 @@ function CompactModelSelect({ value, models, onChange }: { value: string; models
   );
 }
 
-function CompactSelect({ value, options, onChange, ariaLabel, suffix, icon }: { value: string; options: readonly string[]; onChange: (value: string) => void; ariaLabel: string; suffix?: string; icon?: ReactNode }) {
+function CompactSelect({ value, options, onChange, ariaLabel, suffix, icon }: { value: string; options: readonly (string | { value: string; label: string })[]; onChange: (value: string) => void; ariaLabel: string; suffix?: string; icon?: ReactNode }) {
+  const items = options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
   return (
     <Select value={value} onValueChange={onChange}>
       <SelectTrigger className="h-8 w-auto gap-1.5 border-0 bg-transparent px-2 shadow-none hover:bg-secondary/70 focus:bg-secondary/70 focus:ring-0 [&>svg]:size-3.5 [&>svg]:shrink-0" aria-label={ariaLabel}>
         {icon}<SelectValue />
       </SelectTrigger>
-      <SelectContent>{options.map((option) => <SelectItem key={option} value={option}>{option}{suffix}</SelectItem>)}</SelectContent>
+      <SelectContent>{items.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}{suffix}</SelectItem>)}</SelectContent>
     </Select>
   );
 }

@@ -99,10 +99,10 @@ type ProviderBuildConfig struct {
 
 // RoutingConfig 定义会话粘性、冷却和故障切换边界。
 type RoutingConfig struct {
-	StickyTTL       time.Duration
-	CooldownBase    time.Duration
-	CooldownMax     time.Duration
-	CapacityWait    time.Duration
+	StickyTTL        time.Duration
+	CooldownBase     time.Duration
+	CooldownMax      time.Duration
+	CapacityWait     time.Duration
 	MaxAttempts      int
 	VideoMaxAttempts int
 	PreferFreeBuild  bool
@@ -150,4 +150,13 @@ type AccountsConfig struct {
 	AutoCleanReauthMinAge time.Duration
 	// AutoCleanIncludeDisabled 为 true 时，reauth 清理时包含 enabled=false 的账号。
 	AutoCleanIncludeDisabled bool
+	// SSOVideoRiskThreshold 禁止视频调度的 grok.com risk 下限；nil 表示默认 1，0 表示不限制。
+	SSOVideoRiskThreshold *float64
+	// SSOLLMRiskThreshold 禁止 grok-4.5/4.6 Build LLM 的 grok.com risk 下限；nil 表示默认 0.8，0 表示不限制。
+	SSOLLMRiskThreshold *float64
 }
+
+const (
+	DefaultSSOVideoRiskThreshold = 1.0
+	DefaultSSOLLMRiskThreshold   = 0.8
+)

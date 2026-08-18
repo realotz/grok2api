@@ -661,7 +661,7 @@ func TestApplyDomainConfigAccountsDefaults(t *testing.T) {
 			ImportConcurrency: base.Batch.ImportConcurrency, ConversionConcurrency: base.Batch.ConversionConcurrency,
 			SyncConcurrency: base.Batch.SyncConcurrency, RefreshConcurrency: base.Batch.RefreshConcurrency,
 			DetectConcurrency: base.Batch.DetectConcurrency,
-			RandomDelay: func() *time.Duration { d := base.Batch.RandomDelay.Value(); return &d }(),
+			RandomDelay:       func() *time.Duration { d := base.Batch.RandomDelay.Value(); return &d }(),
 		},
 		Media: settingsdomain.MediaConfig{
 			MaxImageBytes: base.Media.MaxImageBytes, MaxTotalBytes: base.Media.MaxTotalBytes,
@@ -686,8 +686,43 @@ func TestApplyDomainConfigAccountsDefaults(t *testing.T) {
 	if loaded.Accounts.AutoCleanReauthInterval.Value() != 10*time.Minute || loaded.Accounts.AutoCleanReauthMinAge.Value() != time.Hour {
 		t.Fatalf("accounts defaults = %#v", loaded.Accounts)
 	}
+	if loaded.Accounts.SSOVideoRiskThreshold != 1 || loaded.Accounts.SSOLLMRiskThreshold != 0.8 {
+		t.Fatalf("SSO risk threshold defaults = video=%g llm=%g", loaded.Accounts.SSOVideoRiskThreshold, loaded.Accounts.SSOLLMRiskThreshold)
+	}
 	if loaded.Audit.CommitDelay.Value() != base.Audit.CommitDelay.Value() {
 		t.Fatalf("audit commit delay = %s", loaded.Audit.CommitDelay.Value())
+	}
+}
+
+func TestUpdateSSORiskThresholdZeroMeansUnlimited(t *testing.T) {
+	cfg := testConfig(t)
+	repo := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repo, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	if input.Accounts.SSOVideoRiskThreshold != 1 || input.Accounts.SSOLLMRiskThreshold != 0.8 {
+		t.Fatalf("editable defaults = %#v", input.Accounts)
+	}
+	input.Accounts.SSOVideoRiskThreshold = 0
+	input.Accounts.SSOLLMRiskThreshold = 0
+	input.Accounts.SSOVideoRiskThresholdProvided = true
+	input.Accounts.SSOLLMRiskThresholdProvided = true
+	if _, err := service.Update(context.Background(), service.Get().Revision, input); err != nil {
+		t.Fatal(err)
+	}
+	if applied.Accounts.SSOVideoRiskThreshold != 0 || applied.Accounts.SSOLLMRiskThreshold != 0 {
+		t.Fatalf("applied unlimited thresholds = %#v", applied.Accounts)
+	}
+	if repo.value.Accounts.SSOVideoRiskThreshold == nil || *repo.value.Accounts.SSOVideoRiskThreshold != 0 ||
+		repo.value.Accounts.SSOLLMRiskThreshold == nil || *repo.value.Accounts.SSOLLMRiskThreshold != 0 {
+		t.Fatalf("persisted unlimited thresholds = %#v", repo.value.Accounts)
+	}
+	reloaded, _, _, err := LoadPersisted(context.Background(), cfg, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Accounts.SSOVideoRiskThreshold != 0 || reloaded.Accounts.SSOLLMRiskThreshold != 0 {
+		t.Fatalf("reloaded unlimited thresholds = %#v", reloaded.Accounts)
 	}
 }
 

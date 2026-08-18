@@ -12,17 +12,18 @@ import (
 )
 
 type candidateScore struct {
-	index             int
-	webCatalogSupport bool
-	tier              int
-	ssoRisk           int
-	preferFreeBuild   bool
-	quotaKnown        bool
-	quotaAvailable    bool
-	billingFresh      bool
-	inFlight          int
-	remaining         float64
-	lastSelected      time.Time
+	index               int
+	webCatalogSupport   bool
+	tier                int
+	ssoRisk             int
+	preferFreeBuild     bool
+	preferEarlierImport bool
+	quotaKnown          bool
+	quotaAvailable      bool
+	billingFresh        bool
+	inFlight            int
+	remaining           float64
+	lastSelected        time.Time
 }
 
 // candidatePlan 使用线性建堆保留完整路由优先级，并允许 claim 失败后按顺序取下一账号。
@@ -89,6 +90,9 @@ func candidateScoreBetter(values []account.RoutingCandidate, leftScore, rightSco
 	if leftScore.ssoRisk != rightScore.ssoRisk {
 		return leftScore.ssoRisk < rightScore.ssoRisk
 	}
+	if (leftScore.preferEarlierImport || rightScore.preferEarlierImport) && !left.CreatedAt.Equal(right.CreatedAt) {
+		return left.CreatedAt.Before(right.CreatedAt)
+	}
 	if leftScore.preferFreeBuild != rightScore.preferFreeBuild {
 		return leftScore.preferFreeBuild
 	}
@@ -121,10 +125,10 @@ func (s *Selector) planCandidates(ctx context.Context, values []account.RoutingC
 // planCandidateIndexes 在不可变候选快照上按下标规划，避免过滤阶段复制完整账号结构。
 // indexes 为 nil 时表示使用 values 的全部元素。
 func (s *Selector) planCandidateIndexes(ctx context.Context, values []account.RoutingCandidate, indexes []int, now time.Time, tierOrder []account.WebTier) (*candidatePlan, error) {
-	return s.planCandidateIndexesWithHints(ctx, values, indexes, now, tierOrder, nil, s.preferFreeBuildEnabled())
+	return s.planCandidateIndexesWithHints(ctx, values, indexes, now, tierOrder, nil, s.preferFreeBuildEnabled(), false)
 }
 
-func (s *Selector) planCandidateIndexesWithHints(ctx context.Context, values []account.RoutingCandidate, indexes []int, now time.Time, tierOrder []account.WebTier, concurrencyHints map[int]int, preferFreeBuild bool) (*candidatePlan, error) {
+func (s *Selector) planCandidateIndexesWithHints(ctx context.Context, values []account.RoutingCandidate, indexes []int, now time.Time, tierOrder []account.WebTier, concurrencyHints map[int]int, preferFreeBuild, preferEarlierImport bool) (*candidatePlan, error) {
 	length := len(indexes)
 	if indexes == nil {
 		length = len(values)
@@ -197,10 +201,11 @@ func (s *Selector) planCandidateIndexesWithHints(ctx context.Context, values []a
 		}
 		score := candidateScore{
 			index: index, tier: tierOrderRank(tierOrder, candidate.Credential.WebTier),
-			webCatalogSupport: candidate.Credential.Provider == account.ProviderWeb && len(tierOrder) > 0 && webTierInOrder(tierOrder, candidate.Credential.WebTier),
-			ssoRisk:           ssoRiskRank(candidate.Credential),
-			preferFreeBuild:   preferFreeBuild && candidate.IsKnownFreeBuild(),
-			inFlight:          inFlight[position], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
+			webCatalogSupport:   candidate.Credential.Provider == account.ProviderWeb && len(tierOrder) > 0 && webTierInOrder(tierOrder, candidate.Credential.WebTier),
+			ssoRisk:             ssoRiskRank(candidate.Credential),
+			preferFreeBuild:     preferFreeBuild && candidate.IsKnownFreeBuild(),
+			preferEarlierImport: preferEarlierImport,
+			inFlight:            inFlight[position], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
 		}
 		// 只有真实上游快照能够证明账号具备该模式额度。历史默认值和
 		// 本地预测值都属于未知能力，只保留为路由兜底。

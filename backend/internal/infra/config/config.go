@@ -310,6 +310,12 @@ type AccountsConfig struct {
 	AutoCleanReauthInterval              Duration
 	AutoCleanReauthMinAge                Duration
 	AutoCleanIncludeDisabled             bool
+	// SSOVideoRiskThreshold forbids video scheduling at or above this grok.com risk.
+	// 0 disables the restriction. Default 1.
+	SSOVideoRiskThreshold float64
+	// SSOLLMRiskThreshold forbids grok-4.5/4.6 Build LLM at or above this grok.com risk.
+	// 0 disables the restriction. Default 0.8.
+	SSOLLMRiskThreshold float64
 }
 
 type Secrets struct {
@@ -703,6 +709,10 @@ func (c Config) Validate() error {
 	if len(c.Accounts.BuildForbiddenReauthCodes) == 0 {
 		return errors.New("accounts.buildForbiddenReauthCodes 至少需要一个错误码")
 	}
+	if c.Accounts.SSOVideoRiskThreshold < 0 || c.Accounts.SSOVideoRiskThreshold > 1 ||
+		c.Accounts.SSOLLMRiskThreshold < 0 || c.Accounts.SSOLLMRiskThreshold > 1 {
+		return errors.New("accounts SSO 风控阈值必须在 0 到 1 之间，0 表示不限制")
+	}
 	return nil
 }
 
@@ -923,6 +933,8 @@ func defaultConfig() Config {
 			AutoCleanReauthInterval:              Duration(10 * time.Minute),
 			AutoCleanReauthMinAge:                Duration(time.Hour),
 			AutoCleanIncludeDisabled:             false,
+			SSOVideoRiskThreshold:                1,
+			SSOLLMRiskThreshold:                  0.8,
 		},
 	}
 }

@@ -136,6 +136,8 @@ type accountsConfigDTO struct {
 	AutoCleanReauthInterval              string    `json:"autoCleanReauthInterval"`
 	AutoCleanReauthMinAge                string    `json:"autoCleanReauthMinAge"`
 	AutoCleanIncludeDisabled             bool      `json:"autoCleanIncludeDisabled"`
+	SSOVideoRiskThreshold                *float64  `json:"ssoVideoRiskThreshold"`
+	SSOLLMRiskThreshold                  *float64  `json:"ssoLLMRiskThreshold"`
 }
 
 type settingsResponse struct {
@@ -258,6 +260,10 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			AutoCleanReauthInterval:                      value.Accounts.AutoCleanReauthInterval,
 			AutoCleanReauthMinAge:                        value.Accounts.AutoCleanReauthMinAge,
 			AutoCleanIncludeDisabled:                     value.Accounts.AutoCleanIncludeDisabled,
+			SSOVideoRiskThreshold:                        float64Value(value.Accounts.SSOVideoRiskThreshold),
+			SSOLLMRiskThreshold:                          float64Value(value.Accounts.SSOLLMRiskThreshold),
+			SSOVideoRiskThresholdProvided:                value.Accounts.SSOVideoRiskThreshold != nil,
+			SSOLLMRiskThresholdProvided:                  value.Accounts.SSOLLMRiskThreshold != nil,
 		}
 		result.AccountsProvided = true
 	}
@@ -330,6 +336,8 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				AutoCleanReauthInterval:              config.Accounts.AutoCleanReauthInterval,
 				AutoCleanReauthMinAge:                config.Accounts.AutoCleanReauthMinAge,
 				AutoCleanIncludeDisabled:             config.Accounts.AutoCleanIncludeDisabled,
+				SSOVideoRiskThreshold:                float64Pointer(config.Accounts.SSOVideoRiskThreshold),
+				SSOLLMRiskThreshold:                  float64Pointer(config.Accounts.SSOLLMRiskThreshold),
 			},
 		},
 		RecommendedProviderBuild: providerBuildRecommendationDTO{
@@ -350,6 +358,15 @@ func optionalString(value *string) string {
 func stringPointer(value string) *string { return &value }
 
 func boolPointer(value bool) *bool { return &value }
+
+func float64Pointer(value float64) *float64 { return &value }
+
+func float64Value(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
 
 func boolValue(value *bool) bool {
 	if value == nil {

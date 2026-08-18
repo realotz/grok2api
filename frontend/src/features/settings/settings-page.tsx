@@ -408,6 +408,22 @@ export function SettingsPage() {
                     )}
                   />
                 </SettingsField>
+                <SettingsField
+                  controlId="accounts-sso-video-risk-threshold"
+                  label={t("settings.accounts.ssoVideoRiskThreshold")}
+                  description={t("settings.accounts.ssoVideoRiskThresholdHelp")}
+                  error={form.formState.errors.accounts?.ssoVideoRiskThreshold?.message}
+                >
+                  <Input id="accounts-sso-video-risk-threshold" type="number" min={0} max={1} step={0.05} {...form.register("accounts.ssoVideoRiskThreshold", { valueAsNumber: true })} />
+                </SettingsField>
+                <SettingsField
+                  controlId="accounts-sso-llm-risk-threshold"
+                  label={t("settings.accounts.ssoLLMRiskThreshold")}
+                  description={t("settings.accounts.ssoLLMRiskThresholdHelp")}
+                  error={form.formState.errors.accounts?.ssoLLMRiskThreshold?.message}
+                >
+                  <Input id="accounts-sso-llm-risk-threshold" type="number" min={0} max={1} step={0.05} {...form.register("accounts.ssoLLMRiskThreshold", { valueAsNumber: true })} />
+                </SettingsField>
               </div>
             </SettingsSection>
 

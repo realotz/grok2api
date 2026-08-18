@@ -245,10 +245,14 @@ func SSOBotFlagged(source int) bool {
 	return source == 1 || source == 2
 }
 
-// SSORiskHighThreshold is the grok.com risk cutoff for 高风险.
-// Accounts at or above this value are filtered as high risk and blocked
-// from video and grok-4.5/4.6 Build LLM.
+// SSORiskHighThreshold is the grok.com risk cutoff for 高风险 display/filter.
 const SSORiskHighThreshold = 0.8
+
+// DefaultSSOLLMRiskThreshold blocks grok-4.5/4.6 Build LLM at or above this risk.
+const DefaultSSOLLMRiskThreshold = SSORiskHighThreshold
+
+// DefaultSSOVideoRiskThreshold blocks video generation at or above this risk.
+const DefaultSSOVideoRiskThreshold = 1.0
 
 // SSORiskHigh reports whether a persisted risk snapshot is at or above the
 // high-risk cutoff. Missing snapshots are never high.
@@ -256,17 +260,44 @@ func SSORiskHigh(set bool, risk float64) bool {
 	return set && risk >= SSORiskHighThreshold
 }
 
-// BlocksBySSORisk reports whether a persisted grok.com risk snapshot forbids
-// video and grok-4.5/4.6 Build LLM. Missing snapshots never block.
-func (c Credential) BlocksBySSORisk() bool {
-	return SSORiskHigh(c.SSOBotRiskSet, c.SSOBotRisk)
+// NormalizeSSORiskThreshold clamps a scheduling cutoff to [0, 1].
+// 0 means the capability is not restricted by SSO risk.
+func NormalizeSSORiskThreshold(value float64) float64 {
+	if value < 0 || value != value {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
 }
 
-// BlocksVideoBySSORisk reports whether a persisted grok.com risk snapshot
-// forbids video generation. Missing snapshots never block, so older marks
-// that only stored botFlagSource remain eligible until the next inspect.
+// BlocksAtSSORisk reports whether a persisted grok.com risk snapshot meets a
+// scheduling cutoff. threshold <= 0 disables the restriction. Missing snapshots
+// never block.
+func BlocksAtSSORisk(set bool, risk, threshold float64) bool {
+	threshold = NormalizeSSORiskThreshold(threshold)
+	if threshold <= 0 || !set {
+		return false
+	}
+	return risk >= threshold
+}
+
+// BlocksBySSORisk reports whether a persisted grok.com risk snapshot meets the
+// default LLM cutoff (0.8). Video uses DefaultSSOVideoRiskThreshold instead.
+func (c Credential) BlocksBySSORisk() bool {
+	return c.BlocksAtSSORisk(DefaultSSOLLMRiskThreshold)
+}
+
+// BlocksAtSSORisk reports whether this credential meets a scheduling cutoff.
+func (c Credential) BlocksAtSSORisk(threshold float64) bool {
+	return BlocksAtSSORisk(c.SSOBotRiskSet, c.SSOBotRisk, threshold)
+}
+
+// BlocksVideoBySSORisk reports whether the default video cutoff (1.0) forbids
+// video generation. Runtime settings may use a different threshold; 0 disables it.
 func (c Credential) BlocksVideoBySSORisk() bool {
-	return c.BlocksBySSORisk()
+	return c.BlocksAtSSORisk(DefaultSSOVideoRiskThreshold)
 }
 
 // IsVideoQuotaMode reports whether a routing quota mode is a video product.

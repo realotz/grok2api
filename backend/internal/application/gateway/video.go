@@ -701,8 +701,10 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 
 	quotaMode := videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), job.Quality)
 	quotaRefreshGroup := s.providers.QuotaRefreshGroup(route.Provider, route.UpstreamModel)
+	pinnedOnly := decodeVideoPinnedOnly(job.InputJSON)
 	attemptPolicy := s.videoAttemptPolicy()
-	if decodeVideoPinnedOnly(job.InputJSON) {
+	if pinnedOnly {
+		// Account-model tests must stay on the pinned credential. Never rotate.
 		attemptPolicy = newRoutingAttemptPolicy(1)
 	}
 	excluded := make(map[uint64]bool)
@@ -728,19 +730,32 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		if attempt == 0 {
 			pinnedAccountID = job.AccountID
 		}
+		if pinnedOnly && pinnedAccountID == 0 {
+			pinnedAccountID = job.AccountID
+		}
 		if pinnedAccountID > 0 && !excluded[pinnedAccountID] {
-			lease, err = s.selector.AcquirePinned(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true)
+			if pinnedOnly {
+				lease, err = s.selector.AcquirePinnedIgnoringSSORisk(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true)
+			} else {
+				lease, err = s.selector.AcquirePinned(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true)
+			}
 			if err != nil {
 				excluded[pinnedAccountID] = true
 				lease = nil
 			}
 		}
 		if lease == nil {
-			if selection == nil {
-				selection, err = s.selector.beginSelectionSessionForKeyAndTier(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, clientkey.AccountScope{}, webVideoRequiredTier(route.Provider, route.UpstreamModel, job.Quality, job.Seconds))
-			}
-			if err == nil {
-				lease, err = selection.Acquire(ctx, excluded, false)
+			if pinnedOnly {
+				if err == nil {
+					err = ErrNoAvailableAccount
+				}
+			} else {
+				if selection == nil {
+					selection, err = s.selector.beginSelectionSessionForKeyAndTier(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, clientkey.AccountScope{}, webVideoRequiredTier(route.Provider, route.UpstreamModel, job.Quality, job.Seconds))
+				}
+				if err == nil {
+					lease, err = selection.Acquire(ctx, excluded, false)
+				}
 			}
 		}
 		if err != nil {
@@ -794,7 +809,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			},
 		})
 		if err == nil && provider.IsFastRemoteVideoRisk(time.Since(attemptStarted), result) {
-			// 10 秒内可访问的远程成片大概率是风控风景视频：不下载，按创建失败换号。
+			// 10 秒内可访问的远程成片大概率是风控风景视频：不下载。正式任务按创建失败换号；账号测试钉死原号并失败。
 			s.logger.Warn("video_risk_scenery_detected", "job_id", job.ID, "account_id", lease.Credential.ID, "provider", lease.Credential.Provider, "elapsed_ms", time.Since(attemptStarted).Milliseconds())
 			markCtx, markCancel := context.WithTimeout(context.Background(), accountStateWriteTimeout)
 			if markErr := s.accounts.MarkAccountRisk(markCtx, lease.Credential); markErr != nil {
@@ -884,7 +899,8 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		s.logVideoGenerationFailure(job, lease.Credential, err)
 
 		// Poll/post-processing failures are bound to the already-created upstream job.
-		if provider.IsMediaPostProcessingError(err) || (hasStage && stage == provider.VideoStagePoll) || !retriableCreate || !attemptPolicy.hasNext(attempt) {
+		// Account tests never rotate: a create-stage failure must stay on the pinned account.
+		if pinnedOnly || provider.IsMediaPostProcessingError(err) || (hasStage && stage == provider.VideoStagePoll) || !retriableCreate || !attemptPolicy.hasNext(attempt) {
 			failureCode, publicErr := "generation_failed", err
 			upstreamStatus := 0
 			if hasStatus {
