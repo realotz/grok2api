@@ -156,6 +156,7 @@ export function AccountModelTestDialog({ account, onClose }: Props) {
 
 function ModelTestResult({ result }: { result: AccountModelTestResultDTO }) {
   const { t } = useTranslation();
+  const [previewFailed, setPreviewFailed] = useState(false);
   const previewUrl = result.previewUrl ? resolvePreviewURL(result.previewUrl) : "";
   const outcome = result.capability === "image" && result.outcome === "flagged" ? "error" : result.outcome;
   return (
@@ -173,14 +174,19 @@ function ModelTestResult({ result }: { result: AccountModelTestResultDTO }) {
         <img src={previewUrl} alt={t("accounts.modelTest.imagePreview")} className={cn("max-h-64 rounded-md border object-contain")} />
       ) : null}
       {previewUrl && result.capability === "video" ? (
-        <video
-          src={previewUrl}
-          controls
-          playsInline
-          preload="metadata"
-          className="max-h-64 w-full rounded-md border bg-black"
-          onLoadedMetadata={(event) => showFirstVideoFrame(event.currentTarget)}
-        />
+        previewFailed ? (
+          <p className="text-xs text-destructive">{t("accounts.modelTest.videoPreviewFailed")}</p>
+        ) : (
+          <video
+            src={previewUrl}
+            controls
+            playsInline
+            preload="metadata"
+            className="max-h-64 w-full rounded-md border bg-black"
+            onLoadedMetadata={(event) => showFirstVideoFrame(event.currentTarget)}
+            onError={() => setPreviewFailed(true)}
+          />
+        )
       ) : null}
     </div>
   );

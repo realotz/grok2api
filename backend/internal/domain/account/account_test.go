@@ -135,3 +135,21 @@ func TestBillingPeriodEndMatchesExhaustedLimit(t *testing.T) {
 		t.Fatalf("monthly period end = %v, %v", value, ok)
 	}
 }
+
+func TestSSORiskHighStartsAtPointEight(t *testing.T) {
+	if SSORiskHigh(false, 1) {
+		t.Fatal("missing snapshot must not be high risk")
+	}
+	if SSORiskHigh(true, 0.79) {
+		t.Fatal("risk 0.79 must stay below high risk")
+	}
+	if !SSORiskHigh(true, 0.8) || !SSORiskHigh(true, 1) {
+		t.Fatal("risk 0.8 and above must be high risk")
+	}
+	if (Credential{SSOBotRiskSet: true, SSOBotRisk: 0.79}).BlocksBySSORisk() {
+		t.Fatal("risk 0.79 must not block video or grok-4.5/4.6")
+	}
+	if !(Credential{SSOBotRiskSet: true, SSOBotRisk: 0.8}).BlocksBySSORisk() {
+		t.Fatal("risk 0.8 must block video and grok-4.5/4.6")
+	}
+}

@@ -122,6 +122,42 @@ func TestQualityGuardIdentityIsStableHiddenAndSystemManaged(t *testing.T) {
 	}
 }
 
+func TestEnsureAccountTestIdentityIsStableAndHidden(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "account-test-key.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewClientKeyRepository(database)
+	cipher := testCipher(t)
+	service := NewService(repository, successfulRateLimiter{}, successfulConcurrencyLimiter{}, 60, 5, cipher)
+	first, err := service.EnsureAccountTestIdentity(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.EnsureAccountTestIdentity(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == 0 || second.ID != first.ID || first.InternalKind != clientkeydomain.InternalKindAccountTest || !first.Enabled || first.ProviderScope != clientkeydomain.ProviderScopeAll {
+		t.Fatalf("first = %#v, second = %#v", first, second)
+	}
+	if values, total, listErr := service.List(ctx, 1, 20, "", ListFilter{}); listErr != nil || total != 0 || len(values) != 0 {
+		t.Fatalf("system identity leaked in list: values=%#v total=%d err=%v", values, total, listErr)
+	}
+	raw, err := cipher.Decrypt(first.EncryptedSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, authErr := service.Authenticate(ctx, raw); !errors.Is(authErr, ErrInvalidKey) {
+		t.Fatalf("system identity authenticated externally: %v", authErr)
+	}
+}
+
 func TestUnlimitedRuntimeLimitsBypassLimiterStores(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "unlimited-runtime.db"))

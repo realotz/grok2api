@@ -34,6 +34,8 @@ var (
 const (
 	qualityGuardInternalPrefix = "quality-guard-internal"
 	qualityGuardInternalName   = "[system] Egress Quality Guard"
+	accountTestInternalPrefix  = "account-test-internal"
+	accountTestInternalName    = "[system] Account Model Test"
 )
 
 type CreateInput struct {
@@ -201,6 +203,62 @@ func (s *Service) createQualityGuardIdentity(ctx context.Context) (clientkeydoma
 		SecretHash: security.HashToken(raw), EncryptedSecret: encrypted,
 		InternalKind: clientkeydomain.InternalKindQualityGuard, Enabled: true,
 		ProviderScope: clientkeydomain.ProviderScopeBuild, TierScope: clientkeydomain.TierScopeAll,
+	})
+}
+
+// EnsureAccountTestIdentity creates or reconciles the non-exportable identity
+// used to attribute admin account model tests in the video gallery and audit log.
+func (s *Service) EnsureAccountTestIdentity(ctx context.Context) (clientkeydomain.Key, error) {
+	value, err := s.keys.GetByPrefix(ctx, accountTestInternalPrefix)
+	if errors.Is(err, repository.ErrNotFound) {
+		value, err = s.createAccountTestIdentity(ctx)
+		if errors.Is(err, repository.ErrConflict) {
+			value, err = s.keys.GetByPrefix(ctx, accountTestInternalPrefix)
+		}
+	}
+	if err != nil {
+		return clientkeydomain.Key{}, fmt.Errorf("读取系统账号测试身份: %w", err)
+	}
+	if value.InternalKind != clientkeydomain.InternalKindAccountTest {
+		return clientkeydomain.Key{}, fmt.Errorf("%w: 保留前缀已被占用", ErrConflict)
+	}
+	value.Name = accountTestInternalName
+	value.Enabled = true
+	value.ExpiresAt = nil
+	value.RPMLimit = 0
+	value.MaxConcurrent = 0
+	value.BillingLimitUSDTicks = 0
+	value.AllowModelAliases = true
+	value.AllowedModels = nil
+	value.ProviderScope = clientkeydomain.ProviderScopeAll
+	value.TierScope = clientkeydomain.TierScopeAll
+	updated, err := s.keys.Update(ctx, value)
+	if err != nil {
+		return clientkeydomain.Key{}, fmt.Errorf("更新系统账号测试身份: %w", err)
+	}
+	s.authCache.deleteID(updated.ID)
+	return updated, nil
+}
+
+func (s *Service) createAccountTestIdentity(ctx context.Context) (clientkeydomain.Key, error) {
+	if s.cipher == nil {
+		return clientkeydomain.Key{}, errors.New("客户端 Key 加密器未配置")
+	}
+	secretPart, err := security.NewOpaqueToken(32)
+	if err != nil {
+		return clientkeydomain.Key{}, err
+	}
+	raw := security.FormatClientKey(accountTestInternalPrefix, secretPart)
+	encrypted, err := s.cipher.Encrypt(raw)
+	if err != nil {
+		return clientkeydomain.Key{}, fmt.Errorf("加密系统账号测试身份: %w", err)
+	}
+	return s.keys.Create(ctx, clientkeydomain.Key{
+		Name: accountTestInternalName, Prefix: accountTestInternalPrefix,
+		SecretHash: security.HashToken(raw), EncryptedSecret: encrypted,
+		InternalKind: clientkeydomain.InternalKindAccountTest, Enabled: true,
+		AllowModelAliases: true,
+		ProviderScope:     clientkeydomain.ProviderScopeAll, TierScope: clientkeydomain.TierScopeAll,
 	})
 }
 

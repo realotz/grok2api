@@ -247,8 +247,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	conversionPool := batch.NewSharedChildPool(cfg.Batch.ConversionConcurrency, concurrency, "bulk:conversion", bulkPool)
 	syncPool := batch.NewSharedChildPool(cfg.Batch.SyncConcurrency, concurrency, "bulk:sync", bulkPool)
 	refreshPool := batch.NewSharedChildPool(cfg.Batch.RefreshConcurrency, concurrency, "bulk:refresh", bulkPool)
-	// detectPool 固定 32 并发，与额度同步/续期隔离，避免全量探测挤占维护任务。
-	detectPool := batch.NewSharedChildPool(32, concurrency, "bulk:detect", bulkPool)
+	// detectPool 专用于管理端「检测账号」，与额度同步/续期隔离。
+	detectPool := batch.NewSharedChildPool(cfg.Batch.DetectConcurrency, concurrency, "bulk:detect", bulkPool)
 	for _, pool := range []*batch.Pool{importPool, conversionPool, syncPool, refreshPool, detectPool} {
 		pool.UpdateJitter(cfg.Batch.RandomDelay.Value())
 	}
@@ -362,6 +362,16 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	gatewayService.UpdateRequestTimeout(cfg.Server.RequestTimeout.Value())
 	gatewayService.ConfigureMedia(mediaJobRepo, cfg.Provider.Web.MediaConcurrency)
 	gatewayService.ConfigureMediaAssets(mediaService)
+	accountTestKey, err := clientKeyService.EnsureAccountTestIdentity(ctx)
+	if err != nil {
+		if runtimeStore != nil {
+			_ = runtimeStore.Close()
+		}
+		database.Close()
+		return nil, err
+	}
+	gatewayService.ConfigureAccountTestKey(accountTestKey)
+	accountService.SetVideoProber(gatewayService)
 	quotaRecoveryService := quotarecoveryapp.NewService(logger, quotaQueue, accountService, cfg.Provider.Web.RecoveryBackoffBase.Value(), cfg.Provider.Web.RecoveryBackoffMax.Value())
 	quotaRecoveryService.SetBulkPool(syncPool)
 	inferenceConcurrency := httpmiddleware.NewConcurrencyGate(cfg.Server.MaxConcurrentRequests)
@@ -382,7 +392,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		conversionPool.UpdateLimit(next.Batch.ConversionConcurrency)
 		syncPool.UpdateLimit(next.Batch.SyncConcurrency)
 		refreshPool.UpdateLimit(next.Batch.RefreshConcurrency)
-		detectPool.UpdateLimit(32)
+		detectPool.UpdateLimit(next.Batch.DetectConcurrency)
 		for _, pool := range []*batch.Pool{importPool, conversionPool, syncPool, refreshPool, detectPool} {
 			pool.UpdateJitter(next.Batch.RandomDelay.Value())
 		}
@@ -450,7 +460,7 @@ func invalidationSourceInstance(cfg config.Config) string {
 }
 
 func maxBatchConcurrency(value config.BatchConfig) int {
-	return max(value.ImportConcurrency, value.ConversionConcurrency, value.SyncConcurrency, value.RefreshConcurrency)
+	return max(value.ImportConcurrency, value.ConversionConcurrency, value.SyncConcurrency, value.RefreshConcurrency, value.DetectConcurrency)
 }
 
 func webProviderConfig(cfg config.Config) webprovider.Config {

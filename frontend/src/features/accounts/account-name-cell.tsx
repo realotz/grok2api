@@ -108,7 +108,7 @@ function AccountRiskMark({ account }: { account: AccountDTO }) {
         {source ? <p>{t("accounts.ssoRiskSource", { source })}</p> : null}
         {account.ssoBotInspectedAt ? <p>{t("accounts.ssoRiskInspectedAt", { time: formatDateTime(account.ssoBotInspectedAt, i18n.language) })}</p> : null}
         {account.ssoBotRiskEver ? <p>{t("accounts.ssoRiskEver")}</p> : null}
-        {measured && risk >= 1 ? <p>{t("accounts.ssoRiskVideoBlocked")}</p> : null}
+        {measured && risk >= 0.8 ? <p>{t("accounts.ssoRiskVideoBlocked")}</p> : null}
       </TooltipContent>
     </Tooltip>
   );

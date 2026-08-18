@@ -1612,7 +1612,7 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		SSOBotEvent:                ssoInspectText(c.Provider, c.SSOBotEvent),
 		SSOBotRisk:                 ssoInspectRisk(c.Provider, c.SSOBotRiskSet, c.SSOBotRisk),
 		SSOBotRiskSet:              ssoInspectApplies(c.Provider) && c.SSOBotRiskSet,
-		SSOBotRiskEver:             ssoInspectApplies(c.Provider) && (c.SSOBotRiskEver || (c.SSOBotRiskSet && c.SSOBotRisk >= 1)),
+		SSOBotRiskEver:             ssoInspectApplies(c.Provider) && (c.SSOBotRiskEver || accountdomain.SSORiskHigh(c.SSOBotRiskSet, c.SSOBotRisk)),
 		SSOBotDetails:              ssoInspectText(c.Provider, c.SSOBotDetails),
 		SSOBotInspectedAt:          ssoInspectTime(c.Provider, c.SSOBotInspectedAt),
 		EgressNodeID:               c.EgressNodeID,

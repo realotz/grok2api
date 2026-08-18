@@ -93,6 +93,7 @@ type batchConfigDTO struct {
 	ConversionConcurrency int    `json:"conversionConcurrency"`
 	SyncConcurrency       int    `json:"syncConcurrency"`
 	RefreshConcurrency    int    `json:"refreshConcurrency"`
+	DetectConcurrency     int    `json:"detectConcurrency"`
 	RandomDelay           string `json:"randomDelay"`
 }
 
@@ -213,7 +214,7 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 		Batch: settingsapp.BatchConfig{
 			ImportConcurrency: value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
 			SyncConcurrency: value.Batch.SyncConcurrency, RefreshConcurrency: value.Batch.RefreshConcurrency,
-			RandomDelay: value.Batch.RandomDelay,
+			DetectConcurrency: value.Batch.DetectConcurrency, RandomDelay: value.Batch.RandomDelay,
 		},
 		Media: settingsapp.MediaConfig{
 			MaxImageBytes: value.Media.MaxImageBytes, MaxTotalBytes: value.Media.MaxTotalBytes,
@@ -295,7 +296,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			Batch: batchConfigDTO{
 				ImportConcurrency: config.Batch.ImportConcurrency, ConversionConcurrency: config.Batch.ConversionConcurrency,
 				SyncConcurrency: config.Batch.SyncConcurrency, RefreshConcurrency: config.Batch.RefreshConcurrency,
-				RandomDelay: config.Batch.RandomDelay,
+				DetectConcurrency: config.Batch.DetectConcurrency, RandomDelay: config.Batch.RandomDelay,
 			},
 			Media: mediaConfigDTO{
 				MaxImageBytes: config.Media.MaxImageBytes, MaxTotalBytes: config.Media.MaxTotalBytes,

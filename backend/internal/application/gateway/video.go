@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
@@ -59,6 +60,8 @@ type VideoInput struct {
 	VideoURL string
 	// VideoExtensionStartTime selects the source timestamp continued by Web videoExtension.
 	VideoExtensionStartTime float64
+	// PinnedAccountID pins generation to one account and disables create-stage failover.
+	PinnedAccountID uint64
 }
 
 func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job, error) {
@@ -160,25 +163,57 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, err
 	}
-	route, selection, err := s.selectSchedulableEligibleMediaRouteWithQuotaModeAndTier(ctx, routes, input.ClientKey, true, func(route model.Route) string {
-		return videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), input.Resolution)
-	}, func(route model.Route) account.WebTier {
-		return webVideoRequiredTier(route.Provider, route.UpstreamModel, input.Resolution, input.Duration)
-	})
-	if err != nil {
-		return media.Job{}, err
+	if input.PinnedAccountID != 0 {
+		pinnedJSON, pinErr := withVideoInputPinnedOnly(inputJSON)
+		if pinErr != nil {
+			return media.Job{}, pinErr
+		}
+		inputJSON = pinnedJSON
+	}
+	var route model.Route
+	var accountID uint64
+	var accountName string
+	if input.PinnedAccountID != 0 {
+		credential, pinErr := s.selector.accounts.Get(ctx, input.PinnedAccountID)
+		if pinErr != nil {
+			return media.Job{}, pinErr
+		}
+		matched := false
+		for _, candidate := range routes {
+			if candidate.Provider == credential.Provider {
+				route = candidate
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return media.Job{}, ErrNoAvailableAccount
+		}
+		accountID = credential.ID
+		accountName = credential.Name
+	} else {
+		var selection *selectionSession
+		route, selection, err = s.selectSchedulableEligibleMediaRouteWithQuotaModeAndTier(ctx, routes, input.ClientKey, true, func(route model.Route) string {
+			return videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), input.Resolution)
+		}, func(route model.Route) account.WebTier {
+			return webVideoRequiredTier(route.Provider, route.UpstreamModel, input.Resolution, input.Duration)
+		})
+		if err != nil {
+			return media.Job{}, err
+		}
+		lease, acquireErr := selection.Acquire(ctx, nil, false)
+		if acquireErr != nil {
+			return media.Job{}, fmt.Errorf("%w: %w", ErrNoAvailableAccount, acquireErr)
+		}
+		accountID = lease.Credential.ID
+		accountName = lease.Credential.Name
+		lease.Release()
 	}
 	if err := s.checkLedgerReady(); err != nil {
 		return media.Job{}, err
 	}
 	pricing, priced := resolveVideoPricing(operation, route.UpstreamModel, input.Resolution, input.Duration, len(allRefs))
 	externalModel := model.ExternalPublicID(route.Provider, route.PublicID)
-	lease, err := selection.Acquire(ctx, nil, false)
-	if err != nil {
-		return media.Job{}, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
-	}
-	accountID := lease.Credential.ID
-	lease.Release()
 	token, err := security.NewOpaqueToken(18)
 	if err != nil {
 		return media.Job{}, err
@@ -187,13 +222,13 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	job := media.Job{
 		ID: "video_" + token, RequestID: input.RequestID,
 		ClientKeyID: input.ClientKey.ID, ClientKeyName: input.ClientKey.Name,
-		AccountID: accountID, AccountName: lease.Credential.Name,
+		AccountID: accountID, AccountName: accountName,
 		Provider: string(route.Provider), Model: externalModel, ModelRouteID: route.ID, UpstreamModel: model.DisplayUpstreamModel(route.Provider, route.UpstreamModel), Operation: operation, Prompt: input.Prompt,
 		Seconds: input.Duration, Size: input.AspectRatio, Quality: input.Resolution,
 		Status: media.StatusQueued, Progress: 0, InputJSON: inputJSON, InputImageCount: len(allRefs), CreatedAt: now, UpdatedAt: now,
 	}
 	reserved := false
-	if priced {
+	if priced && input.ClientKey.InternalKind == "" {
 		reserved, err = s.clientKeys.ReserveBilling(ctx, input.ClientKey, "video_usage_"+job.ID, pricing.CostInUSDTicks, mediaBillingReservationTTL)
 		if err != nil {
 			return media.Job{}, err
@@ -410,6 +445,89 @@ func (s *Service) OpenVideoContent(ctx context.Context, id string, key clientkey
 	return downloader.DownloadVideo(ctx, credential, job.UpstreamURL)
 }
 
+const accountVideoProbePollInterval = 400 * time.Millisecond
+
+// ProbeAccountVideo generates a video on a pinned account through the normal
+// job pipeline so the result appears in the video gallery and request audit.
+func (s *Service) ProbeAccountVideo(ctx context.Context, accountID uint64, publicID, prompt string) (accountapp.AccountModelProbeResult, error) {
+	publicID = strings.TrimSpace(publicID)
+	result := accountapp.AccountModelProbeResult{
+		PublicID: publicID, Capability: model.CapabilityVideo, Outcome: accountapp.ModelProbeOutcomeError,
+	}
+	if accountID == 0 {
+		return result, accountapp.ErrNotFound
+	}
+	if s.accountTestKey.ID == 0 {
+		result.Error = "账号测试身份未初始化"
+		return result, nil
+	}
+	job, err := s.CreateVideo(ctx, VideoInput{
+		RequestID:       fmt.Sprintf("account-test-%d-%d", accountID, time.Now().UnixNano()),
+		ClientKey:       s.accountTestKey,
+		PublicModel:     publicID,
+		Prompt:          prompt,
+		Duration:        6,
+		AspectRatio:     "16:9",
+		Resolution:      "480p",
+		PinnedAccountID: accountID,
+	})
+	if err != nil {
+		result.Error = err.Error()
+		return result, nil
+	}
+	job, err = s.waitMediaJob(ctx, job.ID)
+	if err != nil {
+		result.Error = err.Error()
+		return result, nil
+	}
+	if job.Status == media.StatusCompleted {
+		result.Outcome = accountapp.ModelProbeOutcomeOK
+		if assetID := strings.TrimSpace(job.ResultAssetID); assetID != "" {
+			result.PreviewURL = "/v1/media/videos/" + assetID
+		} else if url := strings.TrimSpace(job.UpstreamURL); url != "" {
+			result.Error = "视频已生成但未归档到本地，无法预览"
+		} else {
+			result.Error = "视频响应未包含可预览地址"
+			result.Outcome = accountapp.ModelProbeOutcomeError
+		}
+		return result, nil
+	}
+	message := firstNonEmpty(job.ErrorMessage, job.ErrorCode, "视频生成失败")
+	if strings.Contains(message, provider.ErrVideoRiskScenery.Error()) || job.ErrorCode == "video_risk_scenery" {
+		result.Outcome = accountapp.ModelProbeOutcomeFlagged
+		result.Error = provider.ErrVideoRiskScenery.Error()
+		return result, nil
+	}
+	result.Error = message
+	return result, nil
+}
+
+func (s *Service) waitMediaJob(ctx context.Context, jobID string) (media.Job, error) {
+	if s.mediaJobs == nil {
+		return media.Job{}, fmt.Errorf("视频任务服务未配置")
+	}
+	ticker := time.NewTicker(accountVideoProbePollInterval)
+	defer ticker.Stop()
+	for {
+		jobs, err := s.mediaJobs.GetMediaJobsByIDs(ctx, []string{jobID})
+		if err != nil {
+			return media.Job{}, err
+		}
+		if len(jobs) == 0 {
+			return media.Job{}, ErrResponseNotFound
+		}
+		job := jobs[0]
+		if job.Status == media.StatusCompleted || job.Status == media.StatusFailed {
+			return job, nil
+		}
+		select {
+		case <-ctx.Done():
+			return job, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (s *Service) RecoverVideoJobs(ctx context.Context) error {
 	if s.mediaJobs == nil {
 		return nil
@@ -584,6 +702,9 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	quotaMode := videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), job.Quality)
 	quotaRefreshGroup := s.providers.QuotaRefreshGroup(route.Provider, route.UpstreamModel)
 	attemptPolicy := s.videoAttemptPolicy()
+	if decodeVideoPinnedOnly(job.InputJSON) {
+		attemptPolicy = newRoutingAttemptPolicy(1)
+	}
 	excluded := make(map[uint64]bool)
 	forbiddenEgressRetried := make(map[uint64]bool)
 	var retryPinnedAccountID uint64
@@ -1126,6 +1247,36 @@ func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationM
 
 func encodeVideoInput(imageURL string, referenceURLs []string) (string, error) {
 	return encodeVideoInputFull(provider.VideoOperationGenerate, imageURL, referenceURLs, nil, "", 0)
+}
+
+func withVideoInputPinnedOnly(inputJSON string) (string, error) {
+	payload := map[string]any{}
+	trimmed := strings.TrimSpace(inputJSON)
+	if trimmed != "" {
+		if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+			return "", fmt.Errorf("编码视频输入: %w", err)
+		}
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["pinned_only"] = true
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("编码视频输入: %w", err)
+	}
+	if len(data) > media.MaxInputJSONBytes {
+		return "", ErrVideoInputTooLarge
+	}
+	return string(data), nil
+}
+
+func decodeVideoPinnedOnly(value string) bool {
+	var input struct {
+		PinnedOnly bool `json:"pinned_only"`
+	}
+	_ = json.Unmarshal([]byte(value), &input)
+	return input.PinnedOnly
 }
 
 func encodeVideoInputFull(operation provider.VideoOperation, imageURL string, referenceURLs []string, referenceAudios []string, videoURL string, extensionStartTime float64) (string, error) {

@@ -162,13 +162,13 @@ func TestSSORiskLevelFilter(t *testing.T) {
 	}
 	if _, _, err := repo.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "low", SourceKey: "lvl-low",
-		EncryptedAccessToken: "sso-low", AuthStatus: account.AuthStatusActive, SSOBotRiskSet: true, SSOBotRisk: 0.4,
+		EncryptedAccessToken: "sso-low", AuthStatus: account.AuthStatusActive, SSOBotRiskSet: true, SSOBotRisk: 0.79,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := repo.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "high", SourceKey: "lvl-high",
-		EncryptedAccessToken: "build-high", AuthStatus: account.AuthStatusActive, SSOBotRiskSet: true, SSOBotRisk: 1,
+		EncryptedAccessToken: "build-high", AuthStatus: account.AuthStatusActive, SSOBotRiskSet: true, SSOBotRisk: 0.8,
 	}); err != nil {
 		t.Fatal(err)
 	}

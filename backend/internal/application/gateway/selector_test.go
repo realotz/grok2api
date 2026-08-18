@@ -1690,8 +1690,8 @@ func (f failingConcurrencyLimiter) Current(context.Context, string) (int, error)
 
 func TestApplySSOVideoRiskFilterBlocksExactOne(t *testing.T) {
 	values := []account.RoutingCandidate{
-		{Credential: account.Credential{ID: 1, SSOBotRiskSet: true, SSOBotRisk: 1}},
-		{Credential: account.Credential{ID: 2, SSOBotRiskSet: true, SSOBotRisk: 0.99}},
+		{Credential: account.Credential{ID: 1, SSOBotRiskSet: true, SSOBotRisk: 0.8}},
+		{Credential: account.Credential{ID: 2, SSOBotRiskSet: true, SSOBotRisk: 0.79}},
 		{Credential: account.Credential{ID: 3, SSOBotFlagSource: 1}},
 	}
 	filtered := applySSOVideoRiskFilter(account.QuotaModeWebVideo720p, values)
@@ -1705,7 +1705,7 @@ func TestApplySSOVideoRiskFilterBlocksExactOne(t *testing.T) {
 
 func TestApplySSORiskFilterBlocksGrok45BuildLLM(t *testing.T) {
 	values := []account.RoutingCandidate{
-		{Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, SSOBotRiskSet: true, SSOBotRisk: 1}},
+		{Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, SSOBotRiskSet: true, SSOBotRisk: 0.8}},
 		{Credential: account.Credential{ID: 2, Provider: account.ProviderBuild, SSOBotRiskSet: true, SSOBotRisk: 0.4}},
 		{Credential: account.Credential{ID: 3, Provider: account.ProviderBuild}},
 	}
@@ -1714,7 +1714,7 @@ func TestApplySSORiskFilterBlocksGrok45BuildLLM(t *testing.T) {
 		t.Fatalf("grok-4.5 filtered = %#v", filtered)
 	}
 	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.6-xhigh", "", values); len(kept) != 2 {
-		t.Fatalf("grok-4.6 should also exclude risk=1, got %#v", kept)
+		t.Fatalf("grok-4.6 should also exclude risk>=0.8, got %#v", kept)
 	}
 	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.3", "", values); len(kept) != 3 {
 		t.Fatalf("other Build LLM should keep red accounts, got %#v", kept)

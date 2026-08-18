@@ -448,6 +448,23 @@ func TestEncodeDecodeVideoInputPreservesOperationAndReferenceAudio(t *testing.T)
 	}
 }
 
+func TestWithVideoInputPinnedOnly(t *testing.T) {
+	encoded, err := encodeVideoInputFull(provider.VideoOperationGenerate, "", nil, nil, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decodeVideoPinnedOnly(encoded) {
+		t.Fatal("default input should not be pinned")
+	}
+	pinned, err := withVideoInputPinnedOnly(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decodeVideoPinnedOnly(pinned) {
+		t.Fatalf("pinned input = %s", pinned)
+	}
+}
+
 func TestRecoverVideoJobsRecordsFailedAuditWithEgress(t *testing.T) {
 	completedAt := time.Now().UTC()
 	nodeID := uint64(42)

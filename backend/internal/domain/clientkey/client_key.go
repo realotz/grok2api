@@ -14,7 +14,10 @@ const (
 	MaxBillingLimitTicks = 9_000_000_000_000_000
 )
 
-const InternalKindQualityGuard = "quality_guard"
+const (
+	InternalKindQualityGuard = "quality_guard"
+	InternalKindAccountTest  = "account_test"
+)
 
 type ProviderScope uint8
 

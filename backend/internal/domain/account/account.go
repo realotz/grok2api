@@ -209,7 +209,7 @@ type Credential struct {
 	SSOBotEvent   string
 	SSOBotRisk    float64
 	SSOBotRiskSet bool
-	// SSOBotRiskEver 表示该账号曾经出现过 risk≥1。当前快照下降后仍保留，供筛选。
+	// SSOBotRiskEver 表示该账号曾经达到过高风险阈值。当前快照下降后仍保留，供筛选。
 	SSOBotRiskEver    bool
 	SSOBotDetails     string
 	SSOBotInspectedAt *time.Time
@@ -245,12 +245,21 @@ func SSOBotFlagged(source int) bool {
 	return source == 1 || source == 2
 }
 
-const ssoRiskBlockThreshold = 1
+// SSORiskHighThreshold is the grok.com risk cutoff for 高风险.
+// Accounts at or above this value are filtered as high risk and blocked
+// from video and grok-4.5/4.6 Build LLM.
+const SSORiskHighThreshold = 0.8
+
+// SSORiskHigh reports whether a persisted risk snapshot is at or above the
+// high-risk cutoff. Missing snapshots are never high.
+func SSORiskHigh(set bool, risk float64) bool {
+	return set && risk >= SSORiskHighThreshold
+}
 
 // BlocksBySSORisk reports whether a persisted grok.com risk snapshot forbids
 // video and grok-4.5/4.6 Build LLM. Missing snapshots never block.
 func (c Credential) BlocksBySSORisk() bool {
-	return c.SSOBotRiskSet && c.SSOBotRisk >= ssoRiskBlockThreshold
+	return SSORiskHigh(c.SSOBotRiskSet, c.SSOBotRisk)
 }
 
 // BlocksVideoBySSORisk reports whether a persisted grok.com risk snapshot

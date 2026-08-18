@@ -77,6 +77,7 @@ type BatchConfig struct {
 	ConversionConcurrency int
 	SyncConcurrency       int
 	RefreshConcurrency    int
+	DetectConcurrency     int
 	RandomDelay           string
 }
 
@@ -368,7 +369,7 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	base.Batch = config.BatchConfig{
 		ImportConcurrency: value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
 		SyncConcurrency: value.Batch.SyncConcurrency, RefreshConcurrency: value.Batch.RefreshConcurrency,
-		RandomDelay: config.Duration(randomDelay),
+		DetectConcurrency: value.Batch.DetectConcurrency, RandomDelay: config.Duration(randomDelay),
 	}
 	base.Media.MaxImageBytes = value.Media.MaxImageBytes
 	base.Media.MaxTotalBytes = value.Media.MaxTotalBytes
@@ -460,7 +461,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		Batch: settingsdomain.BatchConfig{
 			ImportConcurrency: value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
 			SyncConcurrency: value.Batch.SyncConcurrency, RefreshConcurrency: value.Batch.RefreshConcurrency,
-			RandomDelay: &randomDelay,
+			DetectConcurrency: value.Batch.DetectConcurrency, RandomDelay: &randomDelay,
 		},
 		Media: settingsdomain.MediaConfig{
 			MaxImageBytes: value.Media.MaxImageBytes, MaxTotalBytes: value.Media.MaxTotalBytes,
@@ -550,6 +551,7 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Batch = config.BatchConfig{
 		ImportConcurrency: input.Batch.ImportConcurrency, ConversionConcurrency: input.Batch.ConversionConcurrency,
 		SyncConcurrency: input.Batch.SyncConcurrency, RefreshConcurrency: input.Batch.RefreshConcurrency,
+		DetectConcurrency: input.Batch.DetectConcurrency,
 	}
 	next.Media.MaxImageBytes = input.Media.MaxImageBytes
 	next.Media.MaxTotalBytes = input.Media.MaxTotalBytes
@@ -686,7 +688,7 @@ func toEditable(cfg config.Config) EditableConfig {
 		Batch: BatchConfig{
 			ImportConcurrency: cfg.Batch.ImportConcurrency, ConversionConcurrency: cfg.Batch.ConversionConcurrency,
 			SyncConcurrency: cfg.Batch.SyncConcurrency, RefreshConcurrency: cfg.Batch.RefreshConcurrency,
-			RandomDelay: cfg.Batch.RandomDelay.String(),
+			DetectConcurrency: cfg.Batch.DetectConcurrency, RandomDelay: cfg.Batch.RandomDelay.String(),
 		},
 		Media: MediaConfig{
 			MaxImageBytes: cfg.Media.MaxImageBytes, MaxTotalBytes: cfg.Media.MaxTotalBytes,

@@ -190,6 +190,7 @@ type Service struct {
 	requestTimeout              atomic.Int64
 	mediaJobs                   repository.MediaJobRepository
 	mediaAssets                 videoAssetStore
+	accountTestKey              clientkey.Key
 	mediaQueue                  chan string
 	mediaMu                     sync.Mutex
 	mediaQueued                 map[string]struct{}
@@ -237,6 +238,11 @@ func (s *Service) ConfigureMedia(repository repository.MediaJobRepository, concu
 // ConfigureMediaAssets injects optional local video asset archival and reading.
 func (s *Service) ConfigureMediaAssets(store videoAssetStore) {
 	s.mediaAssets = store
+}
+
+// ConfigureAccountTestKey attributes admin account model tests in the gallery and audit log.
+func (s *Service) ConfigureAccountTestKey(key clientkey.Key) {
+	s.accountTestKey = key
 }
 
 func NewService(models routeResolver, audits auditRecorder, accounts *accountapp.Service, clientKeys *clientkeyapp.Service, providers *provider.Registry, selector *Selector, responses repository.ResponseRepository, maxAttempts int) *Service {

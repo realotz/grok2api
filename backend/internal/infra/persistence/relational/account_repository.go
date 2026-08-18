@@ -357,7 +357,7 @@ func (r *AccountRepository) UpdateSSOBotFlagSources(ctx context.Context, values 
 				updates["sso_bot_details"] = persistSSOInspectText(value.Details, 512)
 				now := time.Now().UTC()
 				updates["sso_bot_inspected_at"] = now
-				if value.RiskSet && value.Risk >= 1 {
+				if account.SSORiskHigh(value.RiskSet, value.Risk) {
 					updates["sso_bot_risk_ever"] = true
 				}
 			}
@@ -1989,9 +1989,12 @@ func applyWebAgreementFilter(query *gorm.DB, agreement string) *gorm.DB {
 	}
 }
 
-const ssoRiskFlaggedPredicate = "(credential.sso_bot_flag_source IN (1,2) OR (credential.sso_bot_risk_set AND credential.sso_bot_risk >= 1))"
-const ssoRiskHighPredicate = "(credential.sso_bot_risk_set AND credential.sso_bot_risk >= 1)"
-const ssoRiskLowPredicate = "((credential.sso_bot_risk_set AND credential.sso_bot_risk > 0 AND credential.sso_bot_risk < 1) OR (credential.sso_bot_flag_source IN (1,2) AND NOT (credential.sso_bot_risk_set AND credential.sso_bot_risk >= 1)))"
+var (
+	ssoRiskHighPredicate    = fmt.Sprintf("(credential.sso_bot_risk_set AND credential.sso_bot_risk >= %g)", account.SSORiskHighThreshold)
+	ssoRiskLowPredicate     = fmt.Sprintf("((credential.sso_bot_risk_set AND credential.sso_bot_risk > 0 AND credential.sso_bot_risk < %g) OR (credential.sso_bot_flag_source IN (1,2) AND NOT (credential.sso_bot_risk_set AND credential.sso_bot_risk >= %g)))", account.SSORiskHighThreshold, account.SSORiskHighThreshold)
+	ssoRiskFlaggedPredicate = fmt.Sprintf("(credential.sso_bot_flag_source IN (1,2) OR (credential.sso_bot_risk_set AND credential.sso_bot_risk >= %g))", account.SSORiskHighThreshold)
+)
+
 const ssoRiskEverPredicate = "credential.sso_bot_risk_ever"
 
 func applyRiskFilter(query *gorm.DB, _, risk string) *gorm.DB {

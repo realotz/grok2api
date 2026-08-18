@@ -28,6 +28,10 @@ type modelCapabilitySyncer interface {
 	SyncAccount(ctx context.Context, accountID uint64) (int, error)
 }
 
+type accountVideoProber interface {
+	ProbeAccountVideo(ctx context.Context, accountID uint64, publicID, prompt string) (AccountModelProbeResult, error)
+}
+
 // ModelProbeOutcome 描述单次模型探测结果。
 type ModelProbeOutcome string
 
@@ -242,6 +246,9 @@ func (s *Service) probeAccountImage(ctx context.Context, credential accountdomai
 }
 
 func (s *Service) probeAccountVideo(ctx context.Context, credential accountdomain.Credential, billing *accountdomain.Billing, route modeldomain.Route, prompt string) (AccountModelProbeResult, error) {
+	if s.videoProber != nil {
+		return s.videoProber.ProbeAccountVideo(ctx, credential.ID, modeldomain.ExternalPublicID(route.Provider, route.PublicID), prompt)
+	}
 	result := AccountModelProbeResult{
 		PublicID:   modeldomain.ExternalPublicID(route.Provider, route.PublicID),
 		Capability: route.Capability,

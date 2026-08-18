@@ -184,7 +184,7 @@ func fromAccountCredentialDomain(value account.Credential) accountCredentialMode
 		SSOBotEvent:        persistSSOInspectText(value.SSOBotEvent, 64),
 		SSOBotRisk:         persistSSOInspectRisk(value.SSOBotRisk, value.SSOBotRiskSet),
 		SSOBotRiskSet:      value.SSOBotRiskSet,
-		SSOBotRiskEver:     value.SSOBotRiskEver || (value.SSOBotRiskSet && value.SSOBotRisk >= 1),
+		SSOBotRiskEver:     value.SSOBotRiskEver || account.SSORiskHigh(value.SSOBotRiskSet, value.SSOBotRisk),
 		SSOBotDetails:      persistSSOInspectText(value.SSOBotDetails, 512),
 		SSOBotInspectedAt:  value.SSOBotInspectedAt,
 		UpdatedAt:          time.Now().UTC(),

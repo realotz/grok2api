@@ -435,11 +435,12 @@ type Service struct {
 	conversionPool      *batch.Pool
 	syncPool            *batch.Pool
 	refreshPool         *batch.Pool
-	// detectPool 专用于管理端「检测账号」，与额度同步/续期隔离，默认并发 32。
+	// detectPool 专用于管理端「检测账号」，与额度同步/续期隔离，默认并发见 Batch.DetectConcurrency。
 	detectPool             *batch.Pool
 	patrolPool             *batch.Pool
 	models                 repository.ModelRepository
 	modelSyncer            modelCapabilitySyncer
+	videoProber            accountVideoProber
 	credentialRefreshWake  chan struct{}
 	autoCleanMu            sync.RWMutex
 	autoClean              AutoCleanConfig
@@ -544,6 +545,11 @@ func (s *Service) SetModels(models repository.ModelRepository) {
 // SetModelSyncer 绑定账号模型能力同步；列表为空时补一次快照。
 func (s *Service) SetModelSyncer(syncer modelCapabilitySyncer) {
 	s.modelSyncer = syncer
+}
+
+// SetVideoProber 让管理端视频测试走网关任务，从而进入视频库和请求审计。
+func (s *Service) SetVideoProber(prober accountVideoProber) {
+	s.videoProber = prober
 }
 
 func (s *Service) SetLogger(logger *slog.Logger) {

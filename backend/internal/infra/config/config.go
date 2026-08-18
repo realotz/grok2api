@@ -194,6 +194,7 @@ type BatchConfig struct {
 	ConversionConcurrency int
 	SyncConcurrency       int
 	RefreshConcurrency    int
+	DetectConcurrency     int
 	RandomDelay           Duration
 }
 
@@ -616,10 +617,14 @@ func (c Config) Validate() error {
 	if idle := c.Provider.Console.StreamIdleTimeout.Value(); idle < settingsdomain.MinProviderStreamIdleTimeout || idle > settingsdomain.MaxProviderStreamIdleTimeout {
 		return errors.New("Grok Console 流式空闲超时必须在 30 秒到 10 分钟之间")
 	}
+	if c.Batch.DetectConcurrency == 0 {
+		c.Batch.DetectConcurrency = 32
+	}
 	if c.Batch.ImportConcurrency < 1 || c.Batch.ImportConcurrency > 50 ||
 		c.Batch.ConversionConcurrency < 1 || c.Batch.ConversionConcurrency > 50 ||
 		c.Batch.SyncConcurrency < 1 || c.Batch.SyncConcurrency > 50 ||
-		c.Batch.RefreshConcurrency < 1 || c.Batch.RefreshConcurrency > 50 {
+		c.Batch.RefreshConcurrency < 1 || c.Batch.RefreshConcurrency > 50 ||
+		c.Batch.DetectConcurrency < 1 || c.Batch.DetectConcurrency > 50 {
 		return errors.New("批量任务并发必须在 1 到 50 之间")
 	}
 	if c.Batch.RandomDelay.Value() < 0 || c.Batch.RandomDelay.Value() > 5*time.Second {
@@ -850,7 +855,7 @@ func defaultConfig() Config {
 		},
 		Batch: BatchConfig{
 			ImportConcurrency: 25, ConversionConcurrency: 25, SyncConcurrency: 25,
-			RefreshConcurrency: 25, RandomDelay: Duration(500 * time.Millisecond),
+			RefreshConcurrency: 25, DetectConcurrency: 32, RandomDelay: Duration(500 * time.Millisecond),
 		},
 		Media: MediaConfig{
 			Driver: "local", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
