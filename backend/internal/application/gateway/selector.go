@@ -17,6 +17,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
+	"github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/pkg/resultcache"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"golang.org/x/sync/singleflight"
@@ -419,6 +420,35 @@ func (s *Selector) applyBuildBotFlaggedFilter(_ context.Context, provider accoun
 	return filtered, nil
 }
 
+func applySSOVideoRiskFilter(quotaMode string, values []account.RoutingCandidate) []account.RoutingCandidate {
+	return applySSORiskFilter(account.ProviderWeb, "", quotaMode, values)
+}
+
+func applySSORiskFilter(provider account.Provider, upstreamModel, quotaMode string, values []account.RoutingCandidate) []account.RoutingCandidate {
+	if len(values) == 0 || !ssoRiskBlocksRequest(provider, quotaMode, upstreamModel) {
+		return values
+	}
+	filtered := make([]account.RoutingCandidate, 0, len(values))
+	for _, candidate := range values {
+		if candidate.Credential.BlocksBySSORisk() {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered
+}
+
+func ssoRiskBlocksRequest(provider account.Provider, quotaMode, upstreamModel string) bool {
+	if account.IsVideoQuotaMode(quotaMode) {
+		return true
+	}
+	return provider == account.ProviderBuild && model.IsGrok45Or46LLM(upstreamModel)
+}
+
+func (s *Selector) preferFreeBuildForModel(upstreamModel string) bool {
+	return s.preferFreeBuildEnabled() || model.IsGrok45Or46LLM(upstreamModel)
+}
+
 func (s *Selector) Acquire(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool) (*accountLease, error) {
 	return s.acquire(ctx, provider, modelRouteID, upstreamModel, quotaMode, affinityKey, excluded, allowQuotaProbe, clientkeydomain.AccountScope{}, 0)
 }
@@ -485,6 +515,9 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 		if !s.candidateSupportsModel(provider, upstreamModel, quotaMode, candidate) {
 			continue
 		}
+		if ssoRiskBlocksRequest(provider, quotaMode, upstreamModel) && value.BlocksBySSORisk() {
+			continue
+		}
 		supportedCandidates++
 		if candidate.ModelQuotaBlock != nil && now.Before(candidate.ModelQuotaBlock.CooldownUntil) {
 			modelCoolingCandidates++
@@ -538,7 +571,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 	if len(probeCandidates) > 0 {
 		staleClaims := 0
 		capacityMisses := 0
-		plan, err := s.planCandidateIndexes(ctx, values, probeCandidates, now, s.resolveTierOrder(provider, upstreamModel, quotaMode))
+		plan, err := s.planCandidateIndexesWithHints(ctx, values, probeCandidates, now, s.resolveTierOrder(provider, upstreamModel, quotaMode), nil, s.preferFreeBuildForModel(upstreamModel))
 		if err != nil {
 			return nil, err
 		}
@@ -611,7 +644,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 	// 粘性账号仅因并发满载而暂时不可用时，先等待该账号；超时后允许本次请求临时借用
 	// 其他账号，但不覆盖原绑定，避免并行请求让活跃会话在账号池中来回抖动。
 	if saturatedStickyID != 0 {
-		plan, err := s.planCandidateIndexes(ctx, values, normalCandidates, time.Now().UTC(), s.resolveTierOrder(provider, upstreamModel, quotaMode))
+		plan, err := s.planCandidateIndexesWithHints(ctx, values, normalCandidates, time.Now().UTC(), s.resolveTierOrder(provider, upstreamModel, quotaMode), nil, s.preferFreeBuildForModel(upstreamModel))
 		if err != nil {
 			return nil, err
 		}
@@ -653,7 +686,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 		currentTime := time.Now().UTC()
 		staleClaims := 0
 		capacityMisses := 0
-		plan, err := s.planCandidateIndexes(ctx, values, normalCandidates, currentTime, s.resolveTierOrder(provider, upstreamModel, quotaMode))
+		plan, err := s.planCandidateIndexesWithHints(ctx, values, normalCandidates, currentTime, s.resolveTierOrder(provider, upstreamModel, quotaMode), nil, s.preferFreeBuildForModel(upstreamModel))
 		if err != nil {
 			return nil, err
 		}
@@ -784,6 +817,9 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 			return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
 		}
 		if inference {
+			if ssoRiskBlocksRequest(provider, quotaMode, upstreamModel) && value.BlocksBySSORisk() {
+				return nil, &SelectionUnavailableError{Reason: SelectionUnsupportedModel}
+			}
 			if !s.candidateSupportsModel(provider, upstreamModel, quotaMode, candidate) {
 				return nil, &SelectionUnavailableError{Reason: SelectionUnsupportedModel}
 			}
@@ -1209,6 +1245,7 @@ func (s *Selector) loadCombinedCandidates(ctx context.Context, provider account.
 		if err != nil {
 			return nil, err
 		}
+		values = applySSORiskFilter(provider, upstreamModel, quotaMode, values)
 		s.candidateMu.Lock()
 		s.storeCandidateSnapshotLocked(key, newCandidateSnapshot(values, checkTime.Add(candidateCacheTTL)), checkTime)
 		s.candidateMu.Unlock()
@@ -1260,6 +1297,7 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 			if filterErr != nil {
 				return nil, filterErr
 			}
+			values = applySSORiskFilter(provider, upstreamModel, quotaMode, values)
 			s.candidateMu.Lock()
 			stable := baseVersion == s.routingBaseVersionLocked(provider) && overlayVersion == s.routingOverlayVersionLocked(provider)
 			if stable {
@@ -1277,7 +1315,11 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 		if err != nil {
 			return nil, err
 		}
-		return s.applyBuildBotFlaggedFilter(ctx, provider, values)
+		values, err = s.applyBuildBotFlaggedFilter(ctx, provider, values)
+		if err != nil {
+			return nil, err
+		}
+		return applySSORiskFilter(provider, upstreamModel, quotaMode, values), nil
 	})
 	if err != nil {
 		return nil, err

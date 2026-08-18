@@ -37,6 +37,83 @@ function accountLinks(account: AccountDTO): LinkedAccountDTO[] {
   return [...links].sort((left, right) => providerOrder[left.provider] - providerOrder[right.provider] || left.id.localeCompare(right.id));
 }
 
+function clampRisk(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+function riskColor(risk: number): string {
+  return `hsl(${142 * (1 - clampRisk(risk))} 78% 42%)`;
+}
+
+function accountRiskValue(account: AccountDTO): { risk: number; measured: boolean } {
+  if (account.ssoBotRiskSet) {
+    return { risk: clampRisk(account.ssoBotRisk ?? 0), measured: true };
+  }
+  if (account.ssoBotFlagged) {
+    return { risk: account.ssoBotFlagSource === 2 ? 1 : 0.7, measured: false };
+  }
+  return { risk: 0, measured: false };
+}
+
+function RiskChip({ children }: { children: string | number }) {
+  return <span className="max-w-20 truncate rounded-sm bg-muted px-1 py-px text-[10px] leading-none text-muted-foreground">{children}</span>;
+}
+
+function AccountRiskMark({ account }: { account: AccountDTO }) {
+  const { t, i18n } = useTranslation();
+  const { risk, measured } = accountRiskValue(account);
+  const color = riskColor(risk);
+  const source = account.ssoBotFlagSource;
+  const fillPercent = Math.max(risk > 0 ? 8 : 0, risk * 100);
+  const sourceLabel = account.ssoBotFlagSource === 2
+    ? t("accounts.ssoBotRiskTooltipSource2")
+    : account.ssoBotFlagSource === 1
+      ? t("accounts.ssoBotRiskTooltipSource1")
+      : t("accounts.ssoBotRiskTooltip");
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span tabIndex={0} aria-label={t("accounts.botRisk")} className="inline-flex min-w-0 max-w-full cursor-help items-center gap-1.5 overflow-hidden focus-visible:outline-none">
+          <Bot className="size-3.5 shrink-0" style={{ color }} />
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-center gap-1">
+              <span className="relative block h-1.5 w-14 shrink-0 overflow-hidden rounded-full bg-muted">
+                <span
+                  className="absolute inset-y-0 left-0 w-14 rounded-full"
+                  style={{
+                    backgroundImage: "linear-gradient(90deg, hsl(142 78% 42%), hsl(48 90% 45%), hsl(0 78% 45%))",
+                    clipPath: `inset(0 ${100 - fillPercent}% 0 0)`,
+                  }}
+                />
+              </span>
+              {measured ? <span className="tabular-nums text-[10px] leading-none" style={{ color }}>{risk.toFixed(2)}</span> : null}
+            </span>
+            {account.ssoBotPolicy || account.ssoBotEvent || source || account.ssoBotRiskEver ? (
+              <span className="flex min-w-0 items-center gap-1 overflow-hidden">
+                {account.ssoBotPolicy ? <RiskChip>{account.ssoBotPolicy}</RiskChip> : null}
+                {account.ssoBotEvent ? <RiskChip>{account.ssoBotEvent}</RiskChip> : null}
+                {source ? <RiskChip>{source}</RiskChip> : null}
+                {account.ssoBotRiskEver ? <RiskChip>{t("accounts.riskEver")}</RiskChip> : null}
+              </span>
+            ) : null}
+          </span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs space-y-1">
+        <p>{sourceLabel}</p>
+        {measured ? <p>{t("accounts.ssoRiskMeter", { risk: risk.toFixed(2) })}</p> : null}
+        {account.ssoBotPolicy ? <p>{t("accounts.ssoRiskPolicy", { policy: account.ssoBotPolicy })}</p> : null}
+        {account.ssoBotEvent ? <p>{t("accounts.ssoRiskEvent", { event: account.ssoBotEvent })}</p> : null}
+        {source ? <p>{t("accounts.ssoRiskSource", { source })}</p> : null}
+        {account.ssoBotInspectedAt ? <p>{t("accounts.ssoRiskInspectedAt", { time: formatDateTime(account.ssoBotInspectedAt, i18n.language) })}</p> : null}
+        {account.ssoBotRiskEver ? <p>{t("accounts.ssoRiskEver")}</p> : null}
+        {measured && risk >= 1 ? <p>{t("accounts.ssoRiskVideoBlocked")}</p> : null}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function AccountNameCell({ account }: { account: AccountDTO }) {
   const { t, i18n } = useTranslation();
   const links = accountLinks(account);
@@ -51,7 +128,7 @@ export function AccountNameCell({ account }: { account: AccountDTO }) {
   ].sort((left, right) => providerOrder[left.provider] - providerOrder[right.provider]);
 
   return (
-    <div className="flex min-h-9 min-w-0 flex-col justify-center gap-0.5">
+    <div className="flex min-h-9 min-w-0 flex-col justify-center gap-0.5 overflow-hidden">
       <div className="flex min-w-0 items-center gap-1.5">
         <Tooltip>
           <TooltipTrigger asChild>
@@ -119,37 +196,10 @@ export function AccountNameCell({ account }: { account: AccountDTO }) {
             </span>
           </>
         ) : null}
-        {account.buildBotFlagged || account.ssoBotFlagged ? (
+        {account.ssoBotFlagged || account.ssoBotRiskSet || account.ssoBotRiskEver ? (
           <>
             <span className="mx-2 h-3 w-px shrink-0 bg-border" aria-hidden="true" />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span
-                  tabIndex={0}
-                  aria-label={t("accounts.botRisk")}
-                  className={
-                    (account.ssoBotFlagged ? account.ssoBotFlagSource : account.buildBotFlagSource) === 2
-                      ? "inline-flex cursor-help text-rose-500 focus-visible:outline-none dark:text-rose-400"
-                      : "inline-flex cursor-help text-amber-500 focus-visible:outline-none dark:text-amber-400"
-                  }
-                >
-                  <Bot className="size-3.5" />
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                {account.ssoBotFlagged
-                  ? (account.ssoBotFlagSource === 2
-                    ? t("accounts.ssoBotRiskTooltipSource2")
-                    : account.ssoBotFlagSource === 1
-                      ? t("accounts.ssoBotRiskTooltipSource1")
-                      : t("accounts.ssoBotRiskTooltip"))
-                  : account.buildBotFlagSource === 2
-                    ? t("accounts.botRiskTooltipSource2")
-                    : account.buildBotFlagSource === 1
-                      ? t("accounts.botRiskTooltipSource1")
-                      : t("accounts.botRiskTooltip")}
-              </TooltipContent>
-            </Tooltip>
+            <AccountRiskMark account={account} />
           </>
         ) : null}
       </div>

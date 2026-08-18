@@ -743,6 +743,9 @@ type SSOAccountRisk struct {
 	Source       int
 	Details      string
 	Policy       string
+	Event        string
+	Risk         float64
+	RiskSet      bool
 	Unauthorized bool
 	StatusCode   int
 	Error        string

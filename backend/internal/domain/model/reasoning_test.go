@@ -6,6 +6,19 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 )
 
+func TestIsGrok45Or46LLM(t *testing.T) {
+	for _, value := range []string{"grok-4.5", "Build/grok-4.5", "grok-4.5-low", "grok-4.5-build-free", "grok-4.6", "grok-4.6-xhigh"} {
+		if !IsGrok45Or46LLM(value) {
+			t.Fatalf("%s should be grok-4.5/4.6", value)
+		}
+	}
+	for _, value := range []string{"grok-4.3", "grok-4.20-0309-reasoning", "grok-3", ""} {
+		if IsGrok45Or46LLM(value) {
+			t.Fatalf("%s should not be grok-4.5/4.6", value)
+		}
+	}
+}
+
 func TestSupportedReasoningEffortsPerModel(t *testing.T) {
 	tests := []struct {
 		model string

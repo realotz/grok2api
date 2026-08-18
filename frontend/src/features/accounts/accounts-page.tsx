@@ -1365,8 +1365,10 @@ export function AccountsPage() {
                   { value: "unrefreshable", label: t("accountCredential.noAutoRefresh") },
                 ] }] : []),
                 ...((provider === "grok_build" || provider === "grok_web" || provider === "grok_console") ? [{ id: "risk", label: t("accounts.riskFilter"), value: riskFilter, onChange: (value: string) => { setRiskFilter(value); setPage(1); }, options: [
-                  { value: "flagged", label: t("accounts.botRisk") },
                   { value: "normal", label: t("accounts.riskNormal") },
+                  { value: "low", label: t("accounts.riskLow") },
+                  { value: "high", label: t("accounts.riskHigh") },
+                  { value: "ever", label: t("accounts.riskEver") },
                 ] }] : []),
                 ...(provider === "grok_web" ? [{ id: "agreement", label: t("accounts.agreementFilter"), value: agreementFilter, onChange: (value: string) => { setAgreementFilter(value); setPage(1); }, options: [
                   { value: "nsfwEnabled", label: t("accounts.agreementNsfwEnabled") },
@@ -1435,13 +1437,13 @@ export function AccountsPage() {
         {accountsQuery.isError ? <ErrorState message={accountsQuery.error.message} onRetry={() => void accountsQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {accountsQuery.isPending || (result && result.items.length > 0) ? (
-          <Table viewportRows={20} rowHeight={56} className="table-fixed border-collapse min-w-[780px] xl:min-w-[960px] 2xl:min-w-[1080px]">
+          <Table viewportRows={20} rowHeight={64} className="table-fixed border-collapse min-w-[780px] xl:min-w-[960px] 2xl:min-w-[1080px]">
             <colgroup>
               <col style={{ width: "3%" }} />
-              <col style={{ width: "18%" }} />
+              <col style={{ width: "24%" }} />
               <col style={{ width: "7%" }} />
               <col style={{ width: "7%" }} />
-              <col style={{ width: provider === "grok_build" ? "27%" : "43%" }} />
+              <col style={{ width: provider === "grok_build" ? "23%" : "37%" }} />
               {provider === "grok_build" ? <col style={{ width: "16%" }} /> : null}
               <col style={{ width: "18%" }} />
               <col style={{ width: "4%" }} />
@@ -1464,11 +1466,11 @@ export function AccountsPage() {
               <VirtualTableBody
                 items={result?.items ?? []}
                 colSpan={provider === "grok_build" ? 8 : 7}
-                rowHeight={56}
+                rowHeight={64}
                 renderRow={(account) => (
-	                  <TableRow className="group h-14 [&>td]:py-1.5" key={account.id} data-state={selected.has(account.id) ? "selected" : undefined}>
+	                  <TableRow className="group h-16 [&>td]:py-1.5" key={account.id} data-state={selected.has(account.id) ? "selected" : undefined}>
                     <TableCell className="px-2"><Checkbox checked={selected.has(account.id)} onCheckedChange={(checked) => toggleAccount(account.id, checked === true)} aria-label={t("common.selectItem", { name: account.name })} /></TableCell>
-	                    <TableCell className="min-w-0"><AccountNameCell account={account} /></TableCell>
+	                    <TableCell className="min-w-0 overflow-hidden"><AccountNameCell account={account} /></TableCell>
                     <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label={t("accountType.console")} variant="free" /> : <AccountType quota={account.quota} />}</TableCell>
                     <TableCell className="text-center whitespace-nowrap"><AccountStatus account={account} /></TableCell>
                     <TableCell className={provider === "grok_build" ? undefined : "px-6"}>{provider === "grok_web" ? <WebQuota windows={account.quotaWindows ?? []} locale={i18n.language} tier={account.webTier} /> : provider === "grok_console" ? <ConsoleQuota windows={account.quotaWindows ?? []} locale={i18n.language} /> : <AccountQuota quota={account.quota} billing={account.billing} locale={i18n.language} />}</TableCell>

@@ -1116,7 +1116,7 @@ func TestSelectorPreferFreeBuildHotReloadAndSaturationFallback(t *testing.T) {
 	}
 
 	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
-	lease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-4.5", "", "existing-session", nil, false)
+	lease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-4.3", "", "existing-session", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1126,7 +1126,7 @@ func TestSelectorPreferFreeBuildHotReloadAndSaturationFallback(t *testing.T) {
 	lease.Release()
 
 	selector.UpdatePreferFreeBuild(true)
-	stickyLease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-4.5", "", "existing-session", nil, false)
+	stickyLease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-4.3", "", "existing-session", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1135,7 +1135,7 @@ func TestSelectorPreferFreeBuildHotReloadAndSaturationFallback(t *testing.T) {
 	}
 	stickyLease.Release()
 
-	freeLease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-4.5", "", "new-session", nil, false)
+	freeLease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-4.3", "", "new-session", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1143,7 +1143,7 @@ func TestSelectorPreferFreeBuildHotReloadAndSaturationFallback(t *testing.T) {
 		t.Fatalf("enabled strategy selected %d, want Free %d", freeLease.Credential.ID, freeAccount.ID)
 	}
 
-	fallbackLease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-4.5", "", "", nil, false)
+	fallbackLease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-4.3", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1686,4 +1686,53 @@ func (f failingConcurrencyLimiter) Acquire(context.Context, string, int) (func()
 
 func (f failingConcurrencyLimiter) Current(context.Context, string) (int, error) {
 	return 0, nil
+}
+
+func TestApplySSOVideoRiskFilterBlocksExactOne(t *testing.T) {
+	values := []account.RoutingCandidate{
+		{Credential: account.Credential{ID: 1, SSOBotRiskSet: true, SSOBotRisk: 1}},
+		{Credential: account.Credential{ID: 2, SSOBotRiskSet: true, SSOBotRisk: 0.99}},
+		{Credential: account.Credential{ID: 3, SSOBotFlagSource: 1}},
+	}
+	filtered := applySSOVideoRiskFilter(account.QuotaModeWebVideo720p, values)
+	if len(filtered) != 2 || filtered[0].Credential.ID != 2 || filtered[1].Credential.ID != 3 {
+		t.Fatalf("filtered = %#v", filtered)
+	}
+	if kept := applySSOVideoRiskFilter(account.QuotaModeWebImagePro, values); len(kept) != 3 {
+		t.Fatalf("non-video should keep all, got %#v", kept)
+	}
+}
+
+func TestApplySSORiskFilterBlocksGrok45BuildLLM(t *testing.T) {
+	values := []account.RoutingCandidate{
+		{Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, SSOBotRiskSet: true, SSOBotRisk: 1}},
+		{Credential: account.Credential{ID: 2, Provider: account.ProviderBuild, SSOBotRiskSet: true, SSOBotRisk: 0.4}},
+		{Credential: account.Credential{ID: 3, Provider: account.ProviderBuild}},
+	}
+	filtered := applySSORiskFilter(account.ProviderBuild, "grok-4.5", "", values)
+	if len(filtered) != 2 || filtered[0].Credential.ID != 2 || filtered[1].Credential.ID != 3 {
+		t.Fatalf("grok-4.5 filtered = %#v", filtered)
+	}
+	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.6-xhigh", "", values); len(kept) != 2 {
+		t.Fatalf("grok-4.6 should also exclude risk=1, got %#v", kept)
+	}
+	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.3", "", values); len(kept) != 3 {
+		t.Fatalf("other Build LLM should keep red accounts, got %#v", kept)
+	}
+}
+
+func TestCandidateScorePrefersLowerSSORiskThenFreeBuild(t *testing.T) {
+	paidHigh := account.RoutingCandidate{Credential: account.Credential{ID: 1, Priority: 100, SSOBotRiskSet: true, SSOBotRisk: 0.9}}
+	freeMid := account.RoutingCandidate{Credential: account.Credential{ID: 2, Priority: 1, ObservedModel: "grok-4.5-build-free", SSOBotRiskSet: true, SSOBotRisk: 0.2}}
+	paidLow := account.RoutingCandidate{Credential: account.Credential{ID: 3, Priority: 50, SSOBotRiskSet: true, SSOBotRisk: 0.2}}
+	values := []account.RoutingCandidate{paidHigh, freeMid, paidLow}
+	left := candidateScore{index: 1, ssoRisk: ssoRiskRank(freeMid.Credential), preferFreeBuild: true}
+	right := candidateScore{index: 2, ssoRisk: ssoRiskRank(paidLow.Credential), preferFreeBuild: false}
+	if !candidateScoreBetter(values, left, right) {
+		t.Fatal("same risk should prefer free Build before paid")
+	}
+	high := candidateScore{index: 0, ssoRisk: ssoRiskRank(paidHigh.Credential), preferFreeBuild: false}
+	if !candidateScoreBetter(values, right, high) {
+		t.Fatal("lower SSO risk should win before paid/free")
+	}
 }

@@ -15,6 +15,7 @@ type candidateScore struct {
 	index             int
 	webCatalogSupport bool
 	tier              int
+	ssoRisk           int
 	preferFreeBuild   bool
 	quotaKnown        bool
 	quotaAvailable    bool
@@ -84,6 +85,9 @@ func candidateScoreBetter(values []account.RoutingCandidate, leftScore, rightSco
 	}
 	if leftScore.quotaKnown != rightScore.quotaKnown {
 		return leftScore.quotaKnown
+	}
+	if leftScore.ssoRisk != rightScore.ssoRisk {
+		return leftScore.ssoRisk < rightScore.ssoRisk
 	}
 	if leftScore.preferFreeBuild != rightScore.preferFreeBuild {
 		return leftScore.preferFreeBuild
@@ -194,6 +198,7 @@ func (s *Selector) planCandidateIndexesWithHints(ctx context.Context, values []a
 		score := candidateScore{
 			index: index, tier: tierOrderRank(tierOrder, candidate.Credential.WebTier),
 			webCatalogSupport: candidate.Credential.Provider == account.ProviderWeb && len(tierOrder) > 0 && webTierInOrder(tierOrder, candidate.Credential.WebTier),
+			ssoRisk:           ssoRiskRank(candidate.Credential),
 			preferFreeBuild:   preferFreeBuild && candidate.IsKnownFreeBuild(),
 			inFlight:          inFlight[position], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
 		}
@@ -258,4 +263,18 @@ func concurrencySnapshotKey(keys []string) [32]byte {
 
 func accountConcurrencyKey(accountID uint64) string {
 	return repository.AccountConcurrencyKey(accountID)
+}
+
+func ssoRiskRank(value account.Credential) int {
+	if !value.SSOBotRiskSet {
+		return 0
+	}
+	rank := int(value.SSOBotRisk * 100)
+	if rank < 0 {
+		return 0
+	}
+	if rank > 100 {
+		return 100
+	}
+	return rank
 }

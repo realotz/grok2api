@@ -38,21 +38,29 @@ func TestNewAccountResponseExposesBuildBotFlagOnlyForBuild(t *testing.T) {
 }
 
 func TestNewAccountResponseExposesSSOBotFlagOnlyForSSO(t *testing.T) {
+	inspectedAt := time.Date(2026, 8, 18, 6, 0, 0, 0, time.UTC)
 	web := newAccountResponse(accountapp.View{
-		Credential:       accountdomain.Credential{Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO},
-		SSOBotFlagged:    true,
-		SSOBotFlagSource: 2,
-	})
-	if !web.SSOBotFlagged || web.SSOBotFlagSource != 2 || web.BuildBotFlagged {
-		t.Fatalf("Web SSO metadata = %#v", web)
-	}
-	build := newAccountResponse(accountapp.View{
-		Credential:       accountdomain.Credential{Provider: accountdomain.ProviderBuild},
+		Credential: accountdomain.Credential{
+			Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+			SSOBotPolicy: "deny", SSOBotEvent: "$registration", SSOBotRisk: 1, SSOBotRiskSet: true,
+			SSOBotDetails: "policy=deny,risk=1.00,event=$registration", SSOBotInspectedAt: &inspectedAt,
+		},
 		SSOBotFlagged:    true,
 		SSOBotFlagSource: 1,
 	})
-	if build.SSOBotFlagged || build.SSOBotFlagSource != 0 {
-		t.Fatalf("Build leaked SSO mark = %#v", build)
+	if !web.SSOBotFlagged || web.SSOBotFlagSource != 1 || web.SSOBotPolicy != "deny" || web.SSOBotEvent != "$registration" || !web.SSOBotRiskSet || web.SSOBotRisk != 1 || !web.SSOBotRiskEver || web.SSOBotDetails == "" || web.SSOBotInspectedAt == nil || web.BuildBotFlagged {
+		t.Fatalf("Web SSO metadata = %#v", web)
+	}
+	build := newAccountResponse(accountapp.View{
+		Credential: accountdomain.Credential{
+			Provider:     accountdomain.ProviderBuild,
+			SSOBotPolicy: "deny", SSOBotEvent: "$registration", SSOBotRisk: 1, SSOBotRiskSet: true,
+		},
+		SSOBotFlagged:    true,
+		SSOBotFlagSource: 1,
+	})
+	if !build.SSOBotFlagged || build.SSOBotFlagSource != 1 || build.SSOBotPolicy != "deny" || !build.SSOBotRiskSet || build.SSOBotRisk != 1 {
+		t.Fatalf("Build should expose synced SSO inspect = %#v", build)
 	}
 }
 

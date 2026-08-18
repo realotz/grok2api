@@ -41,6 +41,12 @@ type SSOBotFlagSourceUpdate struct {
 	AccountID                    uint64
 	ExpectedEncryptedAccessToken string
 	Source                       int
+	Policy                       string
+	Event                        string
+	Risk                         float64
+	RiskSet                      bool
+	Details                      string
+	Inspected                    bool
 }
 
 // CredentialRefreshFailure is the bounded diagnostic state persisted for the

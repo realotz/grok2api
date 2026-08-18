@@ -606,6 +606,10 @@ func (a *Application) Run(ctx context.Context) error {
 		a.accounts.RunAccountAutoClean(taskCtx)
 		return nil
 	})
+	startBackground("sso_risk_patrol", func(taskCtx context.Context) error {
+		a.accounts.RunSSORiskPatrol(taskCtx)
+		return nil
+	})
 	startBackground("statsig_warmup", func(taskCtx context.Context) error {
 		a.runStatsigWarmup(taskCtx)
 		return nil

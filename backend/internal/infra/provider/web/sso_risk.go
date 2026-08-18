@@ -27,6 +27,9 @@ func toSSOAccountRisk(state ssorisk.AccountState, err error) (provider.SSOAccoun
 		Source:     ssorisk.FlagSource(state),
 		Details:    state.Details,
 		Policy:     state.Policy,
+		Event:      state.Event,
+		Risk:       state.Risk,
+		RiskSet:    state.RiskSet,
 		StatusCode: state.StatusCode,
 		Error:      state.Error,
 	}

@@ -91,6 +91,13 @@ func toAccountDomain(value accountModel) account.Credential {
 		BuildSuperEntitled: value.BuildSuperEntitled && account.Provider(value.Provider) == account.ProviderBuild,
 		BuildBotFlagSource: normalizedBuildBotFlagSource(account.Provider(value.Provider), value.Credential),
 		SSOBotFlagSource:   normalizedSSOBotFlagSource(account.Provider(value.Provider), value.Credential),
+		SSOBotPolicy:       normalizedSSOBotPolicy(account.Provider(value.Provider), value.Credential),
+		SSOBotEvent:        normalizedSSOBotEvent(account.Provider(value.Provider), value.Credential),
+		SSOBotRisk:         normalizedSSOBotRisk(account.Provider(value.Provider), value.Credential),
+		SSOBotRiskSet:      normalizedSSOBotRiskSet(account.Provider(value.Provider), value.Credential),
+		SSOBotRiskEver:     normalizedSSOBotRiskEver(account.Provider(value.Provider), value.Credential),
+		SSOBotDetails:      normalizedSSOBotDetails(account.Provider(value.Provider), value.Credential),
+		SSOBotInspectedAt:  normalizedSSOBotInspectedAt(account.Provider(value.Provider), value.Credential),
 		CreatedAt:          value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
@@ -172,7 +179,14 @@ func fromAccountCredentialDomain(value account.Credential) accountCredentialMode
 		ExpiresAt:                 expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: value.LastRefreshAt,
 		RefreshFailures: value.RefreshFailureCount, LastRefreshErrorStatus: value.LastRefreshErrorStatus, LastRefreshError: value.LastRefreshErrorCode, LastRefreshErrorMessage: value.LastRefreshErrorMessage, LastRefreshErrorResponse: value.LastRefreshErrorResponse, RefreshPermanent: value.RefreshPermanent,
 		BuildBotFlagSource: normalizeBuildBotFlagSource(value.Provider, value.BuildBotFlagSource),
-		SSOBotFlagSource:   normalizeSSOBotFlagSource(value.Provider, authType, value.SSOBotFlagSource),
+		SSOBotFlagSource:   persistSSOInspectSource(value.SSOBotFlagSource),
+		SSOBotPolicy:       persistSSOInspectText(value.SSOBotPolicy, 16),
+		SSOBotEvent:        persistSSOInspectText(value.SSOBotEvent, 64),
+		SSOBotRisk:         persistSSOInspectRisk(value.SSOBotRisk, value.SSOBotRiskSet),
+		SSOBotRiskSet:      value.SSOBotRiskSet,
+		SSOBotRiskEver:     value.SSOBotRiskEver || (value.SSOBotRiskSet && value.SSOBotRisk >= 1),
+		SSOBotDetails:      persistSSOInspectText(value.SSOBotDetails, 512),
+		SSOBotInspectedAt:  value.SSOBotInspectedAt,
 		UpdatedAt:          time.Now().UTC(),
 	}
 }
@@ -191,15 +205,110 @@ func normalizeBuildBotFlagSource(provider account.Provider, source int) int {
 	return 0
 }
 
-func normalizedSSOBotFlagSource(provider account.Provider, credential *accountCredentialModel) int {
+func normalizedSSOBotFlagSource(_ account.Provider, credential *accountCredentialModel) int {
 	if credential == nil {
 		return 0
 	}
-	return normalizeSSOBotFlagSource(provider, account.AuthType(credential.AuthType), credential.SSOBotFlagSource)
+	return persistSSOInspectSource(credential.SSOBotFlagSource)
 }
 
 func normalizeSSOBotFlagSource(provider account.Provider, authType account.AuthType, source int) int {
+	if provider == account.ProviderBuild {
+		return persistSSOInspectSource(source)
+	}
 	return account.NormalizeSSOBotFlagSource(provider, authType, source)
+}
+
+func ssoInspectApplies(credential *accountCredentialModel) bool {
+	return credential != nil
+}
+
+func normalizedSSOBotPolicy(_ account.Provider, credential *accountCredentialModel) string {
+	if !ssoInspectApplies(credential) {
+		return ""
+	}
+	return strings.TrimSpace(credential.SSOBotPolicy)
+}
+
+func normalizedSSOBotEvent(_ account.Provider, credential *accountCredentialModel) string {
+	if !ssoInspectApplies(credential) {
+		return ""
+	}
+	return strings.TrimSpace(credential.SSOBotEvent)
+}
+
+func normalizedSSOBotRisk(_ account.Provider, credential *accountCredentialModel) float64 {
+	if !ssoInspectApplies(credential) || !credential.SSOBotRiskSet {
+		return 0
+	}
+	return credential.SSOBotRisk
+}
+
+func normalizedSSOBotRiskSet(_ account.Provider, credential *accountCredentialModel) bool {
+	return ssoInspectApplies(credential) && credential.SSOBotRiskSet
+}
+
+func normalizedSSOBotRiskEver(_ account.Provider, credential *accountCredentialModel) bool {
+	return ssoInspectApplies(credential) && credential.SSOBotRiskEver
+}
+
+func normalizedSSOBotDetails(_ account.Provider, credential *accountCredentialModel) string {
+	if !ssoInspectApplies(credential) {
+		return ""
+	}
+	return strings.TrimSpace(credential.SSOBotDetails)
+}
+
+func normalizedSSOBotInspectedAt(_ account.Provider, credential *accountCredentialModel) *time.Time {
+	if !ssoInspectApplies(credential) {
+		return nil
+	}
+	return credential.SSOBotInspectedAt
+}
+
+func persistSSOInspectText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit > 0 && len([]rune(value)) > limit {
+		return string([]rune(value)[:limit])
+	}
+	return value
+}
+
+func persistSSOInspectRisk(risk float64, set bool) float64 {
+	if !set {
+		return 0
+	}
+	if risk < 0 {
+		return 0
+	}
+	if risk > 1 {
+		return 1
+	}
+	return risk
+}
+
+func persistSSOInspectSource(source int) int {
+	return account.PersistSSOInspectSource(source)
+}
+
+func normalizeSSOBotText(provider account.Provider, authType account.AuthType, value string, limit int) string {
+	if provider != account.ProviderWeb && provider != account.ProviderConsole && provider != account.ProviderBuild {
+		return ""
+	}
+	if (provider == account.ProviderWeb || provider == account.ProviderConsole) && authType != "" && authType != account.AuthTypeSSO {
+		return ""
+	}
+	return persistSSOInspectText(value, limit)
+}
+
+func normalizeSSOBotRisk(provider account.Provider, authType account.AuthType, risk float64, set bool) float64 {
+	if provider != account.ProviderWeb && provider != account.ProviderConsole && provider != account.ProviderBuild {
+		return 0
+	}
+	if (provider == account.ProviderWeb || provider == account.ProviderConsole) && authType != "" && authType != account.AuthTypeSSO {
+		return 0
+	}
+	return persistSSOInspectRisk(risk, set)
 }
 
 func fromWebProfileDomain(value account.Credential) *webAccountProfileModel {

@@ -76,14 +76,21 @@ type accountCredentialModel struct {
 	ExpiresAt                 *time.Time
 	RefreshDueAt              *time.Time
 	LastRefreshAt             *time.Time
-	RefreshFailures           int           `gorm:"not null;default:0;check:chk_account_credentials_refresh_failures,refresh_failures >= 0"`
-	LastRefreshErrorStatus    int           `gorm:"not null;default:0;check:chk_account_credentials_refresh_error_status,last_refresh_error_status >= 0"`
-	LastRefreshError          string        `gorm:"size:100;not null;default:'';check:chk_account_credentials_refresh_error,length(last_refresh_error) <= 100"`
-	LastRefreshErrorMessage   string        `gorm:"size:512;not null;default:'';check:chk_account_credentials_refresh_error_message,length(last_refresh_error_message) <= 512"`
-	LastRefreshErrorResponse  string        `gorm:"size:4096;not null;default:'';check:chk_account_credentials_refresh_error_response,length(last_refresh_error_response) <= 4096"`
-	RefreshPermanent          bool          `gorm:"not null;default:false"`
-	BuildBotFlagSource        int           `gorm:"not null;default:0;check:chk_account_credentials_build_bot_flag_source,build_bot_flag_source IN (0,1,2)"`
-	SSOBotFlagSource          int           `gorm:"not null;default:0;check:chk_account_credentials_sso_bot_flag_source,sso_bot_flag_source IN (0,1,2)"`
+	RefreshFailures           int     `gorm:"not null;default:0;check:chk_account_credentials_refresh_failures,refresh_failures >= 0"`
+	LastRefreshErrorStatus    int     `gorm:"not null;default:0;check:chk_account_credentials_refresh_error_status,last_refresh_error_status >= 0"`
+	LastRefreshError          string  `gorm:"size:100;not null;default:'';check:chk_account_credentials_refresh_error,length(last_refresh_error) <= 100"`
+	LastRefreshErrorMessage   string  `gorm:"size:512;not null;default:'';check:chk_account_credentials_refresh_error_message,length(last_refresh_error_message) <= 512"`
+	LastRefreshErrorResponse  string  `gorm:"size:4096;not null;default:'';check:chk_account_credentials_refresh_error_response,length(last_refresh_error_response) <= 4096"`
+	RefreshPermanent          bool    `gorm:"not null;default:false"`
+	BuildBotFlagSource        int     `gorm:"not null;default:0;check:chk_account_credentials_build_bot_flag_source,build_bot_flag_source IN (0,1,2)"`
+	SSOBotFlagSource          int     `gorm:"not null;default:0;check:chk_account_credentials_sso_bot_flag_source,sso_bot_flag_source IN (0,1,2)"`
+	SSOBotPolicy              string  `gorm:"size:16;not null;default:'';check:chk_account_credentials_sso_bot_policy,length(sso_bot_policy) <= 16"`
+	SSOBotEvent               string  `gorm:"size:64;not null;default:'';check:chk_account_credentials_sso_bot_event,length(sso_bot_event) <= 64"`
+	SSOBotRisk                float64 `gorm:"not null;default:0"`
+	SSOBotRiskSet             bool    `gorm:"not null;default:false"`
+	SSOBotRiskEver            bool    `gorm:"not null;default:false"`
+	SSOBotDetails             string  `gorm:"size:512;not null;default:'';check:chk_account_credentials_sso_bot_details,length(sso_bot_details) <= 512"`
+	SSOBotInspectedAt         *time.Time
 	UpdatedAt                 time.Time     `gorm:"not null"`
 	Account                   *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }

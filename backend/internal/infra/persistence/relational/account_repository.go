@@ -300,24 +300,25 @@ func (r *AccountRepository) UpdateBuildBotFlagSources(ctx context.Context, value
 	return err
 }
 
-// CountSSOBotFlagged counts persisted Web/Console SSO robot marks.
+// CountSSOBotFlagged counts persisted SSO inspect marks, including snapshots
+// copied onto linked Build credentials.
 func (r *AccountRepository) CountSSOBotFlagged(ctx context.Context) (int64, error) {
 	var count int64
 	err := r.db.db.WithContext(ctx).
 		Table("provider_accounts").
 		Joins("JOIN account_credentials credential ON credential.account_id = provider_accounts.id").
-		Where("provider_accounts.provider IN ? AND credential.sso_bot_flag_source IN (1,2)", []account.Provider{account.ProviderWeb, account.ProviderConsole}).
+		Where(ssoRiskFlaggedPredicate).
 		Count(&count).Error
 	return count, err
 }
 
-// ListSSOBotFlaggedAccountIDs reads persisted SSO robot marks without decrypting tokens.
+// ListSSOBotFlaggedAccountIDs reads persisted SSO inspect marks without decrypting tokens.
 func (r *AccountRepository) ListSSOBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
 	var ids []uint64
 	err := r.db.db.WithContext(ctx).
 		Table("provider_accounts AS account").
 		Joins("JOIN account_credentials AS credential ON credential.account_id = account.id").
-		Where("account.provider IN ? AND credential.sso_bot_flag_source IN (1,2)", []account.Provider{account.ProviderWeb, account.ProviderConsole}).
+		Where(ssoRiskFlaggedPredicate).
 		Order("account.id ASC").
 		Pluck("account.id", &ids).Error
 	if err != nil {
@@ -343,10 +344,26 @@ func (r *AccountRepository) UpdateSSOBotFlagSources(ctx context.Context, values 
 				return err
 			}
 			providerValue := account.Provider(providerRow.Provider)
-			source := normalizeSSOBotFlagSource(providerValue, account.AuthTypeSSO, value.Source)
+			source := persistSSOInspectSource(value.Source)
+			updates := map[string]any{
+				"sso_bot_flag_source": source,
+				"updated_at":          time.Now().UTC(),
+			}
+			if value.Inspected {
+				updates["sso_bot_policy"] = persistSSOInspectText(value.Policy, 16)
+				updates["sso_bot_event"] = persistSSOInspectText(value.Event, 64)
+				updates["sso_bot_risk"] = persistSSOInspectRisk(value.Risk, value.RiskSet)
+				updates["sso_bot_risk_set"] = value.RiskSet
+				updates["sso_bot_details"] = persistSSOInspectText(value.Details, 512)
+				now := time.Now().UTC()
+				updates["sso_bot_inspected_at"] = now
+				if value.RiskSet && value.Risk >= 1 {
+					updates["sso_bot_risk_ever"] = true
+				}
+			}
 			result := tx.Model(&accountCredentialModel{}).
 				Where("account_id = ? AND encrypted_primary = ?", value.AccountID, value.ExpectedEncryptedAccessToken).
-				Update("sso_bot_flag_source", source)
+				Updates(updates)
 			if result.Error != nil {
 				return result.Error
 			}
@@ -646,7 +663,8 @@ func qualifiedColumnList(alias string, columns []string) string {
 // access token, refresh token, and Cloudflare cookie.
 var routingCredentialMetadataColumns = []string{
 	"account_id", "auth_type", "client_id", "expires_at", "refresh_due_at", "last_refresh_at",
-	"refresh_failures", "last_refresh_error", "refresh_permanent", "build_bot_flag_source", "sso_bot_flag_source", "updated_at",
+	"refresh_failures", "last_refresh_error", "refresh_permanent", "build_bot_flag_source", "sso_bot_flag_source",
+	"sso_bot_policy", "sso_bot_event", "sso_bot_risk", "sso_bot_risk_set", "sso_bot_risk_ever", "sso_bot_details", "sso_bot_inspected_at", "updated_at",
 }
 
 var routingBillingColumns = []string{
@@ -1468,13 +1486,23 @@ func applyReauthMarkedAtTransition(row *accountModel, existing accountModel) {
 func saveAccountRelations(tx *gorm.DB, value account.Credential, accountID uint64) error {
 	value.ID = accountID
 	credential := fromAccountCredentialDomain(value)
-	if credential.SSOBotFlagSource == 0 {
-		var stored accountCredentialModel
-		if err := tx.Select("sso_bot_flag_source").Where("account_id = ?", accountID).First(&stored).Error; err == nil {
+	var stored accountCredentialModel
+	storedErr := tx.Select("sso_bot_flag_source", "sso_bot_policy", "sso_bot_event", "sso_bot_risk", "sso_bot_risk_set", "sso_bot_risk_ever", "sso_bot_details", "sso_bot_inspected_at").
+		Where("account_id = ?", accountID).First(&stored).Error
+	if storedErr != nil && !errors.Is(storedErr, gorm.ErrRecordNotFound) {
+		return storedErr
+	}
+	if storedErr == nil {
+		if credential.SSOBotFlagSource == 0 && !credential.SSOBotRiskSet && credential.SSOBotInspectedAt == nil {
 			credential.SSOBotFlagSource = stored.SSOBotFlagSource
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
+			credential.SSOBotPolicy = stored.SSOBotPolicy
+			credential.SSOBotEvent = stored.SSOBotEvent
+			credential.SSOBotRisk = stored.SSOBotRisk
+			credential.SSOBotRiskSet = stored.SSOBotRiskSet
+			credential.SSOBotDetails = stored.SSOBotDetails
+			credential.SSOBotInspectedAt = stored.SSOBotInspectedAt
 		}
+		credential.SSOBotRiskEver = credential.SSOBotRiskEver || stored.SSOBotRiskEver
 	}
 	if err := tx.Save(&credential).Error; err != nil {
 		return err
@@ -1961,16 +1989,26 @@ func applyWebAgreementFilter(query *gorm.DB, agreement string) *gorm.DB {
 	}
 }
 
-func applyRiskFilter(query *gorm.DB, providerValue, risk string) *gorm.DB {
-	column := "credential.build_bot_flag_source"
-	if providerValue == string(account.ProviderWeb) || providerValue == string(account.ProviderConsole) {
-		column = "credential.sso_bot_flag_source"
+const ssoRiskFlaggedPredicate = "(credential.sso_bot_flag_source IN (1,2) OR (credential.sso_bot_risk_set AND credential.sso_bot_risk >= 1))"
+const ssoRiskHighPredicate = "(credential.sso_bot_risk_set AND credential.sso_bot_risk >= 1)"
+const ssoRiskLowPredicate = "((credential.sso_bot_risk_set AND credential.sso_bot_risk > 0 AND credential.sso_bot_risk < 1) OR (credential.sso_bot_flag_source IN (1,2) AND NOT (credential.sso_bot_risk_set AND credential.sso_bot_risk >= 1)))"
+const ssoRiskEverPredicate = "credential.sso_bot_risk_ever"
+
+func applyRiskFilter(query *gorm.DB, _, risk string) *gorm.DB {
+	exists := func(predicate string) string {
+		return "EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND " + predicate + ")"
 	}
 	switch risk {
 	case "flagged":
-		return query.Where("EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND " + column + " IN (1,2))")
+		return query.Where(exists(ssoRiskFlaggedPredicate))
+	case "high":
+		return query.Where(exists(ssoRiskHighPredicate))
+	case "low":
+		return query.Where(exists(ssoRiskLowPredicate))
+	case "ever":
+		return query.Where(exists(ssoRiskEverPredicate))
 	case "normal":
-		return query.Where("NOT EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND " + column + " IN (1,2))")
+		return query.Where("NOT " + exists(ssoRiskHighPredicate) + " AND NOT " + exists(ssoRiskLowPredicate))
 	default:
 		return query
 	}

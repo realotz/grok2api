@@ -132,6 +132,72 @@ func TestSSOBotFlagIndexDrivesListFilter(t *testing.T) {
 	if err != nil || total != 1 {
 		t.Fatalf("normal list total = %d, err=%v", total, err)
 	}
+	history, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "history", SourceKey: "history",
+		EncryptedAccessToken: "sso-3", AuthStatus: account.AuthStatusActive, SSOBotRiskEver: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, total, err = repo.List(ctx, repository.AccountListQuery{
+		Page: repository.PageQuery{Limit: 20},
+		Filter: repository.AccountListFilter{
+			Provider: string(account.ProviderWeb), Risk: "ever", Now: now,
+		},
+	})
+	if err != nil || total != 1 {
+		t.Fatalf("ever list total = %d, history=%d err=%v", total, history.ID, err)
+	}
+}
+
+func TestSSORiskLevelFilter(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAccountRepository(openTestDatabase(t))
+	now := time.Now().UTC()
+	if _, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "clean", SourceKey: "lvl-clean",
+		EncryptedAccessToken: "sso-clean", AuthStatus: account.AuthStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "low", SourceKey: "lvl-low",
+		EncryptedAccessToken: "sso-low", AuthStatus: account.AuthStatusActive, SSOBotRiskSet: true, SSOBotRisk: 0.4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "high", SourceKey: "lvl-high",
+		EncryptedAccessToken: "build-high", AuthStatus: account.AuthStatusActive, SSOBotRiskSet: true, SSOBotRisk: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "source-only", SourceKey: "lvl-source",
+		EncryptedAccessToken: "sso-source", AuthStatus: account.AuthStatusActive, SSOBotFlagSource: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertRiskTotal := func(provider, risk string, want int64) {
+		t.Helper()
+		_, total, err := repo.List(ctx, repository.AccountListQuery{
+			Page:   repository.PageQuery{Limit: 20},
+			Filter: repository.AccountListFilter{Provider: provider, Risk: risk, Now: now},
+		})
+		if err != nil || total != want {
+			t.Fatalf("%s %s total = %d, err=%v", provider, risk, total, err)
+		}
+	}
+	assertRiskTotal(string(account.ProviderWeb), "normal", 1)
+	assertRiskTotal(string(account.ProviderWeb), "low", 1)
+	assertRiskTotal(string(account.ProviderWeb), "high", 0)
+	assertRiskTotal(string(account.ProviderBuild), "high", 1)
+	assertRiskTotal(string(account.ProviderBuild), "low", 0)
+	assertRiskTotal(string(account.ProviderBuild), "normal", 0)
+	assertRiskTotal(string(account.ProviderConsole), "low", 1)
+	assertRiskTotal(string(account.ProviderConsole), "normal", 0)
+	assertRiskTotal(string(account.ProviderConsole), "high", 0)
 }
 
 func TestInitializeSchemaAddsSSOBotFlagWithoutLosingCredentials(t *testing.T) {

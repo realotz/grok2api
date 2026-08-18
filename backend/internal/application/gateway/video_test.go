@@ -1128,8 +1128,8 @@ func TestFastRemoteVideoIsRiskAndFailsOverWithoutDownload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if flagged.SSOBotFlagSource != 1 {
-		t.Fatalf("first account risk source = %d", flagged.SSOBotFlagSource)
+	if flagged.SSOBotFlagSource != 1 || !flagged.SSOBotRiskSet || flagged.SSOBotRisk != 1 || !flagged.SSOBotRiskEver {
+		t.Fatalf("first account scenery risk = %#v", flagged)
 	}
 	clean, err := accountRepo.Get(ctx, second.ID)
 	if err != nil {

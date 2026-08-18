@@ -326,6 +326,13 @@ type accountResponse struct {
 	BuildBotFlagSource         int                     `json:"buildBotFlagSource,omitempty"`
 	SSOBotFlagged              bool                    `json:"ssoBotFlagged"`
 	SSOBotFlagSource           int                     `json:"ssoBotFlagSource,omitempty"`
+	SSOBotPolicy               string                  `json:"ssoBotPolicy,omitempty"`
+	SSOBotEvent                string                  `json:"ssoBotEvent,omitempty"`
+	SSOBotRisk                 float64                 `json:"ssoBotRisk,omitempty"`
+	SSOBotRiskSet              bool                    `json:"ssoBotRiskSet,omitempty"`
+	SSOBotRiskEver             bool                    `json:"ssoBotRiskEver,omitempty"`
+	SSOBotDetails              string                  `json:"ssoBotDetails,omitempty"`
+	SSOBotInspectedAt          *time.Time              `json:"ssoBotInspectedAt,omitempty"`
 	EgressNodeID               uint64                  `json:"egressNodeId,omitempty,string"`
 	EgressAssignmentMode       string                  `json:"egressAssignmentMode,omitempty"`
 	ModelSyncFailed            bool                    `json:"modelSyncFailed,omitempty"`
@@ -1599,8 +1606,15 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		BuildRouteMode:             string(buildRouteMode),
 		BuildBotFlagged:            value.BuildBotFlagged && c.Provider == accountdomain.ProviderBuild,
 		BuildBotFlagSource:         buildBotFlagSourceResponse(c.Provider, value.BuildBotFlagged, value.BuildBotFlagSource),
-		SSOBotFlagged:              value.SSOBotFlagged && (c.Provider == accountdomain.ProviderWeb || c.Provider == accountdomain.ProviderConsole),
+		SSOBotFlagged:              value.SSOBotFlagged,
 		SSOBotFlagSource:           ssoBotFlagSourceResponse(c.Provider, value.SSOBotFlagged, value.SSOBotFlagSource),
+		SSOBotPolicy:               ssoInspectText(c.Provider, c.SSOBotPolicy),
+		SSOBotEvent:                ssoInspectText(c.Provider, c.SSOBotEvent),
+		SSOBotRisk:                 ssoInspectRisk(c.Provider, c.SSOBotRiskSet, c.SSOBotRisk),
+		SSOBotRiskSet:              ssoInspectApplies(c.Provider) && c.SSOBotRiskSet,
+		SSOBotRiskEver:             ssoInspectApplies(c.Provider) && (c.SSOBotRiskEver || (c.SSOBotRiskSet && c.SSOBotRisk >= 1)),
+		SSOBotDetails:              ssoInspectText(c.Provider, c.SSOBotDetails),
+		SSOBotInspectedAt:          ssoInspectTime(c.Provider, c.SSOBotInspectedAt),
 		EgressNodeID:               c.EgressNodeID,
 		EgressAssignmentMode:       string(c.EgressAssignmentMode),
 		Quota:                      newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
@@ -1641,11 +1655,36 @@ func buildBotFlagSourceResponse(provider accountdomain.Provider, flagged bool, s
 	return source
 }
 
-func ssoBotFlagSourceResponse(provider accountdomain.Provider, flagged bool, source int) int {
-	if !flagged || (provider != accountdomain.ProviderWeb && provider != accountdomain.ProviderConsole) {
+func ssoBotFlagSourceResponse(_ accountdomain.Provider, flagged bool, source int) int {
+	if !flagged {
 		return 0
 	}
-	return accountdomain.NormalizeSSOBotFlagSource(provider, accountdomain.AuthTypeSSO, source)
+	return accountdomain.PersistSSOInspectSource(source)
+}
+
+func ssoInspectApplies(provider accountdomain.Provider) bool {
+	return provider == accountdomain.ProviderWeb || provider == accountdomain.ProviderConsole || provider == accountdomain.ProviderBuild
+}
+
+func ssoInspectText(provider accountdomain.Provider, value string) string {
+	if !ssoInspectApplies(provider) {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func ssoInspectRisk(provider accountdomain.Provider, set bool, risk float64) float64 {
+	if !ssoInspectApplies(provider) || !set {
+		return 0
+	}
+	return risk
+}
+
+func ssoInspectTime(provider accountdomain.Provider, value *time.Time) *time.Time {
+	if !ssoInspectApplies(provider) {
+		return nil
+	}
+	return value
 }
 
 func newQuotaResponse(value accountapp.QuotaView) quotaResponse {

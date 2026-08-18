@@ -21,7 +21,6 @@ const (
 	modelProbeTextPrompt = `Return only a JSON object with this exact shape: {"ok":true,"probe":"account-test"}. No markdown, no extra text.`
 	// ModelProbeDefaultMediaPrompt 是图片/视频探测的默认提示词。
 	ModelProbeDefaultMediaPrompt = "小猫在天上"
-	modelProbeRiskSource         = 1
 	modelProbeMaxBodyBytes       = 4 << 20
 )
 
@@ -193,10 +192,6 @@ func (s *Service) probeAccountText(ctx context.Context, credential accountdomain
 		result.Outcome = ModelProbeOutcomeOK
 	case ModelProbeOutcomeFlagged:
 		result.Outcome = ModelProbeOutcomeFlagged
-		if markErr := s.markModelProbeRisk(ctx, credential); markErr != nil {
-			s.logger.Error("account_model_probe_risk_write_failed", "account_id", credential.ID, "error", markErr)
-			result.Error = markErr.Error()
-		}
 	default:
 		result.Outcome = ModelProbeOutcomeError
 		result.Error = "模型未返回内容"
@@ -276,7 +271,7 @@ func (s *Service) probeAccountVideo(ctx context.Context, credential accountdomai
 	if provider.IsFastRemoteVideoRisk(time.Since(started), generated) {
 		result.Outcome = ModelProbeOutcomeFlagged
 		result.Error = provider.ErrVideoRiskScenery.Error()
-		if markErr := s.markModelProbeRisk(ctx, credential); markErr != nil {
+		if markErr := s.MarkAccountRisk(ctx, credential); markErr != nil {
 			s.logger.Error("account_model_probe_risk_write_failed", "account_id", credential.ID, "error", markErr)
 			result.Error = markErr.Error()
 		}
@@ -297,9 +292,35 @@ func (s *Service) probeAccountVideo(ctx context.Context, credential accountdomai
 	return result, nil
 }
 
-// MarkAccountRisk persists a test-detected robot mark without rewriting tokens.
+// MarkAccountRisk writes risk=1 from a 10s scenery video and copies the
+// snapshot onto linked Build/Console credentials. Historical risk-ever is sticky.
 func (s *Service) MarkAccountRisk(ctx context.Context, value accountdomain.Credential) error {
-	return s.markModelProbeRisk(ctx, value)
+	indexed, ok := s.accounts.(buildBotFlagIndexRepository)
+	if !ok {
+		return fmt.Errorf("账号仓储未实现风控写入")
+	}
+	latest, err := s.accounts.Get(ctx, value.ID)
+	if err == nil {
+		value = latest
+	}
+	if value.BlocksBySSORisk() && value.SSOBotRiskEver {
+		return nil
+	}
+	source := accountdomain.PersistSSOInspectSource(value.SSOBotFlagSource)
+	if source == 0 {
+		source = 1
+	}
+	update := repository.SSOBotFlagSourceUpdate{
+		AccountID: value.ID, ExpectedEncryptedAccessToken: value.EncryptedAccessToken, Source: source,
+		Policy: value.SSOBotPolicy, Event: value.SSOBotEvent, Risk: 1, RiskSet: true,
+		Details: firstNonEmpty(value.SSOBotDetails, "video_scenery"), Inspected: true,
+	}
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialStateWriteTimeout)
+	defer cancel()
+	if err := indexed.UpdateSSOBotFlagSources(writeCtx, []repository.SSOBotFlagSourceUpdate{update}); err != nil {
+		return err
+	}
+	return s.syncSSOInspectToLinkedAccounts(writeCtx, indexed, value, update)
 }
 
 func (s *Service) consumeProbeVideoQuota(ctx context.Context, credential accountdomain.Credential, route modeldomain.Route, resolution string) {
@@ -341,42 +362,6 @@ func withoutModelProbeRisk(result AccountModelProbeResult, err error) (AccountMo
 		}
 	}
 	return result, err
-}
-
-func (s *Service) markModelProbeRisk(ctx context.Context, value accountdomain.Credential) error {
-	indexed, ok := s.accounts.(buildBotFlagIndexRepository)
-	if !ok {
-		return fmt.Errorf("账号仓储未实现风控写入")
-	}
-	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialStateWriteTimeout)
-	defer cancel()
-	switch value.Provider {
-	case accountdomain.ProviderBuild:
-		if value.BuildBotFlagSource == 1 || value.BuildBotFlagSource == 2 {
-			return nil
-		}
-		if err := indexed.UpdateBuildBotFlagSources(writeCtx, []repository.BuildBotFlagSourceUpdate{{
-			AccountID: value.ID, ExpectedEncryptedAccessToken: value.EncryptedAccessToken, Source: modelProbeRiskSource,
-		}}); err != nil {
-			return err
-		}
-		s.invalidateBuildBotFlagCache()
-	case accountdomain.ProviderWeb, accountdomain.ProviderConsole:
-		if value.AuthType != accountdomain.AuthTypeSSO {
-			return fmt.Errorf("仅 SSO 账号可通过模型测试标记风控")
-		}
-		if accountdomain.SSOBotFlagged(value.SSOBotFlagSource) {
-			return nil
-		}
-		if err := indexed.UpdateSSOBotFlagSources(writeCtx, []repository.SSOBotFlagSourceUpdate{{
-			AccountID: value.ID, ExpectedEncryptedAccessToken: value.EncryptedAccessToken, Source: modelProbeRiskSource,
-		}}); err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("账号来源不支持风控标记")
-	}
-	return nil
 }
 
 func compactAccountTestModels(routes []modeldomain.Route) []AccountModelProbeItem {

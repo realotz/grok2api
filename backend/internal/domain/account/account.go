@@ -203,13 +203,23 @@ type Credential struct {
 	// 仅 Web/Console SSO 使用：1=账号级机器人，2=IP 层软标记；0 表示未标记或非 SSO。
 	// 与 Build JWT bfs 独立。token refresh / 普通 upsert 不得清除；仅显式风控检测可改。
 	SSOBotFlagSource int
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// SSOBotPolicy / SSOBotEvent / SSOBotRisk 是 grok.com botFlagDetails 快照。
+	// 仅成功检测可改写；token refresh / 导入不得清除。Risk 随再次检测可下降。
+	SSOBotPolicy  string
+	SSOBotEvent   string
+	SSOBotRisk    float64
+	SSOBotRiskSet bool
+	// SSOBotRiskEver 表示该账号曾经出现过 risk≥1。当前快照下降后仍保留，供筛选。
+	SSOBotRiskEver    bool
+	SSOBotDetails     string
+	SSOBotInspectedAt *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
-// NormalizeSSOBotFlagSource keeps exact values 1 and 2 for Web/Console SSO only.
+// NormalizeSSOBotFlagSource keeps exact values 1 and 2 for native Web/Console SSO writes.
 func NormalizeSSOBotFlagSource(provider Provider, authType AuthType, source int) int {
-	if source != 1 && source != 2 {
+	if PersistSSOInspectSource(source) == 0 {
 		return 0
 	}
 	if provider != ProviderWeb && provider != ProviderConsole {
@@ -221,9 +231,43 @@ func NormalizeSSOBotFlagSource(provider Provider, authType AuthType, source int)
 	return source
 }
 
+// PersistSSOInspectSource keeps exact values 1 and 2 on any provider so a Web
+// inspect snapshot can be copied onto linked Build/Console credentials.
+func PersistSSOInspectSource(source int) int {
+	if source != 1 && source != 2 {
+		return 0
+	}
+	return source
+}
+
 // SSOBotFlagged reports whether a persisted SSO risk source is a robot mark.
 func SSOBotFlagged(source int) bool {
 	return source == 1 || source == 2
+}
+
+const ssoRiskBlockThreshold = 1
+
+// BlocksBySSORisk reports whether a persisted grok.com risk snapshot forbids
+// video and grok-4.5/4.6 Build LLM. Missing snapshots never block.
+func (c Credential) BlocksBySSORisk() bool {
+	return c.SSOBotRiskSet && c.SSOBotRisk >= ssoRiskBlockThreshold
+}
+
+// BlocksVideoBySSORisk reports whether a persisted grok.com risk snapshot
+// forbids video generation. Missing snapshots never block, so older marks
+// that only stored botFlagSource remain eligible until the next inspect.
+func (c Credential) BlocksVideoBySSORisk() bool {
+	return c.BlocksBySSORisk()
+}
+
+// IsVideoQuotaMode reports whether a routing quota mode is a video product.
+func IsVideoQuotaMode(mode string) bool {
+	switch strings.TrimSpace(mode) {
+	case QuotaModeWebVideo, QuotaModeWebVideo720p, "console_video":
+		return true
+	default:
+		return false
+	}
 }
 
 // CredentialMaterial contains the encrypted provider secrets and refresh

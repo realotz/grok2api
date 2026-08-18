@@ -55,6 +55,16 @@ var grokReasoningCapabilities = map[string][]string{
 	GrokComposer25Fast:             {ReasoningEffortNone},
 }
 
+// IsGrok45Or46LLM reports whether value is a grok-4.5 / grok-4.6 family LLM,
+// including provider prefixes, effort suffixes, and Build free variants.
+func IsGrok45Or46LLM(value string) bool {
+	slug := strings.ToLower(externalModelSlug(value))
+	if base, _, ok := parseReasoningModelAliasSlug(slug); ok {
+		slug = base
+	}
+	return slug == "grok-4.5" || slug == "grok-4.6" || strings.HasPrefix(slug, "grok-4.5-") || strings.HasPrefix(slug, "grok-4.6-")
+}
+
 // IsGrokComposerModel reports whether value belongs to the Composer family.
 // Composer uses an isolated upstream conversation and does not accept a
 // configurable reasoning effort, including when addressed through Build/.

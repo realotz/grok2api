@@ -117,8 +117,8 @@ func TestTestAccountModelFlagsInvalidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.SSOBotFlagSource != 1 {
-		t.Fatalf("source = %d", stored.SSOBotFlagSource)
+	if stored.SSOBotFlagSource != 0 || stored.SSOBotRiskSet {
+		t.Fatalf("model probe must not persist SSO inspect, stored = %#v", stored)
 	}
 }
 
@@ -276,8 +276,8 @@ func TestTestAccountModelFastVideoFlagsRiskWithoutPreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.SSOBotFlagSource != 1 {
-		t.Fatalf("source = %d", stored.SSOBotFlagSource)
+	if stored.SSOBotFlagSource != 1 || !stored.SSOBotRiskSet || stored.SSOBotRisk != 1 || !stored.SSOBotRiskEver {
+		t.Fatalf("video scenery should persist risk=1, stored = %#v", stored)
 	}
 }
 

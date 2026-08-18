@@ -11,9 +11,10 @@ import (
 )
 
 type segmentedSelectorActiveRequest struct {
-	provider   account.Provider
-	windowSize int
-	cursor     uint64
+	provider      account.Provider
+	upstreamModel string
+	windowSize    int
+	cursor        uint64
 }
 
 type segmentedSelectorCohortBucket struct {
@@ -46,7 +47,7 @@ func (s *Selector) nextSegmentedActiveRequest(provider account.Provider, upstrea
 	}
 	shard := segmentedSelectorShard(provider, upstreamModel, quotaMode)
 	cursor := s.segmentedState.activeCursors[shard].Add(uint64(config.windowSize)) - uint64(config.windowSize)
-	return &segmentedSelectorActiveRequest{provider: provider, windowSize: config.windowSize, cursor: cursor}
+	return &segmentedSelectorActiveRequest{provider: provider, upstreamModel: upstreamModel, windowSize: config.windowSize, cursor: cursor}
 }
 
 func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []account.RoutingCandidate, indexes []int, quotaMode string, tierOrder []account.WebTier, request segmentedSelectorActiveRequest) (*accountLease, error) {
@@ -56,7 +57,7 @@ func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []acco
 	windowsScanned := 0
 	candidatesScanned := 0
 	fullPlannerOnly := false
-	preferFreeBuild := s.preferFreeBuildEnabled()
+	preferFreeBuild := s.preferFreeBuildForModel(request.upstreamModel)
 	for {
 		now := time.Now().UTC()
 		if fullPlannerOnly {
@@ -199,6 +200,7 @@ func segmentedCandidateCohorts(values []account.RoutingCandidate, indexes []int,
 		}
 		cohort := segmentedSelectorCohort{
 			supportsModel: supportsModel, capabilityKnown: capabilityKnown,
+			ssoRisk:         ssoRiskRank(candidate.Credential),
 			preferFreeBuild: preferFreeBuild && candidate.IsKnownFreeBuild(),
 			tier:            tierOrderRank(tierOrder, candidate.Credential.WebTier), priority: candidate.Credential.Priority,
 		}

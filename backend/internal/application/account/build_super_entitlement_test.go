@@ -133,6 +133,7 @@ func TestAccountViewsIncludeBuildBotFlagMetadata(t *testing.T) {
 	build, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
 		Provider: accountdomain.ProviderBuild, Name: "flagged", SourceKey: "build-bot-flag",
 		EncryptedAccessToken: "enc", AuthStatus: accountdomain.AuthStatusActive, Enabled: true,
+		SSOBotFlagSource: 1, SSOBotRisk: 1, SSOBotRiskSet: true, SSOBotPolicy: "deny",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +212,7 @@ func TestSummaryUsesOneAvailabilitySnapshotWhenExcludingBotRisk(t *testing.T) {
 		t.Fatal(err)
 	}
 	build := summary.Providers[string(accountdomain.ProviderBuild)]
-	if summary.Risk != 1 || build.Available != 1 || summary.Available != 1 {
+	if summary.Risk != 0 || build.Available != 1 || summary.Available != 1 {
 		t.Fatalf("summary = %#v", summary)
 	}
 }

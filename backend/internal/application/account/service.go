@@ -379,7 +379,7 @@ func (s *Service) Summary(ctx context.Context) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	result.Risk = buildRisk + ssoRisk
+	result.Risk = ssoRisk
 	if s.excludeBuildBotFlaggedFromSchedulingEnabled() && buildRisk > 0 {
 		var excluded int64
 		if hasIndex {
@@ -437,6 +437,7 @@ type Service struct {
 	refreshPool         *batch.Pool
 	// detectPool 专用于管理端「检测账号」，与额度同步/续期隔离，默认并发 32。
 	detectPool             *batch.Pool
+	patrolPool             *batch.Pool
 	models                 repository.ModelRepository
 	modelSyncer            modelCapabilitySyncer
 	credentialRefreshWake  chan struct{}
@@ -503,8 +504,9 @@ func NewService(accounts repository.AccountRepository, audits repository.AuditRe
 		autoCleanWake:     make(chan struct{}, 1),
 		buildBotFlagCache: resultcache.New[string, []uint64](1, buildBotFlagCacheTTL),
 		conversionPool:    batch.NewPool(25), syncPool: batch.NewPool(25), refreshPool: batch.NewPool(25), detectPool: batch.NewPool(32),
-		logger: slog.Default(),
-		now:    func() time.Time { return time.Now().UTC() },
+		patrolPool: batch.NewPool(ssoRiskPatrolConcurrency),
+		logger:     slog.Default(),
+		now:        func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -566,7 +568,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		!oneOf(filter.Status, "", "active", "disabled", "reauthRequired", "cooldown", "waitingReset", "probing") ||
 		!egressValid ||
 		!oneOf(filter.Renewal, "", "refreshable", "unrefreshable") ||
-		!oneOf(filter.Risk, "", "flagged", "normal") ||
+		!oneOf(filter.Risk, "", "flagged", "normal", "low", "high", "ever") ||
 		(filter.Risk != "" && !supportsRiskFilter(filter.Provider)) ||
 		!oneOf(filter.Agreement, "", "nsfwEnabled", "nsfwDisabled", "termsAccepted", "termsNotAccepted", "allAccepted", "allNotAccepted") ||
 		(filter.Agreement != "" && filter.Provider != string(accountdomain.ProviderWeb)) ||
@@ -1109,12 +1111,12 @@ func (s *Service) buildBotFlagMetadata(value accountdomain.Credential) provider.
 
 func (s *Service) newAccountView(value accountdomain.Credential) View {
 	metadata := s.buildBotFlagMetadata(value)
-	source := accountdomain.NormalizeSSOBotFlagSource(value.Provider, value.AuthType, value.SSOBotFlagSource)
+	source := accountdomain.PersistSSOInspectSource(value.SSOBotFlagSource)
 	return View{
 		Credential:         value,
 		BuildBotFlagged:    metadata.BuildBotFlagged,
 		BuildBotFlagSource: metadata.BuildBotFlagSource,
-		SSOBotFlagged:      accountdomain.SSOBotFlagged(source),
+		SSOBotFlagged:      accountdomain.SSOBotFlagged(source) || value.BlocksBySSORisk(),
 		SSOBotFlagSource:   source,
 	}
 }
@@ -1123,11 +1125,8 @@ func supportsRiskFilter(provider string) bool {
 	return provider == string(accountdomain.ProviderBuild) || provider == string(accountdomain.ProviderWeb) || provider == string(accountdomain.ProviderConsole)
 }
 
-func (s *Service) riskFlaggedAccountIDs(ctx context.Context, provider accountdomain.Provider) ([]uint64, error) {
-	if provider == accountdomain.ProviderWeb || provider == accountdomain.ProviderConsole {
-		return s.ssoBotFlaggedAccountIDs(ctx)
-	}
-	return s.buildBotFlaggedAccountIDs(ctx)
+func (s *Service) riskFlaggedAccountIDs(ctx context.Context, _ accountdomain.Provider) ([]uint64, error) {
+	return s.ssoBotFlaggedAccountIDs(ctx)
 }
 
 func (s *Service) ssoBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
@@ -3866,6 +3865,14 @@ type SSODetectItemObserver func(item SSODetectItemResult) error
 // DetectSSOAccountsWithProgress inspects grok.com botFlagSource for Web/Console SSO
 // accounts and persists robot marks. It never refreshes or rewrites SSO tokens.
 func (s *Service) DetectSSOAccountsWithProgress(ctx context.Context, provider accountdomain.Provider, ids []uint64, all bool, progress BatchProgressObserver, itemObserver SSODetectItemObserver) (int, int, error) {
+	pool := s.detectPool
+	if pool == nil {
+		pool = s.syncPool
+	}
+	return s.detectSSOAccounts(ctx, provider, ids, all, pool, "sso_detect", progress, itemObserver)
+}
+
+func (s *Service) detectSSOAccounts(ctx context.Context, provider accountdomain.Provider, ids []uint64, all bool, pool *batch.Pool, operation string, progress BatchProgressObserver, itemObserver SSODetectItemObserver) (int, int, error) {
 	if provider != accountdomain.ProviderWeb && provider != accountdomain.ProviderConsole {
 		return 0, 0, invalidInput("仅 Grok Web 与 Console SSO 账号支持风控检测")
 	}
@@ -3895,7 +3902,9 @@ func (s *Service) DetectSSOAccountsWithProgress(ctx context.Context, provider ac
 	if len(ids) == 0 {
 		return 0, 0, nil
 	}
-	pool := s.detectPool
+	if pool == nil {
+		pool = s.detectPool
+	}
 	if pool == nil {
 		pool = s.syncPool
 	}
@@ -3943,7 +3952,10 @@ func (s *Service) DetectSSOAccountsWithProgress(ctx context.Context, provider ac
 			}
 		}
 	})
-	s.logBatchSummary("sso_detect", pool, summary, err)
+	if operation == "" {
+		operation = "sso_detect"
+	}
+	s.logBatchSummary(operation, pool, summary, err)
 	return summary.Succeeded, summary.Failed, errors.Join(err, progressErr)
 }
 
@@ -3983,13 +3995,18 @@ func (s *Service) detectSSOAccount(ctx context.Context, inspector provider.SSORi
 		}
 		return item
 	}
-	source := accountdomain.NormalizeSSOBotFlagSource(value.Provider, value.AuthType, risk.Source)
+	source := accountdomain.PersistSSOInspectSource(risk.Source)
 	if indexed, ok := s.accounts.(buildBotFlagIndexRepository); ok {
-		if updateErr := indexed.UpdateSSOBotFlagSources(ctx, []repository.SSOBotFlagSourceUpdate{{
+		update := repository.SSOBotFlagSourceUpdate{
 			AccountID: value.ID, ExpectedEncryptedAccessToken: value.EncryptedAccessToken, Source: source,
-		}}); updateErr != nil {
+			Policy: risk.Policy, Event: risk.Event, Risk: risk.Risk, RiskSet: risk.RiskSet, Details: risk.Details, Inspected: true,
+		}
+		if updateErr := indexed.UpdateSSOBotFlagSources(ctx, []repository.SSOBotFlagSourceUpdate{update}); updateErr != nil {
 			item.Reason = updateErr.Error()
 			return item
+		}
+		if syncErr := s.syncSSOInspectToLinkedAccounts(ctx, indexed, value, update); syncErr != nil {
+			s.logger.Warn("sso_inspect_sync_linked_failed", "account_id", value.ID, "error", syncErr)
 		}
 	}
 	if risk.Flagged || accountdomain.SSOBotFlagged(source) {
@@ -4003,6 +4020,32 @@ func (s *Service) detectSSOAccount(ctx context.Context, inspector provider.SSORi
 	}
 	item.Outcome = SSODetectOutcomeOK
 	return item
+}
+
+func (s *Service) syncSSOInspectToLinkedAccounts(ctx context.Context, indexed buildBotFlagIndexRepository, source accountdomain.Credential, snapshot repository.SSOBotFlagSourceUpdate) error {
+	if len(source.LinkedAccounts) == 0 {
+		return nil
+	}
+	updates := make([]repository.SSOBotFlagSourceUpdate, 0, len(source.LinkedAccounts))
+	for _, linked := range source.LinkedAccounts {
+		if linked.ID == 0 || linked.ID == source.ID {
+			continue
+		}
+		peer, err := s.accounts.Get(ctx, linked.ID)
+		if err != nil {
+			s.logger.Warn("sso_inspect_sync_peer_lookup_failed", "account_id", source.ID, "peer_id", linked.ID, "error", err)
+			continue
+		}
+		updates = append(updates, repository.SSOBotFlagSourceUpdate{
+			AccountID: peer.ID, ExpectedEncryptedAccessToken: peer.EncryptedAccessToken, Source: snapshot.Source,
+			Policy: snapshot.Policy, Event: snapshot.Event, Risk: snapshot.Risk, RiskSet: snapshot.RiskSet,
+			Details: snapshot.Details, Inspected: true,
+		})
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return indexed.UpdateSSOBotFlagSources(ctx, updates)
 }
 
 // DetectBuildAccountsWithProgress 对指定或全部 Grok Build 账号发起探测请求；all 与 ids 必须且只能提供一个。

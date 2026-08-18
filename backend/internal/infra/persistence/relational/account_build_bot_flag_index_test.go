@@ -19,7 +19,7 @@ func TestBuildBotFlagIndexDrivesRoutingFilteringAndAvailableCount(t *testing.T) 
 	flaggedOne, _, err := repo.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "flagged-1", SourceKey: "flagged-1",
 		EncryptedAccessToken: "secret-1", AuthStatus: account.AuthStatusActive,
-		BuildBotFlagSource: 1,
+		BuildBotFlagSource: 1, SSOBotFlagSource: 1, SSOBotRiskSet: true, SSOBotRisk: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -28,6 +28,7 @@ func TestBuildBotFlagIndexDrivesRoutingFilteringAndAvailableCount(t *testing.T) 
 		Provider: account.ProviderBuild, Name: "flagged-2", SourceKey: "flagged-2",
 		EncryptedAccessToken: "secret-2", AuthStatus: account.AuthStatusActive,
 		BuildBotFlagSource: 2, CooldownUntil: &cooldownUntil,
+		SSOBotFlagSource: 2, SSOBotRiskSet: true, SSOBotRisk: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
