@@ -260,6 +260,7 @@ func normalizeConsoleTools(payload map[string]any, disallowsClientTools bool) co
 		delete(payload, "tools")
 		return summary
 	}
+	hasClientViewImage := hasConsoleFunctionTool(tools, "view_image")
 	result := make([]any, 0, len(tools))
 	seenServerTools := make(map[string]struct{})
 	for _, rawTool := range tools {
@@ -284,8 +285,13 @@ func normalizeConsoleTools(payload map[string]any, disallowsClientTools bool) co
 				}
 				seenServerTools["web_search"] = struct{}{}
 			}
-			clean := map[string]any{"type": "web_search", "enable_image_understanding": true}
-			if enabled, ok := tool["enable_image_understanding"].(bool); ok {
+			// xAI equips web_search with a server-side tool also named view_image
+			// when image understanding is enabled. Prefer the client's function of
+			// that name so Codex can still inspect local files without mgw rejecting
+			// the request as a duplicate tool definition.
+			allowImageUnderstanding := disallowsClientTools || !hasClientViewImage
+			clean := map[string]any{"type": "web_search", "enable_image_understanding": allowImageUnderstanding}
+			if enabled, ok := tool["enable_image_understanding"].(bool); ok && allowImageUnderstanding {
 				clean["enable_image_understanding"] = enabled
 			}
 			// Forward the image-search toggle (enable_image_search) so clients
@@ -357,6 +363,21 @@ func normalizeConsoleTools(payload map[string]any, disallowsClientTools bool) co
 	}
 	payload["tools"] = result
 	return summary
+}
+
+func hasConsoleFunctionTool(tools []any, target string) bool {
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		typeName, _ := tool["type"].(string)
+		name, _ := tool["name"].(string)
+		if strings.EqualFold(strings.TrimSpace(typeName), "function") && strings.EqualFold(strings.TrimSpace(name), target) {
+			return true
+		}
+	}
+	return false
 }
 
 func isMultiAgentClientTool(toolType string) bool {
