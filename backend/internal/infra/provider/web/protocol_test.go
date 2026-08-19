@@ -1861,6 +1861,50 @@ func (*imageAssetStoreRetryStub) PublicImageURL(string) string {
 	return "https://api.example/v1/media/images/img_retry"
 }
 
+func TestMediaJSONPostsAdvertiseGzipOnly(t *testing.T) {
+	encodings := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		encodings = append(encodings, request.Header.Get("Accept-Encoding"))
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/rest/media/post/create":
+			_, _ = io.WriteString(writer, `{"post":{"id":"post_1"}}`)
+		case "/rest/app-chat/conversations/new":
+			_, _ = io.WriteString(writer, `{"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"8efff9ef-8aa4-4a6e-ab73-aa2b5c7bccb5","videoUrl":"https://assets.grok.com/videos/final.mp4"}}}}`)
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedToken, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test", VideoTimeoutSeconds: 15}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	_, err = adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, WebTier: account.WebTierSuper, EncryptedAccessToken: encryptedToken},
+		Prompt:     "test",
+		Duration:   6,
+		Model:      "grok-imagine-video",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encodings) == 0 {
+		t.Fatal("expected media JSON POSTs")
+	}
+	for _, encoding := range encodings {
+		if encoding != "gzip" {
+			t.Fatalf("Accept-Encoding = %q, want gzip", encoding)
+		}
+	}
+}
+
 func TestGenerateVideoRecoversFromStreamEOFViaMediaPostGet(t *testing.T) {
 	const postID = "8efff9ef-8aa4-4a6e-ab73-aa2b5c7bccb5"
 	gets := 0
