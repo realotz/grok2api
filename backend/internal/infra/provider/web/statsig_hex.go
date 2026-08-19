@@ -9,7 +9,8 @@ import (
 )
 
 // HEX 公式来自 grok 懒加载模块 1645e3（cdn.grok.com/_next/static/chunks/38asg_axwuaew.js，
-// 文件名每次发版会变）。进程不会拉这个模块，也不会解混淆；seed/curves 才自动刷新。
+// 文件名每次发版会变）。进程不会拉这个模块，也不会解混淆。生产签名使用冻住的
+// (seed, HEX) 对，只刷新时间戳；不要用页面 curves 现算覆盖。
 //
 // 定位 1645e3：
 //  1. 首页 JS 里搜 1645e3 或 x-statsig-id，调用链是

@@ -90,6 +90,15 @@ func candidateScoreBetter(values []account.RoutingCandidate, leftScore, rightSco
 	if leftScore.ssoRisk != rightScore.ssoRisk {
 		return leftScore.ssoRisk < rightScore.ssoRisk
 	}
+	// Super 账号按在途请求和最近选用分摊，避免高优先级或更早导入的号把流量打满。
+	if routingCandidateIsSuper(leftCandidate) && routingCandidateIsSuper(rightCandidate) {
+		if leftScore.inFlight != rightScore.inFlight {
+			return leftScore.inFlight < rightScore.inFlight
+		}
+		if !leftScore.lastSelected.Equal(rightScore.lastSelected) {
+			return leftScore.lastSelected.Before(rightScore.lastSelected)
+		}
+	}
 	if (leftScore.preferEarlierImport || rightScore.preferEarlierImport) && !left.CreatedAt.Equal(right.CreatedAt) {
 		return left.CreatedAt.Before(right.CreatedAt)
 	}
@@ -115,6 +124,13 @@ func candidateScoreBetter(values []account.RoutingCandidate, leftScore, rightSco
 		return leftScore.lastSelected.Before(rightScore.lastSelected)
 	}
 	return left.ID < right.ID
+}
+
+func routingCandidateIsSuper(candidate account.RoutingCandidate) bool {
+	if candidate.Credential.Provider == account.ProviderWeb && candidate.Credential.WebTier == account.WebTierSuper {
+		return true
+	}
+	return account.IsBuildSuper(candidate.Credential, candidate.Billing)
 }
 
 // planCandidates 批量读取动态并发状态，并以 O(n) 建堆生成保持原比较规则的候选计划。

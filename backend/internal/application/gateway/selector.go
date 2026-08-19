@@ -617,7 +617,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 			return nil, err
 		}
 		for candidate, ok := plan.Next(); ok; candidate, ok = plan.Next() {
-			lease, err := s.claimAccountSlot(ctx, candidate.Credential)
+			lease, err := s.claimAccountSlotFor(ctx, candidate.Credential, candidate.Billing)
 			if err != nil {
 				if errors.Is(err, errRoutingCredentialStale) {
 					staleClaims++
@@ -693,7 +693,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 			if candidate.Credential.ID == saturatedStickyID {
 				continue
 			}
-			lease, claimErr := s.claimAccountSlot(ctx, candidate.Credential)
+			lease, claimErr := s.claimAccountSlotFor(ctx, candidate.Credential, candidate.Billing)
 			if claimErr != nil {
 				if errors.Is(claimErr, errRoutingCredentialStale) {
 					continue
@@ -732,7 +732,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 			return nil, err
 		}
 		for candidate, ok := plan.Next(); ok; candidate, ok = plan.Next() {
-			lease, err := s.claimAccountSlot(ctx, candidate.Credential)
+			lease, err := s.claimAccountSlotFor(ctx, candidate.Credential, candidate.Billing)
 			if err != nil {
 				if errors.Is(err, errRoutingCredentialStale) {
 					staleClaims++
@@ -1970,6 +1970,10 @@ func (s *Selector) evictCandidate(provider account.Provider, accountID uint64) {
 }
 
 func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credential) (*accountLease, error) {
+	return s.claimAccountSlotFor(ctx, value, nil)
+}
+
+func (s *Selector) claimAccountSlotFor(ctx context.Context, value account.Credential, billing *account.Billing) (*accountLease, error) {
 	now := time.Now().UTC()
 	value = s.applyRoutingHealth(value, now)
 	if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {

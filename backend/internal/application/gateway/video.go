@@ -29,7 +29,7 @@ const (
 	videoJobTimeout          = 2 * time.Hour
 	videoJobLease            = videoJobTimeout + 5*time.Minute
 	videoJobRecoveryInterval = 30 * time.Second
-	videoOutputAttempts      = 3
+	videoOutputAttempts      = 4
 	// Base64 物化会同时持有原图和编码后字符串，单独限流避免高 mediaConcurrency 放大内存峰值。
 	videoInputMaterializeConcurrency = 4
 	videoInputJSONBaseBytes          = int64(len(`{"image_urls":[]}`))
@@ -149,7 +149,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, err
 	}
-	routes = preferWebVideo15Routes(routes)
+	routes = preferVideo15Routes(routes, input.Duration)
 	allRefs := videoInputReferences(input.ImageURL, input.ReferenceURLs)
 	if err := s.validateVideoInputReferences(ctx, allRefs, "image"); err != nil {
 		return media.Job{}, err
@@ -246,18 +246,27 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	return job, nil
 }
 
-// preferWebVideo15Routes 让同名 1.5 视频优先使用 Web，Web 无可用账号时仍按原顺序回退。
-func preferWebVideo15Routes(routes []model.Route) []model.Route {
-	preferred := make([]model.Route, 0, len(routes))
-	fallback := make([]model.Route, 0, len(routes))
+// preferVideo15Routes 6 秒及以下继续优先 Web 1.5；超过 6 秒优先 Build 1.5，
+// Web Super 只在 Build 没有可调度账号时回退。
+func preferVideo15Routes(routes []model.Route, duration int) []model.Route {
+	preferred := account.ProviderWeb
+	if duration > 6 {
+		preferred = account.ProviderBuild
+	}
+	return preferProviderVideo15Routes(routes, preferred)
+}
+
+func preferProviderVideo15Routes(routes []model.Route, preferred account.Provider) []model.Route {
+	first := make([]model.Route, 0, len(routes))
+	rest := make([]model.Route, 0, len(routes))
 	for _, route := range routes {
-		if route.Provider == account.ProviderWeb && strings.TrimSpace(route.UpstreamModel) == "grok-imagine-video-1.5" {
-			preferred = append(preferred, route)
+		if route.Provider == preferred && strings.TrimSpace(route.UpstreamModel) == "grok-imagine-video-1.5" {
+			first = append(first, route)
 			continue
 		}
-		fallback = append(fallback, route)
+		rest = append(rest, route)
 	}
-	return append(preferred, fallback...)
+	return append(first, rest...)
 }
 
 // routesForVideoParameters removes only routes that cannot accept this request.
@@ -1186,7 +1195,7 @@ func (s *Service) persistRemoteVideo(ctx context.Context, jobID string, adapter 
 }
 
 func waitVideoOutputRetry(ctx context.Context, attempt int) error {
-	delays := [...]time.Duration{200 * time.Millisecond, 750 * time.Millisecond}
+	delays := [...]time.Duration{time.Second, 3 * time.Second, 8 * time.Second}
 	timer := time.NewTimer(delays[min(attempt, len(delays)-1)])
 	defer timer.Stop()
 	select {

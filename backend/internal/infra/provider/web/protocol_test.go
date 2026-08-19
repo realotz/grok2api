@@ -1860,6 +1860,61 @@ func (*imageAssetStoreRetryStub) PublicImageURL(string) string {
 	return "https://api.example/v1/media/images/img_retry"
 }
 
+func TestGenerateVideoRecoversFromStreamEOFViaMediaPostGet(t *testing.T) {
+	const postID = "8efff9ef-8aa4-4a6e-ab73-aa2b5c7bccb5"
+	gets := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/rest/app-chat/conversations/new":
+			_, _ = io.WriteString(writer, `{"result":{"response":{"streamingVideoGenerationResponse":{"progress":40,"videoPostId":"`+postID+`"}}}}`+"\n{")
+		case "/rest/media/post/get":
+			gets++
+			_, _ = io.WriteString(writer, `{"post":{"id":"`+postID+`","mediaType":"MEDIA_POST_TYPE_VIDEO","mimeType":"video/mp4","mediaUrl":"https://imagine-public.x.ai/imagine-public/share-videos/`+postID+`.mp4","hdMediaUrl":"https://imagine-public.x.ai/imagine-public/share-videos/`+postID+`_hd.mp4"}}`)
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedToken, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test", VideoTimeoutSeconds: 15}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, WebTier: account.WebTierSuper, EncryptedAccessToken: encryptedToken},
+		Prompt:     "test",
+		Duration:   6,
+		Model:      "grok-imagine-video-1.5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gets < 1 {
+		t.Fatal("expected media post get after truncated stream")
+	}
+	if result.URL != "https://imagine-public.x.ai/imagine-public/share-videos/"+postID+"_hd.mp4" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestParseVideoStreamKeepsPostIDOnUnexpectedEOF(t *testing.T) {
+	const postID = "8efff9ef-8aa4-4a6e-ab73-aa2b5c7bccb5"
+	response := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"result":{"response":{"streamingVideoGenerationResponse":{"progress":40,"videoPostId":"` + postID + `"}}}}` + "\n{"))}
+	result, gotID, err := parseVideoStream(response, nil)
+	if err == nil {
+		t.Fatal("expected truncated stream error")
+	}
+	if gotID != postID || result.URL != "" {
+		t.Fatalf("post=%q result=%#v err=%v", gotID, result, err)
+	}
+}
+
 func TestParseVideoStreamFixture(t *testing.T) {
 	fixture := `data: {"result":{"response":{"streamingVideoGenerationResponse":{"progress":42,"videoPostId":"post_1"}}}}` + "\n" +
 		`data: {"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"post_1","videoUrl":"/videos/final.mp4"}}}}` + "\n"

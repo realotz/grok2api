@@ -254,26 +254,44 @@ func TestVideoRouteParametersRejectConsoleReferenceLimits(t *testing.T) {
 	}
 }
 
-func TestPreferWebVideo15Routes(t *testing.T) {
+func TestPreferVideo15Routes(t *testing.T) {
 	routes := []model.Route{
 		{ID: 1, Provider: account.ProviderBuild, UpstreamModel: "grok-imagine-video-1.5"},
 		{ID: 2, Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video-1.5"},
 		{ID: 3, Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-video-1.5"},
 		{ID: 4, Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-video"},
 	}
-	ordered := preferWebVideo15Routes(routes)
-	want := []uint64{3, 1, 2, 4}
-	if len(ordered) != len(want) {
-		t.Fatalf("ordered routes = %#v", ordered)
+	short := preferVideo15Routes(routes, 6)
+	if got := routeIDs(short); !equalUint64s(got, []uint64{3, 1, 2, 4}) {
+		t.Fatalf("6s routes = %#v", got)
 	}
-	for index, id := range want {
-		if ordered[index].ID != id {
-			t.Fatalf("ordered routes = %#v", ordered)
-		}
+	long := preferVideo15Routes(routes, 8)
+	if got := routeIDs(long); !equalUint64s(got, []uint64{1, 2, 3, 4}) {
+		t.Fatalf(">6s routes = %#v", got)
 	}
 	if routes[0].ID != 1 {
 		t.Fatalf("input routes mutated = %#v", routes)
 	}
+}
+
+func routeIDs(routes []model.Route) []uint64 {
+	ids := make([]uint64, len(routes))
+	for index, route := range routes {
+		ids[index] = route.ID
+	}
+	return ids
+}
+
+func equalUint64s(got, want []uint64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRoutesForVideoParametersKeepsCompatibleSameNameProviders(t *testing.T) {

@@ -23,6 +23,8 @@ const (
 	maxChatAttachments        = 8
 	maxChatAttachmentTotal    = 64 << 20
 	maxRemoteAttachmentURLLen = 8192
+	pinnedDownloadAttempts    = 3
+	pinnedDownloadTimeout     = 30 * time.Second
 )
 
 var (
@@ -110,31 +112,12 @@ func (a *Adapter) loadChatImage(ctx context.Context, lease *egress.Lease, input 
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.fetchURL.String(), nil)
-	if err != nil {
-		return provider.ImageInput{}, err
-	}
-	request.Host = target.hostHeader
 	// 外部图片地址不接收 SSO 或 Cloudflare Cookie，避免把上游凭据泄漏给第三方。
-	request.Header = remoteImageHeaders(lease.UserAgent)
-	response, err := lease.DoPinnedHTTPS(request, target.serverName)
+	raw, contentType, err := fetchPinnedHTTPS(ctx, lease, target, remoteImageHeaders(lease.UserAgent), maxBytes)
 	if err != nil {
 		return provider.ImageInput{}, fmt.Errorf("下载对话图片: %w", err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return provider.ImageInput{}, fmt.Errorf("%w: 下载地址返回 %d", errInvalidChatImage, response.StatusCode)
-	}
-	if response.ContentLength > maxBytes {
-		return provider.ImageInput{}, fmt.Errorf("%w: 图片超过 %d MiB", errInvalidChatImage, maxBytes>>20)
-	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
-	if err != nil || int64(len(raw)) > maxBytes {
-		return provider.ImageInput{}, fmt.Errorf("%w: 下载失败或图片超过 %d MiB", errInvalidChatImage, maxBytes>>20)
-	}
-	mimeType, err := validatedImageMIME(raw, response.Header.Get("Content-Type"))
+	mimeType, err := validatedImageMIME(raw, contentType)
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
@@ -149,30 +132,11 @@ func (a *Adapter) loadChatFile(ctx context.Context, lease *egress.Lease, input, 
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.fetchURL.String(), nil)
-	if err != nil {
-		return provider.ImageInput{}, err
-	}
-	request.Host = target.hostHeader
-	request.Header = remoteFileHeaders(lease.UserAgent)
-	response, err := lease.DoPinnedHTTPS(request, target.serverName)
+	raw, contentType, err := fetchPinnedHTTPS(ctx, lease, target, remoteFileHeaders(lease.UserAgent), maxBytes)
 	if err != nil {
 		return provider.ImageInput{}, fmt.Errorf("下载对话文件: %w", err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return provider.ImageInput{}, fmt.Errorf("%w: 下载地址返回 %d", errInvalidChatFile, response.StatusCode)
-	}
-	if response.ContentLength > maxBytes {
-		return provider.ImageInput{}, fmt.Errorf("%w: 文件超过 %d MiB", errInvalidChatFile, maxBytes>>20)
-	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
-	if err != nil || int64(len(raw)) > maxBytes {
-		return provider.ImageInput{}, fmt.Errorf("%w: 下载失败或文件超过 %d MiB", errInvalidChatFile, maxBytes>>20)
-	}
-	mimeType, err := validatedChatFileMIME(raw, response.Header.Get("Content-Type"), firstNonEmpty(filename, path.Base(target.originalURL.Path)))
+	mimeType, err := validatedChatFileMIME(raw, contentType, firstNonEmpty(filename, path.Base(target.originalURL.Path)))
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
@@ -191,6 +155,78 @@ func remoteFileHeaders(userAgent string) http.Header {
 	value.Set("Accept", "application/pdf,text/*,application/json,application/xml,application/rtf,application/msword,application/zip,image/*,*/*;q=0.1")
 	value.Set("User-Agent", userAgent)
 	return value
+}
+
+// fetchPinnedHTTPS downloads a GET through the current Web lease. GET is
+// idempotent, so transport / 5xx failures retry with backoff instead of
+// failing the video job on a single proxy blip.
+func fetchPinnedHTTPS(ctx context.Context, lease *egress.Lease, target *remoteImageTarget, header http.Header, maxBytes int64) ([]byte, string, error) {
+	if target == nil {
+		return nil, "", errors.New("下载目标为空")
+	}
+	var lastErr error
+	for attempt := 0; attempt < pinnedDownloadAttempts; attempt++ {
+		raw, contentType, retryable, err := fetchPinnedHTTPSAttempt(ctx, lease, target, header, maxBytes)
+		if err == nil {
+			return raw, contentType, nil
+		}
+		lastErr = err
+		if !retryable || ctx.Err() != nil || attempt+1 >= pinnedDownloadAttempts {
+			break
+		}
+		if waitErr := waitPinnedDownloadRetry(ctx, attempt); waitErr != nil {
+			return nil, "", waitErr
+		}
+	}
+	return nil, "", lastErr
+}
+
+func fetchPinnedHTTPSAttempt(ctx context.Context, lease *egress.Lease, target *remoteImageTarget, header http.Header, maxBytes int64) ([]byte, string, bool, error) {
+	requestCtx, cancel := context.WithTimeout(ctx, pinnedDownloadTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.fetchURL.String(), nil)
+	if err != nil {
+		return nil, "", false, err
+	}
+	request.Host = target.hostHeader
+	if header != nil {
+		request.Header = header.Clone()
+	}
+	response, err := lease.DoPinnedHTTPS(request, target.serverName)
+	if err != nil {
+		return nil, "", requestCtx.Err() == nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, "", retryablePinnedDownloadStatus(response.StatusCode), fmt.Errorf("下载地址返回 %d", response.StatusCode)
+	}
+	if response.ContentLength > maxBytes {
+		return nil, "", false, fmt.Errorf("内容超过 %d MiB", maxBytes>>20)
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if err != nil {
+		return nil, "", requestCtx.Err() == nil, fmt.Errorf("读取内容: %w", err)
+	}
+	if int64(len(raw)) > maxBytes {
+		return nil, "", false, fmt.Errorf("内容超过 %d MiB", maxBytes>>20)
+	}
+	return raw, response.Header.Get("Content-Type"), false, nil
+}
+
+func retryablePinnedDownloadStatus(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooEarly || status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
+}
+
+func waitPinnedDownloadRetry(ctx context.Context, attempt int) error {
+	delays := [...]time.Duration{500 * time.Millisecond, 2 * time.Second}
+	timer := time.NewTimer(delays[min(attempt, len(delays)-1)])
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func parseChatImageDataURI(value string, maxBytes int64) (provider.ImageInput, error) {

@@ -41,6 +41,22 @@ func TestSelectionUnavailableErrorClassification(t *testing.T) {
 	}
 }
 
+func TestCandidateScoreSpreadsSuperByInFlight(t *testing.T) {
+	busy := account.RoutingCandidate{Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, WebTier: account.WebTierSuper, Priority: 100}}
+	idle := account.RoutingCandidate{Credential: account.Credential{ID: 2, Provider: account.ProviderWeb, WebTier: account.WebTierSuper, Priority: 1}}
+	values := []account.RoutingCandidate{busy, idle}
+	left := candidateScore{index: 1, inFlight: 0, lastSelected: time.Time{}}
+	right := candidateScore{index: 0, inFlight: 3, lastSelected: time.Time{}}
+	if !candidateScoreBetter(values, left, right) {
+		t.Fatal("idle Super should win over a busier higher-priority Super")
+	}
+	older := candidateScore{index: 1, inFlight: 1, lastSelected: time.Unix(1, 0)}
+	newer := candidateScore{index: 0, inFlight: 1, lastSelected: time.Unix(9, 0)}
+	if !candidateScoreBetter(values, older, newer) {
+		t.Fatal("same Super in-flight should prefer the less recently selected account")
+	}
+}
+
 func TestSelectorPrioritizesDueQuotaProbeOnce(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector.db"))
@@ -1757,5 +1773,13 @@ func TestCandidateScorePrefersEarlierImportAtSameSSORisk(t *testing.T) {
 	right := candidateScore{index: 0, ssoRisk: ssoRiskRank(late.Credential), preferEarlierImport: true}
 	if !candidateScoreBetter(values, left, right) {
 		t.Fatal("same SSO risk should prefer the earlier imported account")
+	}
+	earlySuper := account.RoutingCandidate{Credential: account.Credential{ID: 2, Provider: account.ProviderWeb, WebTier: account.WebTierSuper, Priority: 1, CreatedAt: older}}
+	lateSuper := account.RoutingCandidate{Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, WebTier: account.WebTierSuper, Priority: 100, CreatedAt: newer}}
+	superValues := []account.RoutingCandidate{lateSuper, earlySuper}
+	busyEarly := candidateScore{index: 1, inFlight: 4, preferEarlierImport: true}
+	idleLate := candidateScore{index: 0, inFlight: 0, preferEarlierImport: true}
+	if !candidateScoreBetter(superValues, idleLate, busyEarly) {
+		t.Fatal("SSO video Super accounts should spread by in-flight before earlier-import")
 	}
 }

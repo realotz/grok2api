@@ -145,7 +145,7 @@ func (session *selectionSession) Acquire(ctx context.Context, excluded map[uint6
 		session.retryAccountID = 0
 		if !session.candidateExcluded(excluded, accountID) {
 			if candidate, ok := routingCandidateByID(session.values, session.normalCandidates, accountID); ok {
-				lease, err := session.selector.claimAccountSlot(ctx, candidate.Credential)
+				lease, err := session.selector.claimAccountSlotFor(ctx, candidate.Credential, candidate.Billing)
 				if err != nil {
 					if errors.Is(err, errRoutingCredentialStale) {
 						session.markCandidateStale(accountID)
@@ -196,7 +196,7 @@ func (session *selectionSession) acquireQuotaProbe(ctx context.Context, excluded
 		if session.candidateExcluded(excluded, candidate.Credential.ID) {
 			continue
 		}
-		lease, err := session.selector.claimAccountSlot(ctx, candidate.Credential)
+		lease, err := session.selector.claimAccountSlotFor(ctx, candidate.Credential, candidate.Billing)
 		if err != nil {
 			if errors.Is(err, errRoutingCredentialStale) {
 				session.markCandidateStale(candidate.Credential.ID)
@@ -287,7 +287,7 @@ func (session *selectionSession) acquireNormal(ctx context.Context, excluded map
 			if session.candidateExcluded(excluded, candidate.Credential.ID) {
 				continue
 			}
-			lease, err := session.selector.claimAccountSlot(ctx, candidate.Credential)
+			lease, err := session.selector.claimAccountSlotFor(ctx, candidate.Credential, candidate.Billing)
 			if err != nil {
 				if errors.Is(err, errRoutingCredentialStale) {
 					session.markCandidateStale(candidate.Credential.ID)
@@ -328,7 +328,7 @@ func (session *selectionSession) completeNormalLease(ctx context.Context, lease 
 		}
 		if boundID != candidate.Credential.ID {
 			if boundCandidate, eligible := routingCandidateByID(session.values, session.normalCandidates, boundID); eligible && !session.candidateExcluded(excluded, boundID) {
-				boundLease, acquireErr := session.selector.claimAccountSlot(ctx, boundCandidate.Credential)
+				boundLease, acquireErr := session.selector.claimAccountSlotFor(ctx, boundCandidate.Credential, boundCandidate.Billing)
 				if acquireErr != nil {
 					if errors.Is(acquireErr, errRoutingCredentialStale) {
 						session.markCandidateStale(boundID)

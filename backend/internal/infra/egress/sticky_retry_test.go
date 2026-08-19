@@ -72,6 +72,45 @@ func TestFixedBuildWebAndAccountBoundProxyKeepConnectionReuse(t *testing.T) {
 	}
 }
 
+func TestStickyLeaseRetriesTLSClientProxyNon200(t *testing.T) {
+	client := &scriptedRequestClient{do: func(call int, _ *http.Request) (*http.Response, error) {
+		if call == 1 {
+			return nil, errors.New(`Post "https://grok.com/rest/app-chat/conversations/new": Proxy responded with non 200 code: 502 Bad Gateway`)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+	}}
+	lease := &Lease{client: client, sticky: true, proxyPool: true}
+	request, err := http.NewRequest(http.MethodPost, "https://example.com/generate", bytes.NewReader([]byte("payload")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := lease.Do(request)
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+	if client.calls != 2 {
+		t.Fatalf("calls=%d", client.calls)
+	}
+}
+
+func TestStickyLeaseRetriesConnectionResetBeforeWrite(t *testing.T) {
+	client := &scriptedRequestClient{do: func(call int, _ *http.Request) (*http.Response, error) {
+		if call == 1 {
+			return nil, errors.New("read tcp 172.18.0.2:45008->23.238.50.37:38005: read: connection reset by peer")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+	}}
+	lease := &Lease{client: client, sticky: true, proxyPool: true}
+	request, err := http.NewRequest(http.MethodPost, "https://example.com/generate", bytes.NewReader([]byte("payload")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := lease.Do(request)
+	if err != nil || response.StatusCode != http.StatusOK || client.calls != 2 {
+		t.Fatalf("response=%#v calls=%d err=%v", response, client.calls, err)
+	}
+}
+
 func TestStickyLeaseRetriesSafeProxyConnectFailure(t *testing.T) {
 	client := &scriptedRequestClient{do: func(call int, _ *http.Request) (*http.Response, error) {
 		if call == 1 {

@@ -166,7 +166,7 @@ func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []acco
 func (s *Selector) claimSegmentedPlan(ctx context.Context, plan *candidatePlan, provider account.Provider, quotaMode, stage string) (segmentedClaimResult, error) {
 	result := segmentedClaimResult{}
 	for candidate, ok := plan.Next(); ok; candidate, ok = plan.Next() {
-		lease, err := s.claimAccountSlot(ctx, candidate.Credential)
+		lease, err := s.claimAccountSlotFor(ctx, candidate.Credential, candidate.Billing)
 		if err != nil {
 			if errors.Is(err, errRoutingCredentialStale) {
 				result.staleClaims++
@@ -199,11 +199,15 @@ func segmentedCandidateCohorts(values []account.RoutingCandidate, indexes []int,
 		if candidate.Credential.Provider == account.ProviderWeb && len(tierOrder) > 0 && webTierInOrder(tierOrder, candidate.Credential.WebTier) {
 			supportsModel, capabilityKnown = true, true
 		}
+		priority := candidate.Credential.Priority
+		if routingCandidateIsSuper(candidate) {
+			priority = 0
+		}
 		cohort := segmentedSelectorCohort{
 			supportsModel: supportsModel, capabilityKnown: capabilityKnown,
 			ssoRisk:         ssoRiskRank(candidate.Credential),
 			preferFreeBuild: preferFreeBuild && candidate.IsKnownFreeBuild(),
-			tier:            tierOrderRank(tierOrder, candidate.Credential.WebTier), priority: candidate.Credential.Priority,
+			tier:            tierOrderRank(tierOrder, candidate.Credential.WebTier), priority: priority,
 		}
 		if candidate.QuotaWindow != nil && candidate.QuotaWindow.Source == account.QuotaSourceUpstream {
 			cohort.quotaKnown = true

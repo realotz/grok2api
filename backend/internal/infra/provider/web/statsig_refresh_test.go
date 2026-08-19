@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -168,6 +169,28 @@ func TestComputeStatsigHEXForSeedStable(t *testing.T) {
 	second, err := computeStatsigHEXForSeed(seed)
 	if err != nil || second != first {
 		t.Fatalf("unstable hex %q vs %q err=%v", first, second, err)
+	}
+}
+
+func TestRefreshStatsigPairDoesNotOverwriteFrozenPair(t *testing.T) {
+	t.Cleanup(resetStatsigRefreshState)
+	seed, hex, err := currentStatsigPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &Adapter{cfg: Config{BaseURL: "https://grok.com"}}
+	if err := adapter.refreshStatsigPair(context.Background(), "token", nil); err != nil {
+		t.Fatal(err)
+	}
+	againSeed, againHEX, err := currentStatsigPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(againSeed) != string(seed) || againHEX != hex {
+		t.Fatalf("frozen pair was overwritten")
+	}
+	if statsigPairNeedsRefresh() {
+		t.Fatal("refresh should clear the stale flag without replacing the pair")
 	}
 }
 

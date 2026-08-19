@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	statsigPairFileName      = "statsig-pair.json"
-	statsigRefreshMinGap     = 5 * time.Minute
-	statsigScriptBodyLimit   = 2 << 20
+	statsigPairFileName     = "statsig-pair.json"
+	statsigRefreshMinGap    = 5 * time.Minute
+	statsigScriptBodyLimit  = 2 << 20
 	statsigMaxScriptFetches = 64
 )
 
@@ -38,9 +38,8 @@ type persistedStatsigPair struct {
 }
 
 func init() {
-	if pair, err := loadPersistedStatsigPair(); err == nil {
-		_ = setStatsigPair(pair.seed, pair.hex)
-	}
+	// 不加载 data/statsig-pair.json。运行时现算 HEX 曾把已验证的冻住 pair
+	// 覆盖成 grok.com 不认的签名，线上表现为 403 code 7。
 }
 
 func markStatsigPairStale() {
@@ -69,63 +68,13 @@ func statsigPairNeedsRefreshLocked() bool {
 	return statsigLastRefresh.IsZero() || time.Since(statsigLastRefresh) >= statsigRefreshMinGap
 }
 
-// refreshStatsigPair 只热更新 seed 和页面 curves，不抓 1645e3。公式改了要改 statsig_hex.go。
+// refreshStatsigPair 不再用首页 seed/curves 现算 HEX。grok 只校验 pair 自洽，
+// 冻住的浏览器抓包 pair 加新鲜时间戳即可；现算会把可用签名覆盖成 403 code 7。
 func (a *Adapter) refreshStatsigPair(ctx context.Context, token string, lease *infraegress.Lease) error {
-	if lease == nil || strings.TrimSpace(token) == "" {
-		return fmt.Errorf("Statsig 刷新缺少出口租约")
-	}
 	statsigRefreshMu.Lock()
 	defer statsigRefreshMu.Unlock()
-	if !statsigPairNeedsRefreshLocked() {
-		return nil
-	}
-	cfg := a.config()
-	html, err := fetchStatsigPage(ctx, cfg.BaseURL, token, lease, lease.Do)
-	if err != nil {
-		return err
-	}
-	seedContent, err := extractStatsigMetaContent(html)
-	if err != nil {
-		return err
-	}
-	seed, err := decodeStatsigSeed(seedContent)
-	if err != nil || len(seed) != 48 {
-		return fmt.Errorf("Statsig seed 无效")
-	}
-	paths := collectStatsigSVGPaths(string(html), func(scriptURL string) (string, bool) {
-		body, err := fetchStatsigScript(ctx, scriptURL, token, lease)
-		if err != nil {
-			return "", false
-		}
-		return string(body), true
-	})
-	if len(paths) < 4 {
-		statsigLastRefresh = time.Now()
-		statsigRefreshForce = false
-		a.log().Warn("web_statsig_pair_refresh_skipped_stale_svg", "extracted", len(paths))
-		return nil
-	}
-	var four [4]string
-	copy(four[:], paths[:4])
-	hex, err := computeStatsigHEXForSeedWithPaths(seed, four)
-	if err != nil || hex == "" {
-		if err == nil {
-			err = fmt.Errorf("Statsig HEX 为空")
-		}
-		return err
-	}
-	if updated := replaceStatsigSVGPaths(paths[:4]); updated > 0 {
-		a.log().Info("web_statsig_svg_paths_refreshed", "count", updated)
-	}
-	if err := setStatsigPair(seed, hex); err != nil {
-		return err
-	}
-	if err := persistStatsigPair(seedContent, hex); err != nil {
-		a.log().Warn("web_statsig_pair_persist_failed", "error", err)
-	}
-	statsigLastRefresh = time.Now()
 	statsigRefreshForce = false
-	a.log().Info("web_statsig_pair_refreshed", "hex_len", len(hex))
+	statsigLastRefresh = time.Now()
 	return nil
 }
 
@@ -285,8 +234,6 @@ func statsigCurveGroupToPath(group []statsigCurveSeg) string {
 	}
 	return b.String()
 }
-
-
 
 func extractStatsigSVGPaths(source string) []string {
 	matches := statsigSVGPathPattern.FindAllString(source, 8)

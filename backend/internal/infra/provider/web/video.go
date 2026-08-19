@@ -298,7 +298,7 @@ func (a *Adapter) generateLegacyVideo(ctx context.Context, request provider.Vide
 	if err != nil {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
 	}
-	return a.finishVideoResponse(response, request.Progress)
+	return a.finishVideoResponse(ctx, cfg, lease, token, response, request.Progress)
 }
 
 // generateVideoV15 使用 Imagine Web 的 mediaGenInput 三分支协议。
@@ -385,7 +385,7 @@ func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRe
 	if err != nil {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
 	}
-	return a.finishVideoResponse(response, request.Progress)
+	return a.finishVideoResponse(ctx, cfg, lease, token, response, request.Progress)
 }
 
 // extendVideoV15 uploads the source video into the selected account before starting a new extension conversation.
@@ -428,7 +428,7 @@ func (a *Adapter) extendVideoV15(ctx context.Context, cfg Config, lease *egress.
 	if err != nil {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
 	}
-	return a.finishVideoResponse(response, request.Progress)
+	return a.finishVideoResponse(ctx, cfg, lease, token, response, request.Progress)
 }
 
 func (a *Adapter) loadVideoExtensionInput(ctx context.Context, lease *egress.Lease, value string, maxBytes int64) (provider.ImageInput, error) {
@@ -443,31 +443,16 @@ func (a *Adapter) loadVideoExtensionInput(ctx context.Context, lease *egress.Lea
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	download, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.fetchURL.String(), nil)
-	if err != nil {
-		return provider.ImageInput{}, err
-	}
-	download.Host = target.hostHeader
-	download.Header = remoteFileHeaders(lease.UserAgent)
-	download.Header.Set("Accept", "video/mp4,application/octet-stream;q=0.8,*/*;q=0.1")
-	response, err := lease.DoPinnedHTTPS(download, target.serverName)
+	headers := remoteFileHeaders(lease.UserAgent)
+	headers.Set("Accept", "video/mp4,application/octet-stream;q=0.8,*/*;q=0.1")
+	raw, contentType, err := fetchPinnedHTTPS(ctx, lease, target, headers, maxBytes)
 	if err != nil {
 		return provider.ImageInput{}, fmt.Errorf("下载待延长视频: %w", err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return provider.ImageInput{}, fmt.Errorf("下载待延长视频返回 %d", response.StatusCode)
-	}
-	if response.ContentLength > maxBytes {
-		return provider.ImageInput{}, fmt.Errorf("待延长视频超过 %d MiB", maxBytes>>20)
-	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
-	if err != nil || len(raw) == 0 || int64(len(raw)) > maxBytes {
+	if len(raw) == 0 {
 		return provider.ImageInput{}, fmt.Errorf("待延长视频下载失败或超过 %d MiB", maxBytes>>20)
 	}
-	if err := validateMP4Video(raw, response.Header.Get("Content-Type")); err != nil {
+	if err := validateMP4Video(raw, contentType); err != nil {
 		return provider.ImageInput{}, err
 	}
 	filename := path.Base(target.originalURL.Path)
@@ -511,12 +496,17 @@ func validateMP4Video(data []byte, declared string) error {
 	return nil
 }
 
-func (a *Adapter) finishVideoResponse(response *http.Response, progress func(int)) (provider.VideoResult, error) {
-	result, _, parseErr := parseVideoStream(response, progress)
+func (a *Adapter) finishVideoResponse(ctx context.Context, cfg Config, lease *egress.Lease, token string, response *http.Response, progress func(int)) (provider.VideoResult, error) {
+	result, postID, parseErr := parseVideoStream(response, progress)
 	_ = response.Body.Close()
 	if parseErr != nil {
 		if upstreamErr, ok := parseErr.(*webMediaUpstreamError); ok {
 			a.logWebMediaUpstreamRejection("video_generation", response, upstreamErr)
+		}
+		if result.URL == "" && mediaPostIDPattern.MatchString(postID) {
+			if recovered, recErr := a.pollMediaPostVideo(ctx, cfg, lease, token, postID, progress); recErr == nil && recovered.URL != "" {
+				return recovered, nil
+			}
 		}
 		stage := provider.VideoStagePoll
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
@@ -524,10 +514,102 @@ func (a *Adapter) finishVideoResponse(response *http.Response, progress func(int
 		}
 		return provider.VideoResult{}, provider.WrapVideoStage(stage, 0, parseErr)
 	}
+	if result.URL == "" && mediaPostIDPattern.MatchString(postID) {
+		if recovered, recErr := a.pollMediaPostVideo(ctx, cfg, lease, token, postID, progress); recErr == nil && recovered.URL != "" {
+			return recovered, nil
+		} else if recErr != nil {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePoll, 0, recErr)
+		}
+	}
 	if result.URL == "" {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePoll, 0, fmt.Errorf("视频生成完成但没有返回内容 URL"))
 	}
 	return result, nil
+}
+
+var mediaPostIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func (a *Adapter) pollMediaPostVideo(ctx context.Context, cfg Config, lease *egress.Lease, token, postID string, progress func(int)) (provider.VideoResult, error) {
+	deadline := time.Now().Add(90 * time.Second)
+	if timeout := time.Duration(cfg.VideoTimeoutSeconds) * time.Second; timeout > 0 && timeout < 90*time.Second {
+		deadline = time.Now().Add(timeout)
+	}
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		if ctx.Err() != nil {
+			return provider.VideoResult{}, ctx.Err()
+		}
+		result, ready, err := a.fetchMediaPostVideo(ctx, cfg, lease, token, postID)
+		if err == nil && ready {
+			if progress != nil {
+				progress(100)
+			}
+			return result, nil
+		}
+		if err != nil {
+			lastErr = err
+			if status, ok := provider.ErrorHTTPStatus(err); ok && status > 0 && status < 500 && status != http.StatusNotFound {
+				return provider.VideoResult{}, err
+			}
+		}
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return provider.VideoResult{}, lastErr
+			}
+			return provider.VideoResult{}, fmt.Errorf("轮询媒体 Post %s 超时仍未返回视频 URL", postID)
+		}
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return provider.VideoResult{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (a *Adapter) fetchMediaPostVideo(ctx context.Context, cfg Config, lease *egress.Lease, token, postID string) (provider.VideoResult, bool, error) {
+	payload := map[string]any{"id": postID}
+	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/media/post/get", payload, 20*time.Second, cfg.BaseURL+"/imagine/post/"+postID)
+	if err != nil {
+		return provider.VideoResult{}, false, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
+	if err != nil {
+		return provider.VideoResult{}, false, fmt.Errorf("读取媒体 Post: %w", err)
+	}
+	if response.StatusCode == http.StatusNotFound {
+		return provider.VideoResult{}, false, nil
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return provider.VideoResult{}, false, newWebMediaUpstreamError(response.StatusCode, body, false)
+	}
+	var value struct {
+		Post struct {
+			MediaURL       string `json:"mediaUrl"`
+			HDMediaURL     string `json:"hdMediaUrl"`
+			HD1080MediaURL string `json:"hd1080MediaUrl"`
+			MIMEType       string `json:"mimeType"`
+			Moderated      bool   `json:"moderated"`
+		} `json:"post"`
+	}
+	if json.Unmarshal(body, &value) != nil {
+		return provider.VideoResult{}, false, fmt.Errorf("媒体 Post 响应无效")
+	}
+	if value.Post.Moderated {
+		return provider.VideoResult{}, false, nil
+	}
+	var result provider.VideoResult
+	for _, candidate := range []string{value.Post.HDMediaURL, value.Post.MediaURL, value.Post.HD1080MediaURL} {
+		if setVideoResultURL(&result, candidate) {
+			if value.Post.MIMEType != "" {
+				result.ContentType = value.Post.MIMEType
+			}
+			return result, true, nil
+		}
+	}
+	return provider.VideoResult{}, false, nil
 }
 
 func (a *Adapter) prepareVideoReference(ctx context.Context, cfg Config, lease *egress.Lease, token, value string) (string, error) {
@@ -600,31 +682,17 @@ func (a *Adapter) loadVideoReferenceAudio(ctx context.Context, lease *egress.Lea
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.fetchURL.String(), nil)
-	if err != nil {
-		return provider.ImageInput{}, err
-	}
-	request.Host = target.hostHeader
-	request.Header.Set("Accept", "audio/*,*/*;q=0.1")
-	request.Header.Set("User-Agent", lease.UserAgent)
-	response, err := lease.DoPinnedHTTPS(request, target.serverName)
+	headers := http.Header{}
+	headers.Set("Accept", "audio/*,*/*;q=0.1")
+	headers.Set("User-Agent", lease.UserAgent)
+	raw, contentType, err := fetchPinnedHTTPS(ctx, lease, target, headers, maxVideoReferenceAudioBytes)
 	if err != nil {
 		return provider.ImageInput{}, fmt.Errorf("下载视频参考音频: %w", err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return provider.ImageInput{}, fmt.Errorf("下载视频参考音频返回 %d", response.StatusCode)
-	}
-	if response.ContentLength > maxVideoReferenceAudioBytes {
-		return provider.ImageInput{}, fmt.Errorf("视频参考音频超过 20 MiB")
-	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxVideoReferenceAudioBytes+1))
-	if err != nil || len(raw) == 0 || len(raw) > maxVideoReferenceAudioBytes {
+	if len(raw) == 0 {
 		return provider.ImageInput{}, fmt.Errorf("视频参考音频下载失败或超过 20 MiB")
 	}
-	mimeType, err := validatedVideoReferenceAudioMIME(raw, response.Header.Get("Content-Type"), path.Ext(target.originalURL.Path))
+	mimeType, err := validatedVideoReferenceAudioMIME(raw, contentType, path.Ext(target.originalURL.Path))
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
@@ -850,7 +918,7 @@ func parseVideoStream(response *http.Response, progress func(int)) (provider.Vid
 		err = consumeVideoJSON(reader, handle)
 	}
 	if err != nil {
-		return provider.VideoResult{}, "", err
+		return result, postID, err
 	}
 	return result, postID, nil
 }

@@ -87,6 +87,9 @@ func safeProxyConnectionFailure(err error, response *http.Response) bool {
 	for _, marker := range []string{
 		"proxyconnect", "socks connect", "socks5: authentication", "tls handshake timeout",
 		"connection refused", "no route to host",
+		// tls-client CONNECT failures never set WroteRequest, so POST replay is safe.
+		"proxy responded with non 200",
+		"connection reset",
 	} {
 		if strings.Contains(value, marker) {
 			return true

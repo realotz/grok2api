@@ -2,8 +2,10 @@ package web
 
 import (
 	"context"
+	"net/http"
 	"net/netip"
 	"testing"
+	"time"
 )
 
 type rebindingImageResolver struct {
@@ -54,4 +56,35 @@ type staticImageResolver struct {
 
 func (r staticImageResolver) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
 	return append([]netip.Addr(nil), r.addresses...), nil
+}
+
+func TestRetryablePinnedDownloadStatus(t *testing.T) {
+	for _, test := range []struct {
+		status int
+		want   bool
+	}{
+		{status: http.StatusOK, want: false},
+		{status: http.StatusNotFound, want: false},
+		{status: http.StatusForbidden, want: false},
+		{status: http.StatusRequestTimeout, want: true},
+		{status: http.StatusTooManyRequests, want: true},
+		{status: http.StatusBadGateway, want: true},
+		{status: http.StatusGatewayTimeout, want: true},
+	} {
+		if got := retryablePinnedDownloadStatus(test.status); got != test.want {
+			t.Fatalf("status %d: got %v want %v", test.status, got, test.want)
+		}
+	}
+}
+
+func TestWaitPinnedDownloadRetryHonorsCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := time.Now()
+	if err := waitPinnedDownloadRetry(ctx, 0); err == nil {
+		t.Fatal("expected canceled wait")
+	}
+	if time.Since(started) > 200*time.Millisecond {
+		t.Fatal("canceled wait blocked on backoff")
+	}
 }
