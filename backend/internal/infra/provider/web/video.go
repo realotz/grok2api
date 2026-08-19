@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -503,9 +504,14 @@ func (a *Adapter) finishVideoResponse(ctx context.Context, cfg Config, lease *eg
 		if upstreamErr, ok := parseErr.(*webMediaUpstreamError); ok {
 			a.logWebMediaUpstreamRejection("video_generation", response, upstreamErr)
 		}
+		if errors.Is(parseErr, provider.ErrVideoModerated) {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePoll, 0, parseErr)
+		}
 		if result.URL == "" && mediaPostIDPattern.MatchString(postID) {
 			if recovered, recErr := a.pollMediaPostVideo(ctx, cfg, lease, token, postID, progress); recErr == nil && recovered.URL != "" {
 				return recovered, nil
+			} else if recErr != nil {
+				parseErr = recErr
 			}
 		}
 		stage := provider.VideoStagePoll
@@ -530,16 +536,28 @@ func (a *Adapter) finishVideoResponse(ctx context.Context, cfg Config, lease *eg
 var mediaPostIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func (a *Adapter) pollMediaPostVideo(ctx context.Context, cfg Config, lease *egress.Lease, token, postID string, progress func(int)) (provider.VideoResult, error) {
-	deadline := time.Now().Add(90 * time.Second)
-	if timeout := time.Duration(cfg.VideoTimeoutSeconds) * time.Second; timeout > 0 && timeout < 90*time.Second {
-		deadline = time.Now().Add(timeout)
-	}
-	var lastErr error
-	for attempt := 0; ; attempt++ {
-		if ctx.Err() != nil {
-			return provider.VideoResult{}, ctx.Err()
+	pollCtx := ctx
+	cancel := func() {}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		timeout := 90 * time.Second
+		if cfg.VideoTimeoutSeconds > 0 {
+			timeout = time.Duration(cfg.VideoTimeoutSeconds) * time.Second
 		}
-		result, ready, err := a.fetchMediaPostVideo(ctx, cfg, lease, token, postID)
+		pollCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+	var lastErr error
+	for {
+		if pollCtx.Err() != nil {
+			if lastErr != nil {
+				return provider.VideoResult{}, lastErr
+			}
+			if errors.Is(pollCtx.Err(), context.DeadlineExceeded) {
+				return provider.VideoResult{}, fmt.Errorf("轮询媒体 Post %s 超时仍未返回视频 URL", postID)
+			}
+			return provider.VideoResult{}, pollCtx.Err()
+		}
+		result, ready, err := a.fetchMediaPostVideo(pollCtx, cfg, lease, token, postID)
 		if err == nil && ready {
 			if progress != nil {
 				progress(100)
@@ -548,21 +566,24 @@ func (a *Adapter) pollMediaPostVideo(ctx context.Context, cfg Config, lease *egr
 		}
 		if err != nil {
 			lastErr = err
+			if errors.Is(err, provider.ErrVideoModerated) {
+				return provider.VideoResult{}, err
+			}
 			if status, ok := provider.ErrorHTTPStatus(err); ok && status > 0 && status < 500 && status != http.StatusNotFound {
 				return provider.VideoResult{}, err
 			}
 		}
-		if time.Now().After(deadline) {
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-pollCtx.Done():
+			timer.Stop()
 			if lastErr != nil {
 				return provider.VideoResult{}, lastErr
 			}
-			return provider.VideoResult{}, fmt.Errorf("轮询媒体 Post %s 超时仍未返回视频 URL", postID)
-		}
-		timer := time.NewTimer(2 * time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return provider.VideoResult{}, ctx.Err()
+			if errors.Is(pollCtx.Err(), context.DeadlineExceeded) {
+				return provider.VideoResult{}, fmt.Errorf("轮询媒体 Post %s 超时仍未返回视频 URL", postID)
+			}
+			return provider.VideoResult{}, pollCtx.Err()
 		case <-timer.C:
 		}
 	}
@@ -598,7 +619,7 @@ func (a *Adapter) fetchMediaPostVideo(ctx context.Context, cfg Config, lease *eg
 		return provider.VideoResult{}, false, fmt.Errorf("媒体 Post 响应无效")
 	}
 	if value.Post.Moderated {
-		return provider.VideoResult{}, false, nil
+		return provider.VideoResult{}, false, provider.ErrVideoModerated
 	}
 	var result provider.VideoResult
 	for _, candidate := range []string{value.Post.HDMediaURL, value.Post.MediaURL, value.Post.HD1080MediaURL} {
@@ -894,7 +915,7 @@ func parseVideoStream(response *http.Response, progress func(int)) (provider.Vid
 			}
 			moderated, _ := stream["moderated"].(bool)
 			if moderated {
-				return false, nil
+				return false, provider.ErrVideoModerated
 			}
 			if setVideoResultURL(&result, firstString(stream, "videoUrl", "contentUrl", "contentURL", "assetUrl", "assetURL", "fileUri", "fileURL")) {
 				return true, nil

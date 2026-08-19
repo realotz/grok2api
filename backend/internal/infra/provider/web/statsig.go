@@ -458,11 +458,6 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 	if a.statsig != nil && a.statsig.now != nil {
 		nowUnix = a.statsig.now().Unix()
 	}
-	if lease != nil && strings.TrimSpace(token) != "" && statsigPairNeedsRefresh() {
-		if err := a.refreshStatsigPair(ctx, token, lease); err != nil {
-			a.log().Warn("web_statsig_pair_refresh_failed", "method", request.Method, "path", request.URL.EscapedPath(), "error", err)
-		}
-	}
 	if value, err := generateLocalStatsig(request.Method, request.URL.EscapedPath(), nowUnix); err == nil {
 		request.Header.Set("x-statsig-id", value)
 		return

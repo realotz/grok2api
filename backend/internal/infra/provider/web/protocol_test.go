@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	fhttptest "github.com/bogdanfinn/fhttp/httptest"
@@ -1900,6 +1901,104 @@ func TestGenerateVideoRecoversFromStreamEOFViaMediaPostGet(t *testing.T) {
 	}
 	if result.URL != "https://imagine-public.x.ai/imagine-public/share-videos/"+postID+"_hd.mp4" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestGenerateVideoFailsFastWhenRecoveredPostIsModerated(t *testing.T) {
+	const postID = "8efff9ef-8aa4-4a6e-ab73-aa2b5c7bccb5"
+	gets := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/rest/app-chat/conversations/new":
+			_, _ = io.WriteString(writer, `{"result":{"response":{"streamingVideoGenerationResponse":{"progress":40,"videoPostId":"`+postID+`"}}}}`+"\n{")
+		case "/rest/media/post/get":
+			gets++
+			_, _ = io.WriteString(writer, `{"post":{"id":"`+postID+`","moderated":true}}`)
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedToken, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test", VideoTimeoutSeconds: 15}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	started := time.Now()
+	_, err = adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, WebTier: account.WebTierSuper, EncryptedAccessToken: encryptedToken},
+		Prompt:     "test",
+		Duration:   6,
+		Model:      "grok-imagine-video-1.5",
+	})
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("moderated recovery waited %s", elapsed)
+	}
+	if !errors.Is(err, provider.ErrVideoModerated) {
+		t.Fatalf("err = %v, want ErrVideoModerated", err)
+	}
+	if gets != 1 {
+		t.Fatalf("media post get calls = %d, want 1", gets)
+	}
+}
+
+func TestParseVideoStreamFailsWhenModerated(t *testing.T) {
+	response := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"result":{"response":{"streamingVideoGenerationResponse":{"progress":80,"videoPostId":"post_1","moderated":true}}}}`))}
+	_, postID, err := parseVideoStream(response, nil)
+	if !errors.Is(err, provider.ErrVideoModerated) {
+		t.Fatalf("err = %v, want ErrVideoModerated", err)
+	}
+	if postID != "post_1" {
+		t.Fatalf("post = %q", postID)
+	}
+}
+
+func TestPollMediaPostVideoHonorsContextDeadline(t *testing.T) {
+	const postID = "8efff9ef-8aa4-4a6e-ab73-aa2b5c7bccb5"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.URL.Path != "/rest/media/post/get" {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(writer, `{"post":{"id":"`+postID+`"}}`)
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedToken, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test", VideoTimeoutSeconds: 900}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	token, err := cipher.Decrypt(encryptedToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := adapter.egress.AcquireCredential(context.Background(), egressdomain.ScopeWeb, account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encryptedToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err = adapter.pollMediaPostVideo(ctx, adapter.config(), lease, token, postID, nil)
+	elapsed := time.Since(started)
+	if elapsed > 2*time.Second {
+		t.Fatalf("poll waited %s, want job-context deadline", elapsed)
+	}
+	if err == nil {
+		t.Fatal("expected poll timeout")
 	}
 }
 

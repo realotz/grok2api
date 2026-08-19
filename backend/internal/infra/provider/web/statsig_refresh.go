@@ -4,10 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,9 +13,7 @@ import (
 )
 
 const (
-	statsigPairFileName     = "statsig-pair.json"
 	statsigRefreshMinGap    = 5 * time.Minute
-	statsigScriptBodyLimit  = 2 << 20
 	statsigMaxScriptFetches = 64
 )
 
@@ -30,17 +24,6 @@ var (
 	statsigLastRefresh      time.Time
 	statsigRefreshForce     bool
 )
-
-type persistedStatsigPair struct {
-	Seed      string    `json:"seed"`
-	HEX       string    `json:"hex"`
-	UpdatedAt time.Time `json:"updatedAt"`
-}
-
-func init() {
-	// 不加载 data/statsig-pair.json。运行时现算 HEX 曾把已验证的冻住 pair
-	// 覆盖成 grok.com 不认的签名，线上表现为 403 code 7。
-}
 
 func markStatsigPairStale() {
 	statsigRefreshMu.Lock()
@@ -76,27 +59,6 @@ func (a *Adapter) refreshStatsigPair(ctx context.Context, token string, lease *i
 	statsigRefreshForce = false
 	statsigLastRefresh = time.Now()
 	return nil
-}
-
-func fetchStatsigPage(ctx context.Context, baseURL, token string, lease *infraegress.Lease, do func(*http.Request) (*http.Response, error)) ([]byte, error) {
-	root, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/", do)
-	if err != nil {
-		return nil, err
-	}
-	if root.statusCode >= 200 && root.statusCode < 300 {
-		return root.body, nil
-	}
-	if root.statusCode != http.StatusNotFound {
-		return nil, statsigMetaStatusError("/", root.statusCode)
-	}
-	index, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/index", do)
-	if err != nil {
-		return nil, err
-	}
-	if index.statusCode < 200 || index.statusCode >= 300 {
-		return nil, statsigMetaStatusError("/index", index.statusCode)
-	}
-	return index.body, nil
 }
 
 func collectStatsigSVGPaths(html string, fetchBody func(string) (string, bool)) []string {
@@ -245,74 +207,4 @@ func extractStatsigSVGPaths(source string) []string {
 		out = append(out, match)
 	}
 	return out
-}
-
-func fetchStatsigScript(ctx context.Context, scriptURL, token string, lease *infraegress.Lease) ([]byte, error) {
-	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, scriptURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Accept", "*/*")
-	request.Header.Set("Referer", "https://grok.com/")
-	if lease != nil {
-		request.Header.Set("User-Agent", lease.UserAgent)
-		request.Header.Set("Cookie", infraegress.BuildSSOCookie(token, lease.CFCookies))
-	}
-	response, err := lease.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("Statsig 脚本返回 %d", response.StatusCode)
-	}
-	return io.ReadAll(io.LimitReader(response.Body, statsigScriptBodyLimit))
-}
-
-func persistStatsigPair(seedB64, hex string) error {
-	payload, err := json.Marshal(persistedStatsigPair{Seed: seedB64, HEX: hex, UpdatedAt: time.Now().UTC()})
-	if err != nil {
-		return err
-	}
-	path := statsigPairFilePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func loadPersistedStatsigPair() (struct {
-	seed []byte
-	hex  string
-}, error) {
-	var empty struct {
-		seed []byte
-		hex  string
-	}
-	raw, err := os.ReadFile(statsigPairFilePath())
-	if err != nil {
-		return empty, err
-	}
-	var value persistedStatsigPair
-	if json.Unmarshal(raw, &value) != nil {
-		return empty, fmt.Errorf("Statsig 缓存无效")
-	}
-	seed, err := decodeStatsigSeed(value.Seed)
-	if err != nil || len(seed) != 48 || strings.TrimSpace(value.HEX) == "" {
-		return empty, fmt.Errorf("Statsig 缓存种子无效")
-	}
-	return struct {
-		seed []byte
-		hex  string
-	}{seed: seed, hex: value.HEX}, nil
-}
-
-func statsigPairFilePath() string {
-	return filepath.Join("data", statsigPairFileName)
 }

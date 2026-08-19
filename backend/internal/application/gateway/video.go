@@ -256,6 +256,28 @@ func preferVideo15Routes(routes []model.Route, duration int) []model.Route {
 	return preferProviderVideo15Routes(routes, preferred)
 }
 
+func videoAccountShouldSpread(credential account.Credential, billing *account.Billing) bool {
+	if credential.Provider == account.ProviderWeb {
+		return credential.WebTier == account.WebTierSuper || credential.WebTier == account.WebTierHeavy
+	}
+	return account.IsBuildSuper(credential, billing)
+}
+
+func (s *Service) videoAccountShouldSpread(ctx context.Context, accountID uint64) bool {
+	if s.selector == nil || s.selector.accounts == nil || accountID == 0 {
+		return false
+	}
+	credential, err := s.selector.accounts.Get(ctx, accountID)
+	if err != nil {
+		return false
+	}
+	var billing *account.Billing
+	if snapshot, billErr := s.selector.accounts.GetBilling(ctx, accountID); billErr == nil {
+		billing = &snapshot
+	}
+	return videoAccountShouldSpread(credential, billing)
+}
+
 func preferProviderVideo15Routes(routes []model.Route, preferred account.Provider) []model.Route {
 	first := make([]model.Route, 0, len(routes))
 	rest := make([]model.Route, 0, len(routes))
@@ -732,8 +754,11 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			lease.Release()
 			lease = nil
 		}
-		// First try stays on the account chosen when the local job was created.
+		// First try stays on the account chosen when the local job was created,
+		// except Super/Heavy: re-select by current in-flight so a busy create-time
+		// account does not wait while an idle peer sits unused.
 		// Create-stage failures may switch accounts; poll failures never reach here as retries.
+		egressRetryPin := retryPinnedAccountID
 		pinnedAccountID := retryPinnedAccountID
 		retryPinnedAccountID = 0
 		if attempt == 0 {
@@ -743,7 +768,10 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			pinnedAccountID = job.AccountID
 		}
 		if pinnedAccountID > 0 && !excluded[pinnedAccountID] {
-			if pinnedOnly {
+			pinToAccount := pinnedOnly || egressRetryPin != 0
+			if !pinToAccount && s.videoAccountShouldSpread(ctx, pinnedAccountID) {
+				pinnedAccountID = 0
+			} else if pinnedOnly {
 				lease, err = s.selector.AcquirePinnedIgnoringSSORisk(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true)
 			} else {
 				lease, err = s.selector.AcquirePinned(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true)

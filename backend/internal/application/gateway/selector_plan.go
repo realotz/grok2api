@@ -90,7 +90,7 @@ func candidateScoreBetter(values []account.RoutingCandidate, leftScore, rightSco
 	if leftScore.ssoRisk != rightScore.ssoRisk {
 		return leftScore.ssoRisk < rightScore.ssoRisk
 	}
-	// Super 账号按在途请求和最近选用分摊，避免高优先级或更早导入的号把流量打满。
+	// Super/Heavy 账号按在途请求和最近选用分摊，避免高优先级或更早导入的号把流量打满。
 	if routingCandidateIsSuper(leftCandidate) && routingCandidateIsSuper(rightCandidate) {
 		if leftScore.inFlight != rightScore.inFlight {
 			return leftScore.inFlight < rightScore.inFlight
@@ -127,8 +127,11 @@ func candidateScoreBetter(values []account.RoutingCandidate, leftScore, rightSco
 }
 
 func routingCandidateIsSuper(candidate account.RoutingCandidate) bool {
-	if candidate.Credential.Provider == account.ProviderWeb && candidate.Credential.WebTier == account.WebTierSuper {
-		return true
+	if candidate.Credential.Provider == account.ProviderWeb {
+		switch candidate.Credential.WebTier {
+		case account.WebTierSuper, account.WebTierHeavy:
+			return true
+		}
 	}
 	return account.IsBuildSuper(candidate.Credential, candidate.Billing)
 }

@@ -565,6 +565,9 @@ const VideoRiskReadyWithin = 10 * time.Second
 // ErrVideoRiskScenery is returned when a remote video becomes available too quickly.
 var ErrVideoRiskScenery = errors.New("视频过快完成，判定为风控风景片")
 
+// ErrVideoModerated is returned when grok.com marks the generated video as moderated.
+var ErrVideoModerated = errors.New("视频已被审核拦截")
+
 // IsFastRemoteVideoRisk reports whether a remote video URL became available
 // inside VideoRiskReadyWithin. Local AssetID results are not scenery probes:
 // those bytes were already received through the upload path.
