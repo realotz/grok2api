@@ -501,7 +501,7 @@ func (s *Service) ProbeAccountVideo(ctx context.Context, accountID uint64, publi
 		Prompt:          prompt,
 		Duration:        6,
 		AspectRatio:     "16:9",
-		Resolution:      "480p",
+		Resolution:      "720p",
 		PinnedAccountID: accountID,
 	})
 	if err != nil {
