@@ -560,16 +560,24 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 		{name: "responses reasoning none", body: `{"reasoning":{"effort":"none"}}`},
 		{name: "messages thinking disabled", body: `{"thinking":{"type":"disabled"}}`},
 		{name: "messages zero thinking budget", body: `{"thinking":{"type":"enabled","budget_tokens":0}}`},
-		{name: "client tools", body: `{"tools":[{"type":"function","function":{"name":"charge"}}]}`},
-		{name: "legacy functions", body: `{"functions":[{"name":"charge"}]}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := input
 			request.Body = []byte(test.body)
 			if shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
-				t.Fatal("explicitly disabled reasoning and tool requests must not be held")
+				t.Fatal("explicitly disabled reasoning requests must not be held")
 			}
 		})
+	}
+	for _, body := range []string{
+		`{"tools":[{"type":"function","function":{"name":"charge"}}]}`,
+		`{"functions":[{"name":"charge"}]}`,
+	} {
+		request := input
+		request.Body = []byte(body)
+		if !shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
+			t.Fatal("tool-capable thinking requests must be held before delivery")
+		}
 	}
 	toolCache := input
 	toolCache.Body = []byte(`{"messages":[{"role":"user","content":"hello"}]}`)

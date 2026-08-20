@@ -270,12 +270,6 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
-	// Retrying a tool-capable request can repeat external side effects. Tool
-	// requests remain outside this feature until they have their own replay
-	// safety contract.
-	if qualityRequestUsesTools(input.Body) {
-		return false
-	}
 	// Aliases are rewritten before this gate, so inspect the effective request
 	// body instead of only the reasoning-capable base model. In particular,
 	// grok-4.3-none becomes grok-4.3 plus an explicit disabled setting.
@@ -286,14 +280,6 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 		return true
 	}
 	return modeldomain.SupportsReasoningForProvider(route.Provider, route.UpstreamModel)
-}
-
-func qualityRequestUsesTools(body []byte) bool {
-	var payload map[string]json.RawMessage
-	if json.Unmarshal(body, &payload) != nil {
-		return false
-	}
-	return nonEmptyJSONCollection(payload["tools"]) || nonEmptyJSONCollection(payload["functions"])
 }
 
 func qualityRequestDisablesReasoning(body []byte) bool {
@@ -318,14 +304,6 @@ func qualityRequestDisablesReasoning(body []byte) bool {
 		}
 	}
 	return jsonStringEquals(payload["thinking"], "disabled")
-}
-
-func nonEmptyJSONCollection(raw json.RawMessage) bool {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed == "null" || trimmed == "[]" || trimmed == "{}" {
-		return false
-	}
-	return strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")
 }
 
 func jsonStringEquals(raw json.RawMessage, want string) bool {
