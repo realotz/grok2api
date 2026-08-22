@@ -63,7 +63,8 @@ type SwaggerImageEditRequest struct {
 }
 
 // SwaggerVideoGenerationRequest 表示视频生成请求。
-// image 与 reference_images 互斥；参考模式 resolution 最高 720p。reference_audios 暂不支持。
+// image 与 reference_images 互斥；参考模式 resolution 最高 720p。
+// reference_audios：voice_id 与 Build 一致（如 eve）；Web 还会接受 url 或 data。prompt 使用官方 <IMAGE_n>/<AUDIO_n> 标签（不区分大小写）。
 type SwaggerVideoGenerationRequest struct {
 	Model                   string                   `json:"model" example:"grok-imagine-video-1.5"`
 	Prompt                  string                   `json:"prompt" example:"A cinematic tracking shot in the rain"`
@@ -83,11 +84,12 @@ type SwaggerVideoMediaInput struct {
 	FileID string `json:"file_id,omitempty" example:"file_123"`
 }
 
-// SwaggerVideoAudioInput 表示暂不支持的参考音频输入格式。
+// SwaggerVideoAudioInput 表示参考音频输入。voice_id 与 Build 一致；Web 还可提供 HTTPS url 或 Base64 data。
 type SwaggerVideoAudioInput struct {
-	URL    string `json:"url,omitempty" example:"https://example.com/reference.mp3"`
-	Data   string `json:"data,omitempty" example:"SUQzBAAAAAAA..."`
-	Format string `json:"format,omitempty" example:"mp3"`
+	URL     string `json:"url,omitempty" example:"https://example.com/reference.mp3"`
+	Data    string `json:"data,omitempty" example:"SUQzBAAAAAAA..."`
+	Format  string `json:"format,omitempty" example:"mp3"`
+	VoiceID string `json:"voice_id,omitempty" example:"eve"`
 }
 
 // swaggerHealth godoc

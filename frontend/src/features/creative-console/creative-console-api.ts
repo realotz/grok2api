@@ -156,6 +156,17 @@ export async function editImage(input: {
   return images.map((image) => ({ ...image, url: resolveMediaURL(image.url) }));
 }
 
+export function encodeReferenceAudio(input: string | { url?: string; data?: string; format?: string; voice_id?: string }) {
+  if (typeof input !== "string") {
+    return input;
+  }
+  const value = input.trim();
+  if (/^https:\/\//i.test(value) || value.toLowerCase().startsWith("data:audio/")) {
+    return { url: value };
+  }
+  return { voice_id: value };
+}
+
 export async function createVideo(input: {
   apiKey: string;
   model: string;
@@ -163,7 +174,7 @@ export async function createVideo(input: {
   imageURL?: string;
   imageFileID?: string;
   referenceImages?: Array<{ url?: string; fileId?: string }>;
-  referenceAudios?: Array<{ url?: string; data?: string; format?: string }>;
+  referenceAudios?: Array<{ url?: string; data?: string; format?: string; voice_id?: string }>;
   duration: number;
   aspectRatio: string;
   resolution: string;
@@ -185,7 +196,7 @@ export async function createVideo(input: {
     });
   }
   if (input.referenceAudios && input.referenceAudios.length > 0) {
-    body.reference_audios = input.referenceAudios;
+    body.reference_audios = input.referenceAudios.map(encodeReferenceAudio);
   }
   const payload = await publicApiRequest(
     input.apiKey,

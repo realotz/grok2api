@@ -1870,8 +1870,11 @@ func TestConsoleVideoPostsReferenceAudios(t *testing.T) {
 			audios, ok := payload["reference_audios"].([]any)
 			if !ok || len(audios) != 1 {
 				t.Errorf("reference_audios = %#v", payload["reference_audios"])
-			} else if first, _ := audios[0].(map[string]any); first["voice_id"] != "eve" {
+			} else if first, _ := audios[0].(map[string]any); first["voice_id"] != "eve" || first["url"] != nil {
 				t.Errorf("reference_audios = %#v", audios)
+			}
+			if prompt, _ := payload["prompt"].(string); prompt != "speak" {
+				t.Errorf("prompt = %#v", payload["prompt"])
 			}
 			_, _ = writer.Write([]byte(`{"request_id":"upstream-video-ref-audio"}`))
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/videos/upstream-video-ref-audio":
@@ -1892,6 +1895,49 @@ func TestConsoleVideoPostsReferenceAudios(t *testing.T) {
 	}
 	if result.URL != "https://vidgen.x.ai/result-ref-audio.mp4" {
 		t.Fatalf("video result = %#v", result)
+	}
+}
+
+func TestConsoleTTSPostsChineseVoice(t *testing.T) {
+	const text = "你好，欢迎来到你的声音世界"
+	audio := []byte("ID3fake-mp3-body")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		verifyTestDPoPProof(t, request)
+		if request.Method != http.MethodPost || request.URL.Path != "/v1/tts" {
+			http.NotFound(writer, request)
+			return
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Error(err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if payload["text"] != text || payload["language"] != "zh" || payload["voice_id"] != "eve" {
+			t.Errorf("tts payload = %#v", payload)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = writer.Write(audio)
+	}))
+	t.Cleanup(server.Close)
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	result, err := adapter.SynthesizeSpeech(context.Background(), provider.TTSRequest{
+		Credential:   credential,
+		Text:         text,
+		VoiceID:      "eve",
+		Language:     "zh",
+		OutputFormat: provider.TTSOutputFormat{Codec: "mp3"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ContentType != "audio/mpeg" || !bytes.Equal(result.Audio, audio) {
+		t.Fatalf("tts result = %#v", result)
 	}
 }
 

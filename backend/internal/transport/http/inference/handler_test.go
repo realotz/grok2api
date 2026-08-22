@@ -1562,15 +1562,48 @@ func TestReferenceToVideoRequestValidation(t *testing.T) {
 		t.Fatalf("r2v 1080p status=%d body=%s", highResRec.Code, highResRec.Body.String())
 	}
 
-	disabledAudio := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+	missingAudio := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","prompt":"x","duration":8,"resolution":"720p",
+		"reference_audios":[{}]
+	}`))
+	missingAudio.Header.Set("Content-Type", "application/json")
+	missingAudioRec := httptest.NewRecorder()
+	router.ServeHTTP(missingAudioRec, missingAudio)
+	if missingAudioRec.Code != http.StatusBadRequest || !strings.Contains(missingAudioRec.Body.String(), "voice_id、url 或 data") {
+		t.Fatalf("missing audio url status=%d body=%s", missingAudioRec.Code, missingAudioRec.Body.String())
+	}
+
+	audioURL := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
 		"model":"grok-imagine-video","prompt":"x","duration":8,"resolution":"720p",
 		"reference_audios":[{"url":"https://example.com/reference.mp3"}]
 	}`))
-	disabledAudio.Header.Set("Content-Type", "application/json")
-	disabledAudioRec := httptest.NewRecorder()
-	router.ServeHTTP(disabledAudioRec, disabledAudio)
-	if disabledAudioRec.Code != http.StatusBadRequest || !strings.Contains(disabledAudioRec.Body.String(), "暂不支持") {
-		t.Fatalf("reference audio status=%d body=%s", disabledAudioRec.Code, disabledAudioRec.Body.String())
+	audioURL.Header.Set("Content-Type", "application/json")
+	audioURLRec := httptest.NewRecorder()
+	router.ServeHTTP(audioURLRec, audioURL)
+	if audioURLRec.Code != http.StatusUnauthorized || strings.Contains(audioURLRec.Body.String(), "暂不支持") {
+		t.Fatalf("reference audio url status=%d body=%s", audioURLRec.Code, audioURLRec.Body.String())
+	}
+
+	voiceID := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","prompt":"x","duration":8,"resolution":"720p",
+		"reference_audios":[{"voice_id":"eve"}]
+	}`))
+	voiceID.Header.Set("Content-Type", "application/json")
+	voiceIDRec := httptest.NewRecorder()
+	router.ServeHTTP(voiceIDRec, voiceID)
+	if voiceIDRec.Code != http.StatusUnauthorized || strings.Contains(voiceIDRec.Body.String(), "必须且只能提供") {
+		t.Fatalf("reference audio voice_id status=%d body=%s", voiceIDRec.Code, voiceIDRec.Body.String())
+	}
+
+	mixed := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","prompt":"x","duration":8,"resolution":"720p",
+		"reference_audios":[{"voice_id":"eve"},{"url":"https://example.com/reference.mp3"}]
+	}`))
+	mixed.Header.Set("Content-Type", "application/json")
+	mixedRec := httptest.NewRecorder()
+	router.ServeHTTP(mixedRec, mixed)
+	if mixedRec.Code != http.StatusBadRequest || !strings.Contains(mixedRec.Body.String(), "不能混用") {
+		t.Fatalf("mixed reference audio status=%d body=%s", mixedRec.Code, mixedRec.Body.String())
 	}
 }
 func TestEditAndExtendVideoRequestValidation(t *testing.T) {

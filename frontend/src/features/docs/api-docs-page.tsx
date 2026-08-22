@@ -134,7 +134,7 @@ const endpoints: Record<string, EndpointDefinition> = {
       { name: "reference_audios", descriptionKey: "docs.reference.fieldReferenceAudios" },
     ],
     noteKeys: ["docs.reference.noteVideoAsync", "docs.reference.noteVideoReference", "docs.reference.noteVideoStrict"],
-    request: (model) => ({ model, prompt: "A paper airplane flying over a city", duration: 8, aspect_ratio: "16:9", resolution: "720p" }),
+    request: (model) => ({ model, prompt: "The person from <IMAGE_0> speaks with <AUDIO_0>", duration: 8, aspect_ratio: "16:9", resolution: "720p", reference_images: [{ url: "https://example.com/person.png" }], reference_audios: [{ voice_id: "eve" }] }),
     response: { request_id: "video_example" },
   },
   "video/edits": {

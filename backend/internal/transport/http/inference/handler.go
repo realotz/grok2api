@@ -178,9 +178,10 @@ type videoGenerationImage struct {
 }
 
 type videoGenerationAudio struct {
-	URL    string `json:"url"`
-	Data   string `json:"data"`
-	Format string `json:"format"`
+	URL     string `json:"url"`
+	Data    string `json:"data"`
+	Format  string `json:"format"`
+	VoiceID string `json:"voice_id"`
 }
 
 type videoGenerationRequest struct {
@@ -784,10 +785,6 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 	videoExtensionStartTime := 0.0
 
 	if operation == gatewayVideoOperationGenerate {
-		if len(request.ReferenceAudios) > 0 {
-			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "reference_audios 暂不支持")
-			return
-		}
 		var err error
 		duration, err = parseVideoDuration(request.Duration)
 		if err != nil {
@@ -827,15 +824,33 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		}
 		referenceAudios = make([]string, 0, len(request.ReferenceAudios))
 		for i, input := range request.ReferenceAudios {
+			voiceID := strings.TrimSpace(input.VoiceID)
 			audioURL := strings.TrimSpace(input.URL)
 			audioData := strings.Join(strings.Fields(input.Data), "")
-			if (audioURL == "") == (audioData == "") {
-				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_audios[%d] 必须且只能提供 url 或 data", i))
-				return
+			set := 0
+			if voiceID != "" {
+				set++
 			}
 			if audioURL != "" {
+				set++
+			}
+			if audioData != "" {
+				set++
+			}
+			if set != 1 {
+				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_audios[%d] 必须且只能提供 voice_id、url 或 data", i))
+				return
+			}
+			switch {
+			case voiceID != "":
+				if !mediadomain.IsVideoReferenceVoiceID(voiceID) {
+					writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_audios[%d].voice_id 无效", i))
+					return
+				}
+				referenceAudios = append(referenceAudios, voiceID)
+			case audioURL != "":
 				referenceAudios = append(referenceAudios, audioURL)
-			} else {
+			default:
 				mimeType := referenceAudioMIME(input.Format)
 				if mimeType == "" {
 					writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_audios[%d].format 必须是 mp3、wav、m4a、aac、ogg、webm 或 flac", i))
@@ -843,6 +858,10 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 				}
 				referenceAudios = append(referenceAudios, "data:"+mimeType+";base64,"+audioData)
 			}
+		}
+		if err := classifyHandlerReferenceAudios(referenceAudios); err != nil {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
+			return
 		}
 		if len(referenceAudios) > 3 {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "reference_audios 最多 3 个")
@@ -951,6 +970,22 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"request_id": job.ID})
+}
+
+func classifyHandlerReferenceAudios(values []string) error {
+	urlCount, voiceCount := 0, 0
+	for _, value := range values {
+		switch {
+		case mediadomain.IsVideoReferenceAudioURL(value):
+			urlCount++
+		case mediadomain.IsVideoReferenceVoiceID(value):
+			voiceCount++
+		}
+	}
+	if urlCount > 0 && voiceCount > 0 {
+		return fmt.Errorf("reference_audios 不能混用 voice_id 与 url/data")
+	}
+	return nil
 }
 
 func referenceAudioMIME(format string) string {

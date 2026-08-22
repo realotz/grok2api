@@ -604,8 +604,9 @@ type VideoRequest struct {
 	// A single reference must stay in reference_images and must not be coerced to image.
 	// Official docs forbid combining image with reference_images.
 	ReferenceURLs []string
-	// ReferenceAudios are Web audio URLs or Base64 data URIs for reference-to-video.
-	// Sources are uploaded with the selected account before audioAssets is built.
+	// ReferenceAudios are Build-style voice_id values, or Web HTTPS/data URIs.
+	// Prompt tags stay official <AUDIO_n>. Web maps voice_id to Imagine asset UUIDs
+	// and uploads URL/data before rewriting those clips to @uuid.
 	ReferenceAudios []string
 	// VideoURL is required for edit/extend (official "video" field).
 	VideoURL string

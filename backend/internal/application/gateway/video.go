@@ -55,7 +55,7 @@ type VideoInput struct {
 	ImageURL string
 	// ReferenceURLs are style/content references (official "reference_images").
 	ReferenceURLs []string
-	// ReferenceAudios are Web audio URLs or Base64 data URIs for reference-to-video.
+	// ReferenceAudios are Build-style voice_id values, or Web HTTPS/data URIs.
 	ReferenceAudios []string
 	// VideoURL is required for edit/extend (official "video").
 	VideoURL string
@@ -146,7 +146,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, err
 	}
-	routes, err = routesForVideoParameters(routes, operation, input.Resolution, len(input.ReferenceURLs), len(input.ReferenceAudios), input.Duration)
+	routes, err = routesForVideoParameters(routes, operation, input.Resolution, len(input.ReferenceURLs), input.ReferenceAudios, input.Duration)
 	if err != nil {
 		return media.Job{}, err
 	}
@@ -297,14 +297,18 @@ func preferProviderVideo15Routes(routes []model.Route, preferred account.Provide
 // Callers must first apply capability, client-key, and Provider eligibility:
 // the same public model may aggregate Console, Build, and Web routes with
 // different input contracts.
-func routesForVideoParameters(routes []model.Route, operation provider.VideoOperation, resolution string, referenceCount, referenceAudioCount, duration int) ([]model.Route, error) {
+func routesForVideoParameters(routes []model.Route, operation provider.VideoOperation, resolution string, referenceCount int, referenceAudios []string, duration int) ([]model.Route, error) {
 	if len(routes) == 0 {
 		return routes, nil
+	}
+	audioKind, err := classifyVideoReferenceAudios(referenceAudios)
+	if err != nil {
+		return nil, err
 	}
 	compatible := make([]model.Route, 0, len(routes))
 	var firstErr error
 	for _, candidate := range routes {
-		if err := validateVideoRouteParameters(operation, candidate.Provider, candidate.UpstreamModel, resolution, referenceCount, referenceAudioCount, duration); err != nil {
+		if err := validateVideoRouteParameters(operation, candidate.Provider, candidate.UpstreamModel, resolution, referenceCount, len(normalizeVideoReferenceAudios(referenceAudios)), duration, audioKind); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -321,13 +325,24 @@ func routesForVideoParameters(routes []model.Route, operation provider.VideoOper
 // Console 视频输入的上限与时长按「Provider + 入口字段 + 上游模型」分档。
 // /v1/videos/generations 是异步接口，只在 adapter 层拦截会产出必然失败的任务；
 // adapter 仍保留同一约束，作为最终出站边界的防御校验。
-func validateVideoRouteParameters(operation provider.VideoOperation, providerValue account.Provider, upstreamModel, resolution string, referenceCount, referenceAudioCount, duration int) error {
+type videoReferenceAudioKind int
+
+const (
+	videoReferenceAudioNone videoReferenceAudioKind = iota
+	videoReferenceAudioURL
+	videoReferenceAudioVoiceID
+)
+
+func validateVideoRouteParameters(operation provider.VideoOperation, providerValue account.Provider, upstreamModel, resolution string, referenceCount, referenceAudioCount, duration int, audioKind videoReferenceAudioKind) error {
 	if operation != provider.VideoOperationGenerate {
 		return nil
 	}
 	trimmedModel := strings.TrimSpace(upstreamModel)
 	hasReferences := referenceCount > 0
 	hasReferenceMode := hasReferences || referenceAudioCount > 0
+	if audioKind == videoReferenceAudioURL && (providerValue == account.ProviderBuild || providerValue == account.ProviderConsole) {
+		return fmt.Errorf("%w: Build/Console 参考音频只支持 voice_id", ErrVideoParameterInvalid)
+	}
 	if providerValue == account.ProviderConsole && (trimmedModel == "grok-imagine-video" || trimmedModel == "grok-imagine-video-1.5") {
 		// 实测：8 张 reference_images 上游回 400
 		// "Too many reference images: 8. Maximum allowed is 7."（两个视频模型一致）。
@@ -1488,14 +1503,37 @@ func validateVideoReferenceAudios(values []string) error {
 	if len(values) > 3 {
 		return fmt.Errorf("reference_audios 最多 3 个")
 	}
+	_, err := classifyVideoReferenceAudios(values)
+	return err
+}
+
+func classifyVideoReferenceAudios(values []string) (videoReferenceAudioKind, error) {
+	values = normalizeVideoReferenceAudios(values)
+	if len(values) == 0 {
+		return videoReferenceAudioNone, nil
+	}
+	if len(values) > 3 {
+		return videoReferenceAudioNone, fmt.Errorf("reference_audios 最多 3 个")
+	}
+	urlCount, voiceCount := 0, 0
 	for _, raw := range values {
 		value := strings.TrimSpace(raw)
-		lower := strings.ToLower(value)
-		if !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "data:audio/") {
-			return fmt.Errorf("reference_audios 每项必须是 HTTPS URL 或 Base64 音频数据")
+		switch {
+		case media.IsVideoReferenceAudioURL(value):
+			urlCount++
+		case media.IsVideoReferenceVoiceID(value):
+			voiceCount++
+		default:
+			return videoReferenceAudioNone, fmt.Errorf("reference_audios 每项必须是 voice_id、HTTPS URL 或 Base64 音频数据")
 		}
 	}
-	return nil
+	if urlCount > 0 && voiceCount > 0 {
+		return videoReferenceAudioNone, fmt.Errorf("reference_audios 不能混用 voice_id 与 url/data")
+	}
+	if voiceCount > 0 {
+		return videoReferenceAudioVoiceID, nil
+	}
+	return videoReferenceAudioURL, nil
 }
 
 func normalizeVideoReferenceAudios(values []string) []string {

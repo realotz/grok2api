@@ -37,12 +37,13 @@ type Adapter struct {
 	states          repository.ResponseRepository
 	assets          provider.ImageAssetStore
 	statsig         *statsigSigner
+	curatedVoices   *curatedVoiceCache
 	logger          *slog.Logger
 }
 
 func NewAdapter(cfg Config, egress *infraegress.Manager, cipher *security.Cipher, states repository.ResponseRepository, assets provider.ImageAssetStore) *Adapter {
 	cfg = normalizedConfig(cfg)
-	return &Adapter{cfg: cfg, accountsBaseURL: officialAccountsBaseURL, egress: egress, cipher: cipher, states: states, assets: assets, statsig: newStatsigSigner(), logger: slog.Default()}
+	return &Adapter{cfg: cfg, accountsBaseURL: officialAccountsBaseURL, egress: egress, cipher: cipher, states: states, assets: assets, statsig: newStatsigSigner(), curatedVoices: newCuratedVoiceCache(), logger: slog.Default()}
 }
 
 func (a *Adapter) SetLogger(logger *slog.Logger) {

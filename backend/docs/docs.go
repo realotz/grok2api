@@ -864,6 +864,10 @@ const docTemplate = `{
                 "url": {
                     "type": "string",
                     "example": "https://example.com/reference.mp3"
+                },
+                "voice_id": {
+                    "type": "string",
+                    "example": "eve"
                 }
             }
         },

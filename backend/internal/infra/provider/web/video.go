@@ -19,6 +19,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
@@ -351,9 +352,6 @@ func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRe
 		}
 	}
 	for _, rawReference := range request.ReferenceURLs {
-		if strings.TrimSpace(rawReference) == "" {
-			continue
-		}
 		assetID, referenceErr := prepareReference(rawReference)
 		if referenceErr != nil {
 			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(referenceErr), 0, referenceErr)
@@ -377,7 +375,8 @@ func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRe
 	}
 	ratio := resolveAspectRatio(request.AspectRatio)
 	resolution := resolveWebVideoV15Resolution(request.Credential.WebTier, request.Resolution)
-	payload := videoV15CreatePayload(request.Prompt, ratio, resolution, segments[0], imageAssetID, referenceAssetIDs, audioAssetIDs)
+	prompt := webVideoPrompt(request.Prompt, imageAssetID, referenceAssetIDs, audioAssetIDs)
+	payload := videoV15CreatePayload(prompt, ratio, resolution, segments[0], imageAssetID, referenceAssetIDs, audioAssetIDs)
 	referer := cfg.BaseURL + "/imagine"
 	if parentID != "" {
 		referer = cfg.BaseURL + "/imagine/post/" + parentID
@@ -671,28 +670,31 @@ func (a *Adapter) prepareVideoAsset(ctx context.Context, cfg Config, lease *egre
 	return uploaded, nil
 }
 
-// prepareVideoReferenceAudio 在视频账号的同一出口租约内上传参考音频，避免跨账号资产不可见。
+// prepareVideoReferenceAudio maps Build-style voice_id onto Imagine asset UUIDs,
+// or uploads custom HTTPS/data audio on the same egress lease as the video account.
 func (a *Adapter) prepareVideoReferenceAudio(ctx context.Context, cfg Config, lease *egress.Lease, token, value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", fmt.Errorf("视频参考音频不能为空")
 	}
-	lower := strings.ToLower(value)
-	if !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "data:") {
-		return "", fmt.Errorf("视频参考音频必须提供 HTTPS URL 或 Base64 data URI")
+	if mediadomain.IsVideoReferenceAudioURL(value) {
+		audio, err := a.loadVideoReferenceAudio(ctx, lease, value)
+		if err != nil {
+			return "", err
+		}
+		uploaded, err := a.uploadFileV2Direct(ctx, cfg, lease, token, audio, cfg.BaseURL+"/imagine", selfUploadFileSource, "video_reference_audio_upload")
+		if err != nil {
+			return "", err
+		}
+		if uploaded.ID == "" {
+			return "", fmt.Errorf("上传视频参考音频后未返回资产 ID")
+		}
+		return uploaded.ID, nil
 	}
-	audio, err := a.loadVideoReferenceAudio(ctx, lease, value)
-	if err != nil {
-		return "", err
+	if mediadomain.IsVideoReferenceVoiceID(value) {
+		return a.resolveCuratedVoiceAssetID(ctx, cfg, lease, token, value)
 	}
-	uploaded, err := a.uploadFileV2Direct(ctx, cfg, lease, token, audio, cfg.BaseURL+"/imagine", selfUploadFileSource, "video_reference_audio_upload")
-	if err != nil {
-		return "", err
-	}
-	if uploaded.ID == "" {
-		return "", fmt.Errorf("上传视频参考音频后未返回资产 ID")
-	}
-	return uploaded.ID, nil
+	return "", fmt.Errorf("视频参考音频必须提供 voice_id、HTTPS URL 或 Base64 data URI")
 }
 
 func (a *Adapter) loadVideoReferenceAudio(ctx context.Context, lease *egress.Lease, value string) (provider.ImageInput, error) {
@@ -1113,6 +1115,17 @@ func videoCreatePayload(prompt, parentID, ratio, resolution string, seconds int,
 		"temporary": true, "modelName": "imagine-video-gen", "message": prompt + " --mode=custom", "enableSideBySide": true,
 		"responseMetadata": map[string]any{"experiments": []any{}, "modelConfigOverride": map[string]any{"modelMap": map[string]any{"videoGenModelConfig": config}}},
 	}
+}
+
+// webVideoPrompt maps official tags onto uploaded asset IDs:
+// <IMAGE_n> is reference_images[n], or the single first-frame image in i2v;
+// <AUDIO_n> is reference_audios[n] after those clips are uploaded. The two sequences are independent and 0-based.
+func webVideoPrompt(prompt, imageAssetID string, referenceAssetIDs, audioAssetIDs []string) string {
+	imageIDs := append([]string{}, referenceAssetIDs...)
+	if imageAssetID != "" {
+		imageIDs = []string{imageAssetID}
+	}
+	return mediadomain.RewriteOfficialPromptToWebUUIDs(prompt, imageIDs, audioAssetIDs)
 }
 
 // videoV15CreatePayload 按 Imagine Web 新协议区分文生、单图和多参考图视频。

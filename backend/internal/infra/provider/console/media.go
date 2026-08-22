@@ -508,7 +508,7 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		payload["duration"] = request.Duration
 	}
 	if prompt := strings.TrimSpace(request.Prompt); prompt != "" {
-		payload["prompt"] = prompt
+		payload["prompt"] = mediadomain.NormalizeOfficialPromptTags(prompt)
 	}
 	if operation == provider.VideoOperationGenerate {
 		if ratio := strings.TrimSpace(request.AspectRatio); ratio != "" {
@@ -545,8 +545,8 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 			audios := make([]map[string]any, 0, len(request.ReferenceAudios))
 			for _, raw := range request.ReferenceAudios {
 				voiceID := strings.TrimSpace(raw)
-				if voiceID == "" {
-					return provider.VideoResult{}, errors.New("reference_audios.voice_id 不能为空")
+				if !mediadomain.IsVideoReferenceVoiceID(voiceID) {
+					return provider.VideoResult{}, errors.New("每段视频参考音频都必须是 voice_id")
 				}
 				audios = append(audios, map[string]any{"voice_id": voiceID})
 			}

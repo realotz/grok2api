@@ -129,6 +129,9 @@ definitions:
       url:
         example: https://example.com/reference.mp3
         type: string
+      voice_id:
+        example: eve
+        type: string
     type: object
   httpserver.SwaggerVideoGenerationRequest:
     properties:

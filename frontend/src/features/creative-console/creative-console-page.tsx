@@ -22,6 +22,7 @@ import type { ModelRouteDTO } from "@/entities/model/types";
 import {
   createChatResponse,
   createVideo,
+  encodeReferenceAudio,
   editVideo,
   editImage,
   extendVideo,
@@ -1335,7 +1336,7 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
             : nextReferenceURL
               ? [{ url: nextReferenceURL }]
               : undefined,
-          referenceAudios: nextReferenceAudioURL ? [{ url: nextReferenceAudioURL }] : undefined,
+          referenceAudios: nextReferenceAudioURL ? [encodeReferenceAudio(nextReferenceAudioURL)] : undefined,
           duration: Number(duration),
           aspectRatio,
           resolution: selectedVideoResolution,
@@ -1576,25 +1577,22 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                 </Popover>
                 <Popover>
                   <PopoverTrigger asChild>
-                    <span title={t("creativeConsole.referenceVoiceUnavailable")}>
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
                         className={cn("h-8 gap-1.5 px-2 font-normal", hasReferenceAudio && "bg-secondary/70 text-foreground")}
                         aria-label={t("creativeConsole.referenceVoice")}
-                        disabled
                       >
                         <AudioLines />{hasReferenceAudio ? t("creativeConsole.referenceVoiceAdded") : t("creativeConsole.referenceVoiceShort")}
                       </Button>
-                    </span>
                   </PopoverTrigger>
                   <PopoverContent align="start" className="w-80 p-3">
                     <div className="mb-2 text-xs font-medium">{t("creativeConsole.referenceVoice")}</div>
                     <div className="flex items-center gap-2">
                       <Input
                         id="video-reference-audio"
-                        type="url"
+                        type="text"
                         value={referenceAudioURL}
                         onChange={(event) => {
                           setReferenceAudioURL(event.target.value);
@@ -1602,7 +1600,7 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                           setImageURL("");
                           setImageFileID("");
                         }}
-                        placeholder="https://..."
+                        placeholder={t("creativeConsole.referenceVoicePlaceholder")}
                         aria-label={t("creativeConsole.referenceVoice")}
                       />
                       {hasReferenceAudio ? (

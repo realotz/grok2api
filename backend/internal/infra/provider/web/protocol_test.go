@@ -1250,6 +1250,27 @@ func TestVideoReferenceAudioUsesGenericSelfUploadSource(t *testing.T) {
 	}
 }
 
+func TestWebVideoPromptRewritesOfficialTagsToUUIDs(t *testing.T) {
+	image := "e5238206-0e05-45da-8db6-9d96220b2492"
+	audio := "14ca4304-64a1-4963-9f06-74f93fcf09b6"
+	got := webVideoPrompt("The person from <image_0> speaks with <AUDIO_0>", "", []string{image}, []string{audio})
+	want := "The person from @" + image + " speaks with @" + audio
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	i2v := webVideoPrompt("animate <IMAGE_0>", image, nil, nil)
+	if i2v != "animate @"+image {
+		t.Fatalf("i2v prompt = %q", i2v)
+	}
+	images := []string{"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}
+	audios := []string{"cccccccc-cccc-cccc-cccc-cccccccccccc", "dddddddd-dddd-dddd-dddd-dddddddddddd"}
+	crossed := webVideoPrompt("<IMAGE_1> <AUDIO_0> <IMAGE_0> <AUDIO_1>", "", images, audios)
+	wantCrossed := "@" + images[1] + " @" + audios[0] + " @" + images[0] + " @" + audios[1]
+	if crossed != wantCrossed {
+		t.Fatalf("crossed prompt = %q want %q", crossed, wantCrossed)
+	}
+}
+
 func TestVideoCreatePayloadUsesNewMediaGenModes(t *testing.T) {
 	tests := []struct {
 		name       string

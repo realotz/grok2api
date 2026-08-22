@@ -502,18 +502,21 @@ func (a *Adapter) WarmStatsig(ctx context.Context, credential account.Credential
 		a.log().Warn("web_statsig_pair_refresh_failed", "error", refreshErr)
 	}
 	if _, err := generateLocalStatsig(http.MethodPost, "/rest/app-chat/conversations/new", time.Now().Unix()); err == nil {
+		a.warmCuratedVoices(ctx, cfg, lease, token)
 		return 1, nil
 	}
 	if a.statsig == nil {
 		return 0, fmt.Errorf("Statsig 签名器未初始化")
 	}
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
-	return a.statsig.Warm(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, []statsigWarmTarget{
+	warmed, err := a.statsig.Warm(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, []statsigWarmTarget{
 		{method: http.MethodPost, target: baseURL + "/rest/app-chat/conversations/new"},
 		{method: http.MethodPost, target: baseURL + "/rest/media/imagine/quota_info"},
 		{method: http.MethodPost, target: baseURL + "/rest/rate-limits"},
 		{method: http.MethodPost, target: baseURL + "/rest/media/post/create"},
 	})
+	a.warmCuratedVoices(ctx, cfg, lease, token)
+	return warmed, err
 }
 
 func (a *Adapter) invalidateSignedStatsig(method, target string) bool {

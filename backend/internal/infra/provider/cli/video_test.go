@@ -187,7 +187,7 @@ func TestBuildVideoCreatePayloadRejectsImageWithReferences(t *testing.T) {
 
 func TestBuildVideoCreatePayloadReferenceAudios(t *testing.T) {
 	payload, err := videoCreatePayload(provider.VideoRequest{
-		Prompt:          "speak",
+		Prompt:          "speak with <audio_0>",
 		Duration:        8,
 		AspectRatio:     "9:16",
 		Resolution:      "720p",
@@ -196,6 +196,9 @@ func TestBuildVideoCreatePayloadReferenceAudios(t *testing.T) {
 	}, "", buildVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if payload["prompt"] != "speak with <AUDIO_0>" {
+		t.Fatalf("prompt = %#v", payload["prompt"])
 	}
 	if _, exists := payload["image"]; exists {
 		t.Fatalf("image = %#v", payload["image"])
@@ -207,6 +210,19 @@ func TestBuildVideoCreatePayloadReferenceAudios(t *testing.T) {
 	audios, ok := payload["reference_audios"].([]map[string]any)
 	if !ok || len(audios) != 1 || audios[0]["voice_id"] != "eve" {
 		t.Fatalf("reference_audios = %#v", payload["reference_audios"])
+	}
+	if _, exists := audios[0]["url"]; exists {
+		t.Fatalf("reference_audios leaked url: %#v", audios)
+	}
+}
+
+func TestBuildVideoCreatePayloadRejectsURLReferenceAudio(t *testing.T) {
+	_, err := videoCreatePayload(provider.VideoRequest{
+		Prompt:          "speak",
+		ReferenceAudios: []string{"https://cdn.example.com/voice.mp3"},
+	}, "", buildVideoRequestProfile)
+	if err == nil || !strings.Contains(err.Error(), "voice_id") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -324,6 +340,9 @@ func TestGenerateVideoPostsReferenceImagesAndPollsUntilReady(t *testing.T) {
 	second, _ := references[1].(map[string]any)
 	if first["image_url"] != "https://r2.example.com/first.png" || second["image_url"] != "https://r2.example.com/second.png" {
 		t.Fatalf("create body = %#v", createBody)
+	}
+	if createBody["prompt"] != "animate knife" {
+		t.Fatalf("create body prompt = %#v", createBody["prompt"])
 	}
 }
 

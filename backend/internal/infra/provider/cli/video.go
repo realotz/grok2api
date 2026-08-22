@@ -284,7 +284,7 @@ func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile
 		"model": profile.model,
 	}
 	if prompt := strings.TrimSpace(request.Prompt); prompt != "" {
-		payload["prompt"] = prompt
+		payload["prompt"] = mediadomain.NormalizeOfficialPromptTags(prompt)
 	}
 	if request.Duration > 0 {
 		payload["duration"] = request.Duration
@@ -320,8 +320,8 @@ func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile
 		audios := make([]map[string]any, 0, len(request.ReferenceAudios))
 		for _, raw := range request.ReferenceAudios {
 			voiceID := strings.TrimSpace(raw)
-			if voiceID == "" {
-				return nil, fmt.Errorf("reference_audios.voice_id 不能为空")
+			if !mediadomain.IsVideoReferenceVoiceID(voiceID) {
+				return nil, fmt.Errorf("reference_audios 每项必须是 voice_id")
 			}
 			audios = append(audios, map[string]any{"voice_id": voiceID})
 		}
