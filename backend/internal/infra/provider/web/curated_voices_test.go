@@ -21,6 +21,18 @@ const curatedVoiceHTML = `<!doctype html><html><body>
 <script type="application/json" id="server-client-data-experimentation">{"status":"ready","serverConfig":{"imagine_curated_voices":{"baseUrl":"https://app-media.x.ai/voice-samples/imagine/","version":2,"voices":[{"id":"eve","assetId":"4c671160-f2a1-45bc-bb26-15aa8eae2357","description":"Energetic and upbeat","tags":["Assistant"]},{"id":"rex","assetId":"1ec1c4ec-0c17-415e-b979-e4e4d483f41f"}]}}}</script>
 </body></html>`
 
+func TestCuratedVoicePreviewURL(t *testing.T) {
+	got := curatedVoicePreviewURL(mediadomain.CuratedVoiceCatalog{}, "Rex")
+	want := "https://app-media.x.ai/voice-samples/imagine/rex.mp3?v=2"
+	if got != want {
+		t.Fatalf("default preview = %q want %q", got, want)
+	}
+	got = curatedVoicePreviewURL(mediadomain.CuratedVoiceCatalog{BaseURL: "https://cdn.example/voices/", Version: 7}, "eve")
+	if got != "https://cdn.example/voices/eve.mp3?v=7" {
+		t.Fatalf("catalog preview = %q", got)
+	}
+}
+
 func TestParseCuratedVoiceCatalogJSON(t *testing.T) {
 	raw, err := extractExperimentationScript([]byte(curatedVoiceHTML))
 	if err != nil {

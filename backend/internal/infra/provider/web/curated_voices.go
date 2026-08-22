@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,9 +20,11 @@ import (
 )
 
 const (
-	curatedVoiceCacheTTL      = time.Hour
-	curatedVoiceHTMLBodyLimit = 4 << 20
-	curatedVoiceScriptID      = "server-client-data-experimentation"
+	curatedVoiceCacheTTL       = time.Hour
+	curatedVoiceHTMLBodyLimit  = 4 << 20
+	curatedVoiceScriptID       = "server-client-data-experimentation"
+	defaultCuratedVoiceBaseURL = "https://app-media.x.ai/voice-samples/imagine/"
+	defaultCuratedVoiceVersion = 2
 )
 
 type curatedVoiceCache struct {
@@ -108,13 +111,33 @@ func (a *Adapter) resolveCuratedVoiceAssetID(ctx context.Context, cfg Config, le
 		return a.fetchCuratedVoiceCatalog(ctx, cfg, lease, token)
 	})
 	if err != nil {
-		return "", err
-	}
-	assetID, ok := catalog.Lookup(voiceID)
-	if !ok {
+		a.log().Warn("web_curated_voices_lookup_failed", "voice_id", voiceID, "error", err)
+	} else if assetID, ok := catalog.Lookup(voiceID); ok {
+		return assetID, nil
+	} else if !catalog.Empty() {
 		return "", fmt.Errorf("未知的 voice_id %q", voiceID)
 	}
-	return assetID, nil
+	preview := curatedVoicePreviewURL(catalog, voiceID)
+	if preview == "" {
+		return "", fmt.Errorf("未知的 voice_id %q", voiceID)
+	}
+	return a.prepareVideoReferenceAudio(ctx, cfg, lease, token, preview)
+}
+
+func curatedVoicePreviewURL(catalog mediadomain.CuratedVoiceCatalog, voiceID string) string {
+	voiceID = strings.ToLower(strings.TrimSpace(voiceID))
+	if voiceID == "" || mediadomain.IsVideoReferenceAssetUUID(voiceID) || mediadomain.IsVideoReferenceAudioURL(voiceID) {
+		return ""
+	}
+	base := strings.TrimSpace(catalog.BaseURL)
+	if base == "" {
+		base = defaultCuratedVoiceBaseURL
+	}
+	version := catalog.Version
+	if version <= 0 {
+		version = defaultCuratedVoiceVersion
+	}
+	return strings.TrimRight(base, "/") + "/" + voiceID + ".mp3?v=" + strconv.Itoa(version)
 }
 
 func (a *Adapter) warmCuratedVoices(ctx context.Context, cfg Config, lease *infraegress.Lease, token string) {
