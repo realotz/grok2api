@@ -120,6 +120,17 @@ const endpoints: Record<string, EndpointDefinition> = {
     request: (model) => ({ model, prompt: "Change the chair to black", image: { url: "https://example.com/chair.png" }, n: 1, response_format: "url" }),
     response: { created: 1783860000, data: [{ url: "http://127.0.0.1:8000/v1/media/images/example" }] },
   },
+  "image/layers": {
+    key: "image/layers", category: "Image", title: "Image layers", method: "POST", path: "/images/layers",
+    descriptionKey: "docs.endpointImageLayers", capabilities: ["image_edit", "image"],
+    fields: [
+      { name: "model", required: true, descriptionKey: "docs.reference.fieldModel" },
+      { name: "image / images", required: true, descriptionKey: "docs.reference.fieldLayerImage" },
+    ],
+    noteKeys: ["docs.reference.noteImageLayers", "docs.reference.noteEditJSON", "docs.reference.noteEditSources"],
+    request: (model) => ({ model, image: { url: "https://example.com/chair.png" } }),
+    response: { created: 1783860000, data: [{ segmentation: { cached: false, map: { objects: [{ name: "chair", boxXyxy: [12, 40, 400, 380], score: 0.92, maskRle: { size: [1024, 1024], counts: "e3N..." } }] } } }] },
+  },
   "video/generations": {
     key: "video/generations", category: "Video", title: "Video generations", method: "POST", path: "/videos/generations",
     descriptionKey: "docs.endpointVideoCreate", capabilities: ["video"],

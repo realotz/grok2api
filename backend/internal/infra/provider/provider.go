@@ -565,6 +565,12 @@ type ImageEditRequest struct {
 	SelectionRegions []ImageSelectionRegion
 }
 
+type ImageLayerRequest struct {
+	Credential account.Credential
+	Model      string
+	ImageURLs  []string
+}
+
 // VideoOperation selects the official xAI video endpoint family.
 type VideoOperation = media.VideoOperation
 
@@ -889,6 +895,12 @@ type ImageGenerationAdapter interface {
 type ImageEditAdapter interface {
 	Adapter
 	EditImage(ctx context.Context, request ImageEditRequest) (*Response, error)
+}
+
+// ImageLayerAdapter uploads a source image and returns Imagine segmentation.
+type ImageLayerAdapter interface {
+	Adapter
+	DetectImageLayers(ctx context.Context, request ImageLayerRequest) (*Response, error)
 }
 
 // ImageAssetStore archives generated images as local resources that the backend can read reliably.
@@ -1401,6 +1413,16 @@ func (r *Registry) ImageEdit(value account.Provider) (ImageEditAdapter, bool) {
 		return nil, false
 	}
 	result, ok := adapter.(ImageEditAdapter)
+	return result, ok
+}
+
+// ImageLayer returns the image-segmentation capability registered by the Provider.
+func (r *Registry) ImageLayer(value account.Provider) (ImageLayerAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(ImageLayerAdapter)
 	return result, ok
 }
 

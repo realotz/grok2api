@@ -80,7 +80,7 @@ describe("buildAuditUsageView", () => {
   });
 
   it("omits unavailable token rows for dedicated image and video operations", () => {
-    for (const operation of ["image", "image_edit", "video"] as const) {
+    for (const operation of ["image", "image_edit", "image_layer", "video"] as const) {
       const view = buildAuditUsageView(audit({
         operation,
         usageSource: "none",

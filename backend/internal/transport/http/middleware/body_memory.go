@@ -94,6 +94,8 @@ func inferenceBodyOperation(path string) string {
 		return "image_generation"
 	case "/v1/images/edits":
 		return "image_edit"
+	case "/v1/images/layers":
+		return "image_layer"
 	case "/v1/tts":
 		return "tts"
 	case "/v1/stt":

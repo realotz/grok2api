@@ -11,6 +11,7 @@ const (
 	OperationMessages   Operation = "messages"
 	OperationImage      Operation = "image"
 	OperationImageEdit  Operation = "image_edit"
+	OperationImageLayer Operation = "image_layer"
 	OperationVideo      Operation = "video"
 	OperationTTS        Operation = "tts"
 	OperationSTT        Operation = "stt"

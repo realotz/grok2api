@@ -556,6 +556,7 @@ func TestJSONInferenceEndpointsRejectWrongMediaTypeAndTrailingDocument(t *testin
 	}{
 		{path: "/v1/images/generations", body: `{"model":"grok-imagine-image","prompt":"test"}{}`},
 		{path: "/v1/images/edits", body: `{"model":"grok-imagine-image-edit","prompt":"test","image":{"url":"https://example.com/input.png"}}{}`},
+		{path: "/v1/images/layers", body: `{"model":"grok-imagine-image-2.0-web","image":{"url":"https://example.com/input.png"}}{}`},
 	} {
 		request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
 		request.Header.Set("Content-Type", "application/json")
@@ -742,6 +743,59 @@ func TestImageEditAcceptsOfficialJSONShape(t *testing.T) {
 	}
 
 	multipartRequest := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader("ignored"))
+	multipartRequest.Header.Set("Content-Type", "multipart/form-data; boundary=test")
+	multipartRecorder := httptest.NewRecorder()
+	router.ServeHTTP(multipartRecorder, multipartRequest)
+	if multipartRecorder.Code != http.StatusUnsupportedMediaType || !strings.Contains(multipartRecorder.Body.String(), "application/json") {
+		t.Fatalf("multipart status=%d body=%s", multipartRecorder.Code, multipartRecorder.Body.String())
+	}
+}
+
+func TestImageLayersValidatesJSONShape(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	NewHandler(nil, nil, 1<<20).Register(router.Group("/v1"))
+
+	missingImage := httptest.NewRequest(http.MethodPost, "/v1/images/layers", strings.NewReader(`{"model":"grok-imagine-image-2.0-web"}`))
+	missingImage.Header.Set("Content-Type", "application/json")
+	missingRecorder := httptest.NewRecorder()
+	router.ServeHTTP(missingRecorder, missingImage)
+	if missingRecorder.Code != http.StatusBadRequest || !strings.Contains(missingRecorder.Body.String(), "恰好提供 1 张图片") {
+		t.Fatalf("missing image status=%d body=%s", missingRecorder.Code, missingRecorder.Body.String())
+	}
+
+	tooMany := httptest.NewRequest(http.MethodPost, "/v1/images/layers", strings.NewReader(`{
+		"model":"grok-imagine-image-2.0-web",
+		"images":[{"url":"https://example.com/a.png"},{"url":"https://example.com/b.png"}]
+	}`))
+	tooMany.Header.Set("Content-Type", "application/json")
+	tooManyRecorder := httptest.NewRecorder()
+	router.ServeHTTP(tooManyRecorder, tooMany)
+	if tooManyRecorder.Code != http.StatusBadRequest || !strings.Contains(tooManyRecorder.Body.String(), "恰好提供 1 张图片") {
+		t.Fatalf("too many images status=%d body=%s", tooManyRecorder.Code, tooManyRecorder.Body.String())
+	}
+
+	fileID := httptest.NewRequest(http.MethodPost, "/v1/images/layers", strings.NewReader(`{
+		"model":"grok-imagine-image-2.0-web","image":{"file_id":"file-1"}
+	}`))
+	fileID.Header.Set("Content-Type", "application/json")
+	fileIDRecorder := httptest.NewRecorder()
+	router.ServeHTTP(fileIDRecorder, fileID)
+	if fileIDRecorder.Code != http.StatusBadRequest || !strings.Contains(fileIDRecorder.Body.String(), "image.file_id") {
+		t.Fatalf("file_id status=%d body=%s", fileIDRecorder.Code, fileIDRecorder.Body.String())
+	}
+
+	validShape := httptest.NewRequest(http.MethodPost, "/v1/images/layers", strings.NewReader(`{
+		"model":"grok-imagine-image-2.0-web","image":{"url":"https://example.com/input.png"}
+	}`))
+	validShape.Header.Set("Content-Type", "application/json")
+	validRecorder := httptest.NewRecorder()
+	router.ServeHTTP(validRecorder, validShape)
+	if validRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("valid JSON shape status=%d body=%s", validRecorder.Code, validRecorder.Body.String())
+	}
+
+	multipartRequest := httptest.NewRequest(http.MethodPost, "/v1/images/layers", strings.NewReader("ignored"))
 	multipartRequest.Header.Set("Content-Type", "multipart/form-data; boundary=test")
 	multipartRecorder := httptest.NewRecorder()
 	router.ServeHTTP(multipartRecorder, multipartRequest)

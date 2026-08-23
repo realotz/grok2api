@@ -33,7 +33,7 @@ export type AuditDTO = {
   modelPublicId?: string;
   modelUpstreamModel?: string;
   provider: "grok_build" | "grok_web" | "grok_console";
-  operation: "responses" | "compaction" | "chat" | "messages" | "image" | "image_edit" | "video" | "tts" | "stt" | "realtime" | "voice";
+  operation: "responses" | "compaction" | "chat" | "messages" | "image" | "image_edit" | "image_layer" | "video" | "tts" | "stt" | "realtime" | "voice";
   usageSource: "upstream" | "estimated" | "none";
   reasoningEffort?: "auto" | "none" | "low" | "medium" | "high" | "xhigh" | "fixed";
   accountId?: string;
@@ -143,7 +143,7 @@ const auditBillingValidator = hasShape({
 const auditValidator = hasShape({
   id: isString, requestId: isString, clientKeyId: isString, clientKeyName: isOptional(isString), clientIp: isOptional(isString), modelRouteId: isString,
   modelPublicId: isOptional(isString), modelUpstreamModel: isOptional(isString), provider: isOneOf("grok_build", "grok_web", "grok_console"),
-  operation: isOneOf("responses", "compaction", "chat", "messages", "image", "image_edit", "video", "tts", "stt", "realtime", "voice"), usageSource: isOneOf("upstream", "estimated", "none"),
+  operation: isOneOf("responses", "compaction", "chat", "messages", "image", "image_edit", "image_layer", "video", "tts", "stt", "realtime", "voice"), usageSource: isOneOf("upstream", "estimated", "none"),
   reasoningEffort: isOptional(isOneOf("auto", "none", "low", "medium", "high", "xhigh", "fixed")),
   accountId: isOptional(isString), accountName: isOptional(isString),
   egressNodeId: isOptional(isString), egressNodeName: isOptional(isString),

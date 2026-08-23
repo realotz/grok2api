@@ -7,6 +7,7 @@ export type AuditUsageOperation =
   | "messages"
   | "image"
   | "image_edit"
+  | "image_layer"
   | "video"
   | "tts"
   | "stt"
@@ -14,7 +15,7 @@ export type AuditUsageOperation =
   | "voice";
 
 const DURATION_OPERATIONS = new Set<AuditUsageOperation>(["tts", "stt", "realtime", "voice"]);
-const MEDIA_OPERATIONS = new Set<AuditUsageOperation>(["image", "image_edit", "video"]);
+const MEDIA_OPERATIONS = new Set<AuditUsageOperation>(["image", "image_edit", "image_layer", "video"]);
 
 export type AuditUsageLabels = {
   input: string;
@@ -72,7 +73,7 @@ function mediaItems(audit: AuditUsageInput, labels: AuditUsageLabels): AuditUsag
       { key: "mediaOutput", label: labels.mediaOutput, value: labels.secondsCount(audit.mediaOutputSeconds) },
     ];
   }
-  if (audit.operation === "image" || audit.operation === "image_edit" || audit.mediaInputImages > 0 || audit.mediaOutputImages > 0) {
+  if (audit.operation === "image" || audit.operation === "image_edit" || audit.operation === "image_layer" || audit.mediaInputImages > 0 || audit.mediaOutputImages > 0) {
     return [
       { key: "mediaInput", label: labels.mediaInput, value: labels.imageCount(audit.mediaInputImages) },
       { key: "mediaOutput", label: labels.mediaOutput, value: labels.imageCount(audit.mediaOutputImages) },

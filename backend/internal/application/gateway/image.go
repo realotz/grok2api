@@ -56,6 +56,14 @@ type ImageEditInput struct {
 	SelectionRegions []provider.ImageSelectionRegion
 }
 
+// ImageLayerInput 表示图片分层用例已经完成协议校验后的输入。
+type ImageLayerInput struct {
+	RequestID   string
+	ClientKey   clientkey.Key
+	PublicModel string
+	ImageURLs   []string
+}
+
 type imageProviderSupport func(accountdomain.Provider) bool
 
 type imageExecution func(context.Context, accountdomain.Provider, accountdomain.Credential, string) (*provider.Response, error)
@@ -106,6 +114,54 @@ func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result,
 			SelectionRegions: selectionRegions,
 		})
 	}, input.Streaming, input.Resolution, input.Quality, input.Count, len(input.ImageURLs))
+}
+
+// DetectImageLayers 将原图上传到 Grok Web 后返回 Imagine 分区 segmentation。
+func (s *Service) DetectImageLayers(ctx context.Context, input ImageLayerInput) (*Result, error) {
+	imageURLs, err := s.materializeLocalImageInputs(ctx, input.ImageURLs)
+	if err != nil {
+		return nil, err
+	}
+	supports := func(providerValue accountdomain.Provider) bool {
+		_, ok := s.providers.ImageLayer(providerValue)
+		return ok
+	}
+	capability, err := s.imageLayerCapability(ctx, input.ClientKey, input.PublicModel, supports)
+	if err != nil {
+		return nil, err
+	}
+	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImageLayer, capability, supports, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
+		adapter, ok := s.providers.ImageLayer(providerValue)
+		if !ok {
+			return nil, ErrNoAvailableAccount
+		}
+		return adapter.DetectImageLayers(executionCtx, provider.ImageLayerRequest{
+			Credential: credential, Model: upstream, ImageURLs: imageURLs,
+		})
+	}, false, "", "", 0, len(imageURLs))
+}
+
+func (s *Service) imageLayerCapability(ctx context.Context, key clientkey.Key, publicModel string, supports imageProviderSupport) (modeldomain.Capability, error) {
+	routes, err := s.models.GetByPublicIDCandidates(ctx, publicModel)
+	if err != nil {
+		return "", ErrModelNotFound
+	}
+	var lastErr error
+	for _, capability := range []modeldomain.Capability{modeldomain.CapabilityImageEdit, modeldomain.CapabilityImage} {
+		eligible, _, routeErr := s.eligibleMediaRoutes(routes, key, capability, supports)
+		if routeErr == nil && len(eligible) > 0 {
+			return capability, nil
+		}
+		if routeErr != nil {
+			lastErr = routeErr
+			continue
+		}
+		lastErr = ErrNoAvailableAccount
+	}
+	if lastErr == nil {
+		return "", ErrModelNotFound
+	}
+	return "", lastErr
 }
 
 // cloneImageSelectionRegions 固化账号无关的归一化选区，换号重试时只重新上传原图。
@@ -188,7 +244,8 @@ func (s *Service) executeImage(
 	if err != nil {
 		return nil, ErrModelNotFound
 	}
-	route, preselectedSession, err := s.selectSchedulableMediaRoute(ctx, routes, key, capability, true, supports)
+	consumesQuota := operation != audit.OperationImageLayer
+	route, preselectedSession, err := s.selectSchedulableMediaRoute(ctx, routes, key, capability, consumesQuota, supports)
 	if err != nil {
 		// Preserve the established failure-audit path when every eligible target
 		// is currently unschedulable. The request loop will reproduce the
@@ -206,7 +263,7 @@ func (s *Service) executeImage(
 		ModelRouteID: route.ID, ModelPublicID: externalModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
 		Provider: string(route.Provider), Operation: operation, UsageSource: audit.UsageSourceNone, Streaming: streaming,
 	}
-	if operation == audit.OperationImageEdit {
+	if operation == audit.OperationImageEdit || operation == audit.OperationImageLayer {
 		auditBase.MediaInputImages = int64(max(0, inputImageCount))
 	}
 	if err := s.checkLedgerReady(); err != nil {
@@ -391,7 +448,7 @@ func (s *Service) executeImage(
 			}
 			quotaKind, _ := s.providers.QuotaKind(route.Provider)
 			refreshMode, decrementMode := quotaFinalizationModes(effectiveQuotaMode, quotaRefreshGroup)
-			if successful && quotaKind == provider.QuotaRemoteWindow && refreshMode != "" {
+			if successful && operation != audit.OperationImageLayer && quotaKind == provider.QuotaRemoteWindow && refreshMode != "" {
 				if decrementMode != "" && decrementMode != "weekly" {
 					units := max(1, response.QuotaUnits)
 					var updated bool

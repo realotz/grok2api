@@ -756,7 +756,7 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 	}
 	images = images[:count]
 	for index := range images {
-		segmentation, segmentErr := a.segmentImage(ctx, cfg, lease, token, images[index].ID)
+		segmentation, segmentErr := a.segmentImage(ctx, cfg, lease, token, images[index].ID, "")
 		if segmentErr != nil {
 			return nil, segmentErr
 		}
@@ -913,7 +913,7 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 		if editedImages[index].ID == "" {
 			return nil, errors.New("图片编辑结果缺少可用于重新分段的 asset ID")
 		}
-		segmentation, segmentErr := a.segmentImage(ctx, cfg, lease, token, editedImages[index].ID)
+		segmentation, segmentErr := a.segmentImage(ctx, cfg, lease, token, editedImages[index].ID, "")
 		if segmentErr != nil {
 			return nil, segmentErr
 		}
@@ -946,6 +946,63 @@ func resolveImageEditAspectRatio(aspectRatio, size string) (string, error) {
 		return "", nil
 	}
 	return resolveImageAspectRatio(aspectRatio, size)
+}
+
+func (a *Adapter) DetectImageLayers(ctx context.Context, request provider.ImageLayerRequest) (*provider.Response, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		response, err := a.detectImageLayersAttempt(ctx, request)
+		if err == nil {
+			return response, nil
+		}
+		var upstreamErr *webMediaUpstreamError
+		if !errors.As(err, &upstreamErr) || !isClearanceRefreshableMediaError(upstreamErr) || attempt > 0 {
+			if errors.As(err, &upstreamErr) {
+				return upstreamErr.providerResponse(), nil
+			}
+			return nil, err
+		}
+		a.log().Warn("web_image_clearance_retry", "operation", "layers", "status", upstreamErr.status, "body_kind", upstreamErr.bodyKind)
+	}
+	return nil, fmt.Errorf("图片分层 Clearance 重试耗尽")
+}
+
+func (a *Adapter) detectImageLayersAttempt(ctx context.Context, request provider.ImageLayerRequest) (*provider.Response, error) {
+	if len(request.ImageURLs) != 1 {
+		return invalidImageRequest("图片分层必须恰好提供 1 张图片")
+	}
+	cfg := a.config()
+	token, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
+	if err != nil {
+		return nil, err
+	}
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, request.Credential)
+	if err != nil {
+		return nil, err
+	}
+	defer lease.Release()
+	image, err := a.loadChatImage(ctx, lease, request.ImageURLs[0], cfg.MaxInputImageBytes)
+	if err != nil {
+		return invalidImageRequest(err.Error())
+	}
+	uploaded, err := a.uploadFileV2Direct(ctx, cfg, lease, token, image, cfg.BaseURL+"/imagine", imagineSelfUploadSource, "image_layer_upload")
+	if err != nil {
+		return nil, err
+	}
+	assetID := strings.TrimSpace(uploaded.MetadataID)
+	if assetID == "" {
+		assetID = strings.TrimSpace(uploaded.ID)
+	}
+	if assetID == "" {
+		return nil, fmt.Errorf("上传图片成功但上游未返回可用于分层的 asset ID")
+	}
+	segmentation, err := a.segmentImage(ctx, cfg, lease, token, assetID, cfg.BaseURL+"/imagine")
+	if err != nil {
+		return nil, err
+	}
+	return jsonProviderResponse(http.StatusOK, map[string]any{
+		"created": time.Now().Unix(),
+		"data":    []any{map[string]any{"segmentation": segmentation}},
+	}), nil
 }
 
 type imageEditStreamFrame struct {
@@ -1545,11 +1602,14 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 	return nil, fmt.Errorf("Grok Web Statsig 刷新失败")
 }
 
-// segmentImage 使用生成结果的上游 asset ID 获取对象检测框和 RLE 掩码。
-func (a *Adapter) segmentImage(ctx context.Context, cfg Config, lease *egress.Lease, token, assetID string) (json.RawMessage, error) {
+// segmentImage 使用上游 asset ID 获取对象检测框和 RLE 掩码。
+func (a *Adapter) segmentImage(ctx context.Context, cfg Config, lease *egress.Lease, token, assetID, referer string) (json.RawMessage, error) {
 	assetID = strings.TrimSpace(assetID)
 	if assetID == "" {
 		return nil, errors.New("Imagine 分段缺少 asset ID")
+	}
+	if strings.TrimSpace(referer) == "" {
+		referer = cfg.BaseURL + "/imagine/post/" + url.PathEscape(assetID) + "?scope=asset"
 	}
 	response, err := a.postJSONWithReferer(
 		ctx,
@@ -1559,7 +1619,7 @@ func (a *Adapter) segmentImage(ctx context.Context, cfg Config, lease *egress.Le
 		cfg.BaseURL+"/rest/media/segment",
 		map[string]any{"assetId": assetID, "cachedOnly": false, "maskFormat": "rle"},
 		time.Duration(cfg.ImageTimeoutSeconds)*time.Second,
-		cfg.BaseURL+"/imagine/post/"+url.PathEscape(assetID)+"?scope=asset",
+		referer,
 	)
 	if err != nil {
 		return nil, err

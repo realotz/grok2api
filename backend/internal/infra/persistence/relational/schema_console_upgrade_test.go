@@ -64,7 +64,7 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 		if (table == "request_audits" || table == "egress_nodes" || table == "egress_subscription_sources") && !strings.Contains(sql, "grok_console_asset") {
 			t.Fatalf("table %s was not upgraded for Console assets: %s", table, sql)
 		}
-		if table == "request_audits" && !strings.Contains(sql, "compaction") {
+		if table == "request_audits" && (!strings.Contains(sql, "compaction") || !strings.Contains(sql, "image_layer")) {
 			t.Fatalf("table %s operation constraint was not upgraded: %s", table, sql)
 		}
 	}

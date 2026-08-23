@@ -524,11 +524,11 @@ func (d *Database) ensureEgressAssetScopeConstraints(ctx context.Context) error 
 }
 
 // ensureAuditOperationConstraints upgrades existing databases so Codex remote
-// compaction and Console voice operations can be recorded separately.
+// compaction, Console voice, and image layer operations can be recorded separately.
 func (d *Database) ensureAuditOperationConstraints(ctx context.Context) error {
 	return d.ensureNamedConstraints(ctx, []consoleConstraint{
 		{model: &requestAuditModel{}, table: "request_audits", name: "chk_request_audits_operation"},
-	}, "tts")
+	}, "image_layer")
 }
 
 // ensureModelRouteCapabilityConstraints upgrades existing databases so Console

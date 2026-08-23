@@ -744,7 +744,8 @@ function auditProtocolLabel(operation: AuditDTO["operation"]): string {
     case "chat": return "Chat Completions";
     case "messages": return "Anthropic Messages";
     case "image":
-    case "image_edit": return "Images";
+    case "image_edit":
+    case "image_layer": return "Images";
     case "video": return "Videos";
     case "tts": return "Audio Speech";
     case "stt": return "Audio Transcriptions";

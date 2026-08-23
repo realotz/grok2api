@@ -216,6 +216,24 @@ func swaggerGenerateImage() {}
 // @Router /v1/images/edits [post]
 func swaggerEditImage() {}
 
+// SwaggerImageLayerRequest 表示图片分层请求。
+type SwaggerImageLayerRequest struct {
+	Model string                `json:"model" example:"grok-imagine-image-2.0-web"`
+	Image SwaggerImageReference `json:"image"`
+}
+
+// swaggerDetectImageLayers godoc
+// @Summary 识别图片分层
+// @Tags Images
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param request body SwaggerImageLayerRequest true "请求"
+// @Success 200 {object} map[string]any
+// @Failure 400 {object} map[string]any
+// @Router /v1/images/layers [post]
+func swaggerDetectImageLayers() {}
+
 // swaggerGetImage godoc
 // @Summary 获取归档图片
 // @Tags Images

@@ -89,6 +89,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/messages", h.createMessage)
 	router.POST("/images/generations", h.generateImage)
 	router.POST("/images/edits", h.editImage)
+	router.POST("/images/layers", h.detectImageLayers)
 	router.POST("/videos/generations", h.generateVideo)
 	router.POST("/videos/edits", h.editVideo)
 	router.POST("/videos/extensions", h.extendVideo)
@@ -701,6 +702,59 @@ func (h *Handler) editImage(c *gin.Context) {
 		return
 	}
 	h.writeResult(c, result, request.Stream, streamProtocolImage)
+}
+
+func (h *Handler) detectImageLayers(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, h.maxBodyBytes)
+	if !isJSONRequest(c) {
+		writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", "图片分层仅支持 application/json")
+		return
+	}
+	var request imageLayerJSONRequest
+	if err := decodeSingleJSON(c.Request.Body, &request, false); err != nil {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片分层 JSON 请求无效")
+		return
+	}
+	model := strings.TrimSpace(request.Model)
+	inputs := append([]imageEditJSONImage(nil), request.Images...)
+	if request.Image != nil {
+		inputs = append([]imageEditJSONImage{*request.Image}, inputs...)
+	}
+	if len(inputs) != 1 {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "image 必须恰好提供 1 张图片")
+		return
+	}
+	if strings.TrimSpace(inputs[0].FileID) != "" {
+		writeOpenAIError(c, http.StatusBadRequest, "unsupported_parameter", "当前暂不支持 image.file_id，请使用 image.url")
+		return
+	}
+	imageURL := strings.TrimSpace(inputs[0].URL)
+	if imageURL == "" {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "image 必须提供有效 url")
+		return
+	}
+	if model == "" {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片分层缺少有效 model")
+		return
+	}
+	clientKey, requestID, ok := requestIdentity(c)
+	if !ok {
+		return
+	}
+	result, err := h.gateway.DetectImageLayers(c.Request.Context(), gateway.ImageLayerInput{
+		RequestID: requestID, ClientKey: clientKey, PublicModel: model, ImageURLs: []string{imageURL},
+	})
+	if err != nil {
+		writeGatewayError(c, err)
+		return
+	}
+	h.writeResult(c, result, false, streamProtocolImage)
+}
+
+type imageLayerJSONRequest struct {
+	Model  string               `json:"model"`
+	Image  *imageEditJSONImage  `json:"image"`
+	Images []imageEditJSONImage `json:"images"`
 }
 
 func requestIdentity(c *gin.Context) (clientkeydomain.Key, string, bool) {
