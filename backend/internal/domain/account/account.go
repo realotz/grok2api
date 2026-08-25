@@ -554,6 +554,7 @@ type RoutingCandidate struct {
 	Billing              *Billing
 	QuotaWindow          *QuotaWindow
 	QuotaRecovery        *QuotaRecovery
+	EgressLeaseBlock     *EgressLeaseBlock
 	ModelQuotaBlock      *ModelQuotaBlock
 	ModelCapabilityKnown bool
 	SupportsModel        bool
@@ -562,10 +563,11 @@ type RoutingCandidate struct {
 // RoutingAccountBase contains provider-level routing state reusable across
 // models. Credential material is hydrated only after an account is selected.
 type RoutingAccountBase struct {
-	Credential    Credential
-	Billing       *Billing
-	QuotaRecovery *QuotaRecovery
-	QuotaWindow   *QuotaWindow
+	Credential       Credential
+	Billing          *Billing
+	QuotaRecovery    *QuotaRecovery
+	QuotaWindow      *QuotaWindow
+	EgressLeaseBlock *EgressLeaseBlock
 }
 
 // RoutingAccountOverlay contains model-specific eligibility state.
@@ -589,6 +591,26 @@ type ModelQuotaBlock struct {
 	Reason        string
 	CooldownUntil time.Time
 	UpdatedAt     time.Time
+}
+
+// EgressLeaseBlock temporarily removes one account-bound proxy lease from
+// routing without changing the account's health or disabling the physical
+// egress node shared by other leases.
+type EgressLeaseBlock struct {
+	AccountID     uint64
+	NodeID        uint64
+	Reason        string
+	Version       string
+	CooldownUntil time.Time
+	UpdatedAt     time.Time
+}
+
+// EgressLeaseBlockCursor is the stable keyset position used to scan durable
+// lease state while rows may be renewed or removed concurrently.
+type EgressLeaseBlockCursor struct {
+	CooldownUntil time.Time
+	AccountID     uint64
+	NodeID        uint64
 }
 
 // DeviceSession 表示一次短期 Device OAuth 授权流程。
@@ -647,12 +669,15 @@ func normalizeBillingPlan(value string) string {
 }
 
 func isPaidBillingPlan(value string) bool {
-	switch normalizeBillingPlan(value) {
-	case "super", "supergrok", "supergrokpro", "supergrokheavy", "supergroklite",
+	normalized := normalizeBillingPlan(value)
+	switch normalized {
+	case "super", "supergrok", "supergrokpro", "supergrokheavy", "supergroklite", "supergrokplus",
 		"grokpro", "xpremium", "xpremiumplus", "apikey":
 		return true
 	default:
-		return false
+		// SuperGrok Plus and later SuperGrok* tiers should stay paid even when
+		// weekly numeric limits are zero and the exact plan name is new.
+		return strings.HasPrefix(normalized, "supergrok")
 	}
 }
 

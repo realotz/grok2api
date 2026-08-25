@@ -91,6 +91,11 @@ func (s *Selector) beginSelectionSessionForKeyAndTier(ctx context.Context, provi
 			earliestRetry = earlierFuture(earliestRetry, candidate.ModelQuotaBlock.CooldownUntil, now)
 			continue
 		}
+		if candidateEgressLeaseCooling(candidate, value, now) {
+			coolingCandidates++
+			earliestRetry = earlierFuture(earliestRetry, candidate.EgressLeaseBlock.CooldownUntil, now)
+			continue
+		}
 		if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
 			coolingCandidates++
 			earliestRetry = earlierFuture(earliestRetry, *value.CooldownUntil, now)

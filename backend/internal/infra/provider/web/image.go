@@ -1546,7 +1546,7 @@ func parseMediaPostResponseWithDiagnostics(response *http.Response, onUpstreamEr
 }
 
 func isStatsigAntiBotJSON(body []byte) bool {
-	return strings.Contains(strings.ToLower(string(body)), "anti-bot")
+	return isStatsigRefreshableMediaError(&webMediaUpstreamError{status: http.StatusForbidden, bodyKind: "json"}, body)
 }
 
 func (a *Adapter) postJSON(ctx context.Context, cfg Config, lease *egress.Lease, token, endpoint string, payload any, timeout time.Duration) (*http.Response, error) {
@@ -1592,12 +1592,18 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 				_ = a.invalidateSignedStatsig(http.MethodPost, endpoint)
 				return response, nil
 			}
-			// code 7 anti-bot is often a stale (seed, HEX) pair, not a policy block.
-			if isStatsigAntiBotJSON(body) && attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, endpoint) {
-				continue
+			// Code 7 is the application-layer equivalent of reloading the Grok
+			// page: refresh only the path-bound Statsig signature and replay the
+			// explicitly rejected POST once. It is not a Cloudflare challenge, so
+			// the current Clearance lease remains valid.
+			if isStatsigRefreshableMediaError(upstreamErr, body) {
+				if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, endpoint) {
+					continue
+				}
+				return response, nil
 			}
-			// Structured JSON responses are application policy decisions. They
-			// must not invalidate Clearance, affect egress health, or be replayed.
+			// Remaining structured JSON responses are application policy decisions.
+			// They must not invalidate Clearance, affect egress health, or be replayed.
 			if upstreamErr.bodyKind == "json" || attempt > 0 || !a.invalidateSignedStatsig(http.MethodPost, endpoint) {
 				return response, nil
 			}
