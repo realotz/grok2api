@@ -123,7 +123,11 @@ func TestPrepareVideoReferenceAudioMapsVoiceIDWithoutUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Release()
-	adapter := NewAdapter(Config{BaseURL: server.URL}, manager, cipher, nil, nil)
+	adapter := NewAdapter(Config{
+		BaseURL:            server.URL,
+		StatsigMode:        "manual",
+		StatsigManualValue: base64.RawStdEncoding.EncodeToString(make([]byte, 70)),
+	}, manager, cipher, nil, nil)
 	assetID, err := adapter.prepareVideoReferenceAudio(context.Background(), adapter.config(), lease, "test-sso", "Eve")
 	if err != nil {
 		t.Fatal(err)

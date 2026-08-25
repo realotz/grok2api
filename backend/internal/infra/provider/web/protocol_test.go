@@ -1937,6 +1937,86 @@ func TestMediaJSONPostsAdvertiseGzipOnly(t *testing.T) {
 	}
 }
 
+func TestGenerateVideoRefreshesStatsigOnStalePageForbidden(t *testing.T) {
+	requestCalls := 0
+	signerCalls := 0
+	signatures := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/sign":
+			signerCalls++
+			value := base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{byte('a' + signerCalls)}, 70))
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"x-statsig-id":"`+value+`"}`)
+		case "/rest/app-chat/conversations/new":
+			requestCalls++
+			signatures = append(signatures, request.Header.Get("x-statsig-id"))
+			if requestCalls == 1 {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(writer, `{"code":7,"message":"This page is out of date. Reload to continue.","details":[]}`)
+				return
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(writer, `data: {"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"post_1","videoUrl":"/videos/final.mp4"}}}}`+"\n\n")
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedToken, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "url", StatsigSignerURL: server.URL + "/sign", VideoTimeoutSeconds: 5,
+	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	adapter.statsig.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		return "current-page-meta", nil
+	}
+	adapter.statsig.validateEndpoint = func(context.Context, string) error { return nil }
+
+	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: account.Credential{
+			ID: 1, Provider: account.ProviderWeb, WebTier: account.WebTierSuper,
+			EncryptedAccessToken: encryptedToken,
+		},
+		Model: "grok-imagine-video-1.5", Prompt: "test", Duration: 5,
+	})
+	if err != nil || result.URL != "https://assets.grok.com/videos/final.mp4" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if requestCalls != 2 || signerCalls != 2 || len(signatures) != 2 || signatures[0] == signatures[1] {
+		t.Fatalf("requests=%d signer_calls=%d signatures=%#v", requestCalls, signerCalls, signatures)
+	}
+}
+
+func TestStatsigRefreshableMediaErrorDoesNotReplayPolicyOrBlockedResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "stale page", body: `{"code":7,"message":"This page is out of date. Reload to continue."}`, want: true},
+		{name: "anti bot", body: `{"error":{"code":"anti-bot","message":"Request rejected by anti-bot rules."}}`, want: true},
+		{name: "moderation", body: `{"error":{"code":"content-moderated","message":"rejected"}}`, want: false},
+		{name: "blocked account", body: `{"code":7,"message":"User is blocked [WKE=unauthorized:blocked-user]"}`, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := newWebMediaUpstreamError(http.StatusForbidden, []byte(test.body), false)
+			if got := isStatsigRefreshableMediaError(err, []byte(test.body)); got != test.want {
+				t.Fatalf("refreshable = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestGenerateVideoRecoversFromStreamEOFViaMediaPostGet(t *testing.T) {
 	const postID = "8efff9ef-8aa4-4a6e-ab73-aa2b5c7bccb5"
 	gets := 0

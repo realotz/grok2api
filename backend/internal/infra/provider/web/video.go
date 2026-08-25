@@ -59,6 +59,22 @@ func isClearanceRefreshableMediaError(e *webMediaUpstreamError) bool {
 	return e.cloudflareChallenge || e.bodyKind == "empty" || e.bodyKind == "html"
 }
 
+// isStatsigRefreshableMediaError identifies Grok's application-layer stale-page
+// response. Code 7 is also used for definitive account blocks, so those must
+// remain terminal and must not be replayed with a fresh signature.
+func isStatsigRefreshableMediaError(e *webMediaUpstreamError, body []byte) bool {
+	if e == nil || e.status != http.StatusForbidden || e.bodyKind != "json" || provider.IsDefinitiveAccountBlockBody(body) {
+		return false
+	}
+	code, message, structured := extractWebMediaUpstreamErrorFields(body)
+	if !structured {
+		return false
+	}
+	normalized := strings.ToLower(message)
+	return code == "7" || strings.Contains(normalized, "anti-bot") ||
+		strings.Contains(normalized, "page is out of date") || strings.Contains(normalized, "reload to continue")
+}
+
 func (e *webMediaUpstreamError) providerResponse() *provider.Response {
 	if e == nil {
 		return nil
