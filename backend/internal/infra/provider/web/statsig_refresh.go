@@ -51,8 +51,9 @@ func statsigPairNeedsRefreshLocked() bool {
 	return statsigLastRefresh.IsZero() || time.Since(statsigLastRefresh) >= statsigRefreshMinGap
 }
 
-// refreshStatsigPair 不再用首页 seed/curves 现算 HEX。grok 只校验 pair 自洽，
-// 冻住的浏览器抓包 pair 加新鲜时间戳即可；现算会把可用签名覆盖成 403 code 7。
+// refreshStatsigPair 不再用首页 seed/curves 现算 HEX。8 月 19 日起现算会把
+// 已验证 pair 覆盖成 grok 不认的签名（公式下标与当前模块不一致）。
+// 前端发版后应替换 statsig_local.go 的冻住 pair，而不是在这里现算。
 func (a *Adapter) refreshStatsigPair(ctx context.Context, token string, lease *infraegress.Lease) error {
 	statsigRefreshMu.Lock()
 	defer statsigRefreshMu.Unlock()

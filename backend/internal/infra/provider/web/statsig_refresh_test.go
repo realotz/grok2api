@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -112,8 +113,18 @@ func TestExtractStatsigSVGPaths(t *testing.T) {
 }
 
 func TestIsStatsigAntiBotJSON(t *testing.T) {
-	if !isStatsigAntiBotJSON([]byte(`{"error":{"message":"Request rejected by anti-bot rules.","code":7}}`)) {
+	forbidden := &webMediaUpstreamError{status: http.StatusForbidden, bodyKind: "json"}
+	if !isStatsigRefreshableMediaError(forbidden, []byte(`{"error":{"message":"Request rejected by anti-bot rules.","code":7}}`)) {
 		t.Fatal("expected anti-bot JSON")
+	}
+	if !isStatsigRefreshableMediaError(forbidden, []byte(`{"error":{"code":7,"message":"This page is out of date. Reload to continue."}}`)) {
+		t.Fatal("expected nested out-of-date JSON")
+	}
+	if !isStatsigRefreshableMediaError(forbidden, []byte(`{"code":7,"message":"This page is out of date. Reload to continue.","details":[]}`)) {
+		t.Fatal("expected root out-of-date JSON")
+	}
+	if isStatsigRefreshableMediaError(forbidden, []byte(`{"error":{"message":"User is blocked [WKE=unauthorized:blocked-user]","code":7}}`)) {
+		t.Fatal("account-block JSON must not be treated as Statsig refresh")
 	}
 	if isStatsigAntiBotJSON([]byte(`{"error":{"message":"User is blocked [WKE=unauthorized:blocked-user]","code":7}}`)) {
 		t.Fatal("account-block JSON must not be treated as Statsig refresh")

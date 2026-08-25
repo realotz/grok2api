@@ -11,6 +11,8 @@ import (
 // HEX 公式来自 grok 懒加载模块 1645e3（cdn.grok.com/_next/static/chunks/38asg_axwuaew.js，
 // 文件名每次发版会变）。进程不会拉这个模块，也不会解混淆。生产签名使用冻住的
 // (seed, HEX) 对，只刷新时间戳；不要用页面 curves 现算覆盖。
+// 冻住的是「不要用错公式覆盖」，不是「一对 HEX 跨发版永远有效」。curves
+// 变了就把 statsig_local.go 里的 pair 换成新的同一页抓包。
 //
 // 定位 1645e3：
 //  1. 首页 JS 里搜 1645e3 或 x-statsig-id，调用链是

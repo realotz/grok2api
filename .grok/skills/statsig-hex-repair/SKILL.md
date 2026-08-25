@@ -10,13 +10,16 @@ description: >
 
 # Repair grok Statsig HEX (browser vs 1645e3)
 
-`seed` 和页面 `curves` 会自动刷新。这个技能只处理 **公式层**：签名模块换了 seed 下标或取样方式。模块数字 ID（曾叫 `1645e3`）和 chunk 文件名（曾叫 `38asg_axwuaew.js`）发版就会变，不要按旧名字找。
+生产签名用 `statsig_local.go` 里冻住的 (seed, HEX)，只刷新时间戳。`refreshStatsigPair` 是空操作：8 月 19 日关掉现算，是因为当时公式会把能用的 pair 覆盖成 403。
+
+冻住不是跨发版永久有效。前端改了 curves 之后，旧 pair 会变成 code 7 `This page is out of date. Reload to continue.`。这时先抓同一页官方 HEX，替换冻住 pair；公式下标对不上不要重新打开现算。
+
+这个技能处理 **公式层**：签名模块换了 seed 下标或取样方式。模块数字 ID（曾叫 `1645e3`）和 chunk 文件名（曾叫 `38asg_axwuaew.js`）发版就会变，不要按旧名字找。
 
 ## 先判断要不要动公式
 
-1. 看日志有没有 `web_statsig_svg_paths_refreshed` + `web_statsig_pair_refreshed`。
-2. 若刷新被跳过（`skipped_stale_svg`）：先修提取（RSC `"curves"` 形状），不要改下标。
-3. 若配对已刷新仍 403 code 7：按下面抓浏览器、对公式。
+1. 生产路径不会写 `web_statsig_svg_paths_refreshed`。先用技能脚本抓同一页 seed+官方 HEX，替换 `statsig_local.go` 的冻住 pair，再打一条视频确认。
+2. 若新 pair 仍 403 code 7：按下面抓浏览器、对公式。公式对齐前不要恢复 `refreshStatsigPair` 现算。
 
 `manual` Statsig 模式不会走现算，先排除。
 

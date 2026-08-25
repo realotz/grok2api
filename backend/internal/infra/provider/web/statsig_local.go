@@ -17,7 +17,12 @@ const (
 )
 
 // 内嵌一对已在真实 grok.com 会话里验证过的 (seed, HEX)。
-// grok 只校验载荷自洽（HEX 与 seed 匹配、时间戳与 SHA 正确），不要求 seed 等于当前页面 meta。
+// grok 校验 HEX 与当前前端 curves 对这个 seed 自洽，再加新鲜时间戳和 SHA；
+// 不要求 seed 等于调用时的页面 meta。前端发版改了 curves 之后，旧 pair
+// 会变成 403 code 7（This page is out of date），需要重新抓同一页的
+// seed+官方 HEX 替换这里，而不是每次请求去拉首页。
+//
+// 2026-08-25 对照 grok-web@5971eb27；不要用 statsig_hex.go 现算覆盖。
 var (
 	statsigPairMu sync.RWMutex
 	statsigSeed   []byte
@@ -25,12 +30,12 @@ var (
 )
 
 func init() {
-	seed, err := decodeStatsigSeed("YGVPoGJ3OkuqXVlKrsPF/2PeV4XTAdWFB6r4pSiisYmG5JdDL56wT3Qvh8nzt/WF")
+	seed, err := decodeStatsigSeed("o15XOuj/p4WHEnsnuxG+Z2qe9rMpftEEe8qeAyEfauBuejVfITaKQFXtwi641ycs")
 	if err != nil || len(seed) != 48 {
 		return
 	}
 	statsigSeed = seed
-	statsigHEX = "b987850f851eb851eb8503d70a3d70a3d703d70a3d70a3d70f851eb851eb8500"
+	statsigHEX = "8a50400f33333333333304ccccccccccccc04ccccccccccccc0f33333333333300"
 }
 
 func decodeStatsigSeed(value string) ([]byte, error) {
