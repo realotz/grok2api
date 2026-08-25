@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowUp, AudioLines, BrainCircuit, Check, CheckCircle2, ChevronDown, Clock3, Download, ExternalLink, Eye, EyeOff, Globe, History, ImageIcon, ImagePlus, ImageUpscale, Images, Loader2, MessageSquareText, Mic, PanelRight, Pencil, RefreshCw, Sparkle, Square, SquarePen, Trash2, TriangleAlert, TvMinimal, Upload, Video, Wrench, X } from "lucide-react";
+import { ArrowUp, AudioLines, BrainCircuit, Check, CheckCircle2, ChevronDown, Clock3, Download, ExternalLink, Eye, EyeOff, Globe, History, ImageIcon, ImagePlus, ImageUpscale, Images, Loader2, MessageSquareText, Mic, PanelRight, Pause, Pencil, Play, RefreshCw, Sparkle, Square, SquarePen, Trash2, TriangleAlert, TvMinimal, Upload, Video, Wrench, X } from "lucide-react";
 import { marked } from "marked";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -44,6 +44,15 @@ import {
 } from "@/features/creative-console/creative-console-api";
 import { getClientKeySecret, listClientKeys, type ClientKeyDTO } from "@/features/client-keys/client-keys-api";
 import { importVideoInputFromURL, uploadMediaInput } from "@/features/media/media-api";
+import {
+  hasVoiceLibraryPreview,
+  previewLanguage,
+  voiceLibraryGender,
+  voiceLibraryTagsPhrase,
+  voiceLibraryVoices,
+  voiceSampleURL,
+  type VoiceLibraryGender,
+} from "@/features/creative-console/voice-library";
 import { PageHeader } from "@/shared/components/page-header";
 import { cn } from "@/shared/lib/cn";
 
@@ -1706,7 +1715,7 @@ function VideoResult({ requestId, status, loading, error, onRetry }: { requestId
 function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePanelProps) {
   const { t } = useTranslation();
   const [subMode, setSubMode] = useState<"tts" | "stt">("tts");
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState<string>(voiceLibraryTagsPhrase.zh);
   const [language, setLanguage] = useState("zh");
   const [voiceId, setVoiceId] = useState("eve");
   const [speed, setSpeed] = useState("1.0");
@@ -1714,6 +1723,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   const [ttsResult, setTtsResult] = useState<TTSResult | null>(null);
   const [sttResult, setSttResult] = useState<STTResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const { playing, play, stop } = useVoicePreview();
 
   const filteredModels = useMemo(() => {
     const matched = modelOptions.filter((item) => (
@@ -1737,14 +1747,22 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
     enabled: Boolean(apiKey) && subMode === "tts",
     staleTime: 60_000,
   });
-  const voices = useMemo(() => voicesQuery.data ?? [], [voicesQuery.data]);
-  const activeVoiceId = voices.some((voice) => voice.voiceId === voiceId)
+  const libraryVoices = useMemo(() => mergeVoiceLibrary(voicesQuery.data ?? []), [voicesQuery.data]);
+  const activeVoiceId = libraryVoices.some((voice) => voice.voiceId === voiceId)
     ? voiceId
-    : voices[0]?.voiceId ?? voiceId;
+    : libraryVoices[0]?.voiceId ?? voiceId;
+  const previewLang = previewLanguage(language);
+
+  useEffect(() => {
+    if (prompt === voiceLibraryTagsPhrase.zh || prompt === voiceLibraryTagsPhrase.en) {
+      setPrompt(voiceLibraryTagsPhrase[previewLang]);
+    }
+  }, [previewLang, prompt]);
 
   const ttsMutation = useMutation({
     mutationFn: () => synthesizeSpeech({ apiKey, model: activeModel || "grok-voice-latest", text: prompt.trim(), voiceId: activeVoiceId, language, speed: Number(speed) }),
     onSuccess: (result) => {
+      stop();
       setTtsResult(result);
       setSttResult(null);
     },
@@ -1755,10 +1773,13 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
       return transcribeSpeech({ apiKey, model: activeModel || "grok-stt", file: audioFile, language });
     },
     onSuccess: (result) => {
+      stop();
       setSttResult(result);
       setTtsResult(null);
     },
   });
+  const busy = ttsMutation.isPending || sttMutation.isPending;
+  const showLibrary = subMode === "tts" && !ttsResult && !sttResult && !busy;
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -1774,14 +1795,33 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
     sttMutation.mutate();
   }
 
-  const busy = ttsMutation.isPending || sttMutation.isPending;
+  function selectVoice(nextVoiceId: string) {
+    setVoiceId(nextVoiceId);
+    setTtsResult(null);
+  }
+
+  function playVoice(nextVoiceId: string) {
+    selectVoice(nextVoiceId);
+    if (!hasVoiceLibraryPreview(nextVoiceId)) return;
+    play(nextVoiceId, voiceSampleURL(nextVoiceId, previewLang));
+  }
+
   const languageOptions = ["auto", "zh", "en", "ja", "ko", "fr", "de", "es"] as const;
   const speedOptions = ["0.7", "0.8", "0.9", "1.0", "1.1", "1.2", "1.3", "1.4", "1.5"] as const;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto px-1 py-4">
-        {!ttsResult && !sttResult && !busy ? <WelcomeState title={t("creativeConsole.welcomeVoice")} /> : null}
+        {showLibrary ? (
+          <VoiceLibraryGrid
+            voices={libraryVoices}
+            selectedVoiceId={activeVoiceId}
+            playing={playing}
+            onSelect={selectVoice}
+            onPlay={playVoice}
+            onUsePhrase={() => setPrompt(voiceLibraryTagsPhrase[previewLang])}
+          />
+        ) : null}
         {busy ? <LoadingResult text={subMode === "tts" ? t("creativeConsole.synthesizing") : t("creativeConsole.transcribing")} /> : null}
         {ttsResult ? (
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 rounded-2xl bg-secondary/40 p-4">
@@ -1805,8 +1845,8 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
       </div>
       <form onSubmit={submit} className={composerClassName}>
         <div className="flex items-center gap-2 px-3 pt-3">
-          <Button type="button" size="sm" variant={subMode === "tts" ? "secondary" : "ghost"} className="h-8 gap-1.5" onClick={() => setSubMode("tts")}><AudioLines />{t("creativeConsole.synthesize")}</Button>
-          <Button type="button" size="sm" variant={subMode === "stt" ? "secondary" : "ghost"} className="h-8 gap-1.5" onClick={() => setSubMode("stt")}><Mic />{t("creativeConsole.transcribe")}</Button>
+          <Button type="button" size="sm" variant={subMode === "tts" ? "secondary" : "ghost"} className="h-8 gap-1.5" onClick={() => { stop(); setSubMode("tts"); }}><AudioLines />{t("creativeConsole.synthesize")}</Button>
+          <Button type="button" size="sm" variant={subMode === "stt" ? "secondary" : "ghost"} className="h-8 gap-1.5" onClick={() => { stop(); setSubMode("stt"); }}><Mic />{t("creativeConsole.transcribe")}</Button>
         </div>
         {subMode === "tts" ? (
           <Textarea id="voice-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={t("creativeConsole.voicePlaceholder")} className="min-h-24 resize-none border-0 bg-transparent px-4 py-3 text-sm focus-visible:ring-0" />
@@ -1825,16 +1865,13 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
               <CompactSelect value={speed} options={speedOptions} onChange={setSpeed} ariaLabel={t("creativeConsole.voiceSpeed")} suffix="x" icon={<Clock3 />} />
             ) : null}
             {subMode === "tts" ? (
-              <Select value={activeVoiceId} onValueChange={setVoiceId} disabled={voices.length === 0 && voicesQuery.isPending}>
-                <SelectTrigger className="h-8 w-auto max-w-40 gap-1 border-0 bg-transparent px-2 shadow-none hover:bg-secondary/70 focus:ring-0" aria-label={t("creativeConsole.voiceId")}>
-                  <SelectValue placeholder={t("creativeConsole.voiceId")} />
-                </SelectTrigger>
-                <SelectContent>
-                  {(voices.length > 0 ? voices : [{ voiceId: "eve", name: "eve" } as VoiceInfo]).map((voice) => (
-                    <SelectItem key={voice.voiceId} value={voice.voiceId}>{voice.name || voice.voiceId}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <VoiceLibraryPicker
+                voices={libraryVoices}
+                selectedVoiceId={activeVoiceId}
+                playing={playing}
+                onSelect={selectVoice}
+                onPlay={playVoice}
+              />
             ) : null}
           </div>
           <Button type="submit" size="icon" aria-label={subMode === "tts" ? t("creativeConsole.synthesize") : t("creativeConsole.transcribe")} disabled={!apiKey || !activeModel || busy || (subMode === "tts" ? !prompt.trim() : !audioFile)}>
@@ -1843,6 +1880,183 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
         </div>
       </form>
     </div>
+  );
+}
+
+type LibraryVoice = VoiceInfo & { hasPreview: boolean; gender?: VoiceLibraryGender };
+
+function mergeVoiceLibrary(liveVoices: VoiceInfo[]): LibraryVoice[] {
+  const liveById = new Map(liveVoices.map((voice) => [voice.voiceId, voice]));
+  const catalog = voiceLibraryVoices.map((voice) => {
+    const live = liveById.get(voice.id);
+    return { voiceId: voice.id, name: live?.name || voice.name, language: live?.language, gender: voice.gender, hasPreview: true };
+  });
+  const extras = liveVoices
+    .filter((voice) => !hasVoiceLibraryPreview(voice.voiceId))
+    .map((voice) => ({ ...voice, gender: voiceLibraryGender(voice.voiceId), hasPreview: false }));
+  const merged = extras.length === 0 ? catalog : [...catalog, ...extras];
+  return [...merged].sort((left, right) => {
+    const genderRank = (value?: VoiceLibraryGender) => (value === "female" ? 0 : value === "male" ? 1 : 2);
+    const byGender = genderRank(left.gender) - genderRank(right.gender);
+    if (byGender !== 0) return byGender;
+    return (left.name || left.voiceId).localeCompare(right.name || right.voiceId);
+  });
+}
+
+function useVoicePreview() {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState<string | null>(null);
+
+  function stop() {
+    audioRef.current?.pause();
+    if (audioRef.current) audioRef.current.currentTime = 0;
+    setPlaying(null);
+  }
+
+  function play(voiceId: string, url: string) {
+    if (playing === voiceId) {
+      stop();
+      return;
+    }
+    if (!audioRef.current) audioRef.current = new Audio();
+    const audio = audioRef.current;
+    audio.src = url;
+    setPlaying(voiceId);
+    void audio.play().catch(() => setPlaying(null));
+    audio.onended = () => setPlaying(null);
+  }
+
+  useEffect(() => () => {
+    audioRef.current?.pause();
+    audioRef.current = null;
+  }, []);
+
+  return { playing, play, stop };
+}
+
+function VoiceLibraryGrid({
+  voices, selectedVoiceId, playing, onSelect, onPlay, onUsePhrase,
+}: {
+  voices: LibraryVoice[];
+  selectedVoiceId: string;
+  playing: string | null;
+  onSelect: (voiceId: string) => void;
+  onPlay: (voiceId: string) => void;
+  onUsePhrase: () => void;
+}) {
+  const { t } = useTranslation();
+  const femaleVoices = voices.filter((voice) => voice.gender === "female");
+  const maleVoices = voices.filter((voice) => voice.gender === "male");
+  const otherVoices = voices.filter((voice) => voice.gender !== "female" && voice.gender !== "male");
+  return (
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-2">
+      <div className="space-y-2 text-center">
+        <h2 className="text-xl font-medium tracking-tight sm:text-2xl">{t("creativeConsole.voiceLibrary")}</h2>
+        <p className="text-sm text-muted-foreground">{t("creativeConsole.voiceLibraryPhrase")}</p>
+        <p className="text-[11px] leading-5 text-muted-foreground">{t("creativeConsole.voiceLibraryTagsHint")}</p>
+        <Button type="button" size="sm" variant="secondary" onClick={onUsePhrase}>{t("creativeConsole.useVoicePhrase")}</Button>
+      </div>
+      <VoiceLibrarySection title={t("creativeConsole.voiceGenderGroupFemale")} voices={femaleVoices} selectedVoiceId={selectedVoiceId} playing={playing} onSelect={onSelect} onPlay={onPlay} />
+      <VoiceLibrarySection title={t("creativeConsole.voiceGenderGroupMale")} voices={maleVoices} selectedVoiceId={selectedVoiceId} playing={playing} onSelect={onSelect} onPlay={onPlay} />
+      {otherVoices.length > 0 ? (
+        <VoiceLibrarySection title={t("creativeConsole.voiceId")} voices={otherVoices} selectedVoiceId={selectedVoiceId} playing={playing} onSelect={onSelect} onPlay={onPlay} />
+      ) : null}
+    </div>
+  );
+}
+
+function VoiceLibrarySection({
+  title, voices, selectedVoiceId, playing, onSelect, onPlay,
+}: {
+  title: string;
+  voices: LibraryVoice[];
+  selectedVoiceId: string;
+  playing: string | null;
+  onSelect: (voiceId: string) => void;
+  onPlay: (voiceId: string) => void;
+}) {
+  if (voices.length === 0) return null;
+  return (
+    <section className="space-y-2">
+      <h3 className="px-1 text-xs font-medium text-muted-foreground">{title}</h3>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+        {voices.map((voice) => (
+          <VoiceLibraryCard key={voice.voiceId} voice={voice} selected={voice.voiceId === selectedVoiceId} playing={playing} onSelect={onSelect} onPlay={onPlay} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function VoiceLibraryPicker({
+  voices, selectedVoiceId, playing, onSelect, onPlay,
+}: {
+  voices: LibraryVoice[];
+  selectedVoiceId: string;
+  playing: string | null;
+  onSelect: (voiceId: string) => void;
+  onPlay: (voiceId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const selected = voices.find((voice) => voice.voiceId === selectedVoiceId);
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="ghost" size="sm" className="h-8 max-w-44 gap-1.5 px-2" aria-label={t("creativeConsole.voiceId")}>
+          <AudioLines className="size-3.5" />
+          <span className="truncate">{selected?.name || selectedVoiceId}{selected?.gender ? ` · ${t(selected.gender === "female" ? "creativeConsole.voiceGenderFemale" : "creativeConsole.voiceGenderMale")}` : ""}</span>
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-80 p-2">
+        <div className="max-h-80 space-y-1 overflow-y-auto">
+          {voices.map((voice) => (
+            <VoiceLibraryCard key={voice.voiceId} voice={voice} selected={voice.voiceId === selectedVoiceId} playing={playing} onSelect={onSelect} onPlay={onPlay} compact />
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function VoiceLibraryCard({
+  voice, selected, playing, onSelect, onPlay, compact = false,
+}: {
+  voice: LibraryVoice;
+  selected: boolean;
+  playing: string | null;
+  onSelect: (voiceId: string) => void;
+  onPlay: (voiceId: string) => void;
+  compact?: boolean;
+}) {
+  const { t } = useTranslation();
+  const genderLabel = voice.gender === "female" ? t("creativeConsole.voiceGenderFemale") : voice.gender === "male" ? t("creativeConsole.voiceGenderMale") : "";
+  return (
+    <div className={cn("flex items-center gap-2 rounded-xl px-2.5 py-2 text-left transition-colors", compact ? "hover:bg-secondary/70" : "bg-secondary/40 hover:bg-secondary/60", selected && "bg-secondary text-foreground ring-1 ring-ring")}>
+      <button type="button" className="min-w-0 flex-1 text-left" onClick={() => onSelect(voice.voiceId)}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-sm font-medium">{voice.name || voice.voiceId}</span>
+          {genderLabel ? <span className="shrink-0 rounded-full bg-background/70 px-1.5 py-px text-[10px] text-muted-foreground">{genderLabel}</span> : null}
+        </div>
+        <div className="truncate text-[10px] text-muted-foreground">{selected ? t("creativeConsole.selectedVoice") : voice.voiceId}</div>
+      </button>
+      {voice.hasPreview ? (
+        <VoicePlayButton label={t("creativeConsole.playVoicePreview")} active={playing === voice.voiceId} onClick={() => onPlay(voice.voiceId)} />
+      ) : null}
+    </div>
+  );
+}
+
+function VoicePlayButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button type="button" size="icon" variant={active ? "secondary" : "ghost"} className="size-7" aria-label={active ? t("creativeConsole.stopVoicePreview") : label} onClick={onClick}>
+          {active ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{active ? t("creativeConsole.stopVoicePreview") : label}</TooltipContent>
+    </Tooltip>
   );
 }
 

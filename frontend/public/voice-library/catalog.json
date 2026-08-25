@@ -1,0 +1,304 @@
+{
+  "source": "grok-voice-latest",
+  "model": "grok-voice-latest",
+  "generatedAt": "2026-08-23T09:05:54Z",
+  "phrase": {
+    "zh": "你好，这里是声音世界。我可以小声说话，也可以开心的笑，慢慢地讲，也可以大声哭，生气发火。",
+    "en": "Hello, this is the world of sound. I can speak softly, laugh with joy, talk slowly, cry out loud, and get angry."
+  },
+  "tagsPhrase": {
+    "zh": "你好，这里是声音世界。[pause] 我可以<whisper>小声说话</whisper>，也可以开心的[laugh]笑，<slow><soft>慢慢地讲</soft></slow>，也可以[cry]大声哭，<angry>生气发火</angry>。",
+    "en": "Hello, this is the world of sound. [pause] I can <whisper>speak softly</whisper>, laugh [laugh] with joy, <slow><soft>talk slowly</soft></slow>, [cry] cry out loud, and <angry>get angry</angry>."
+  },
+  "tags": [
+    "pause",
+    "whisper",
+    "laugh",
+    "slow",
+    "soft",
+    "cry",
+    "angry"
+  ],
+  "voices": [
+    {
+      "id": "altair",
+      "name": "Altair",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/altair/zh.mp3",
+        "en": "/voice-library/altair/en.mp3"
+      }
+    },
+    {
+      "id": "ara",
+      "name": "Ara",
+      "gender": "female",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/ara/zh.mp3",
+        "en": "/voice-library/ara/en.mp3"
+      }
+    },
+    {
+      "id": "atlas",
+      "name": "Atlas",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/atlas/zh.mp3",
+        "en": "/voice-library/atlas/en.mp3"
+      }
+    },
+    {
+      "id": "aurora",
+      "name": "Aurora",
+      "gender": "female",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/aurora/zh.mp3",
+        "en": "/voice-library/aurora/en.mp3"
+      }
+    },
+    {
+      "id": "carina",
+      "name": "Carina",
+      "gender": "female",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/carina/zh.mp3",
+        "en": "/voice-library/carina/en.mp3"
+      }
+    },
+    {
+      "id": "castor",
+      "name": "Castor",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/castor/zh.mp3",
+        "en": "/voice-library/castor/en.mp3"
+      }
+    },
+    {
+      "id": "celeste",
+      "name": "Celeste",
+      "gender": "female",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/celeste/zh.mp3",
+        "en": "/voice-library/celeste/en.mp3"
+      }
+    },
+    {
+      "id": "cosmo",
+      "name": "Cosmo",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/cosmo/zh.mp3",
+        "en": "/voice-library/cosmo/en.mp3"
+      }
+    },
+    {
+      "id": "eve",
+      "name": "Eve",
+      "gender": "female",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/eve/zh.mp3",
+        "en": "/voice-library/eve/en.mp3"
+      }
+    },
+    {
+      "id": "helios",
+      "name": "Helios",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/helios/zh.mp3",
+        "en": "/voice-library/helios/en.mp3"
+      }
+    },
+    {
+      "id": "helix",
+      "name": "Helix",
+      "gender": "female",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/helix/zh.mp3",
+        "en": "/voice-library/helix/en.mp3"
+      }
+    },
+    {
+      "id": "iris",
+      "name": "Iris",
+      "gender": "female",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/iris/zh.mp3",
+        "en": "/voice-library/iris/en.mp3"
+      }
+    },
+    {
+      "id": "kepler",
+      "name": "Kepler",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/kepler/zh.mp3",
+        "en": "/voice-library/kepler/en.mp3"
+      }
+    },
+    {
+      "id": "leo",
+      "name": "Leo",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/leo/zh.mp3",
+        "en": "/voice-library/leo/en.mp3"
+      }
+    },
+    {
+      "id": "liora",
+      "name": "Liora",
+      "gender": "female",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/liora/zh.mp3",
+        "en": "/voice-library/liora/en.mp3"
+      }
+    },
+    {
+      "id": "lumen",
+      "name": "Lumen",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/lumen/zh.mp3",
+        "en": "/voice-library/lumen/en.mp3"
+      }
+    },
+    {
+      "id": "luna",
+      "name": "Luna",
+      "gender": "female",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/luna/zh.mp3",
+        "en": "/voice-library/luna/en.mp3"
+      }
+    },
+    {
+      "id": "lux",
+      "name": "Lux",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/lux/zh.mp3",
+        "en": "/voice-library/lux/en.mp3"
+      }
+    },
+    {
+      "id": "naksh",
+      "name": "Naksh",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/naksh/zh.mp3",
+        "en": "/voice-library/naksh/en.mp3"
+      }
+    },
+    {
+      "id": "orion",
+      "name": "Orion",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/orion/zh.mp3",
+        "en": "/voice-library/orion/en.mp3"
+      }
+    },
+    {
+      "id": "perseus",
+      "name": "Perseus",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/perseus/zh.mp3",
+        "en": "/voice-library/perseus/en.mp3"
+      }
+    },
+    {
+      "id": "rex",
+      "name": "Rex",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/rex/zh.mp3",
+        "en": "/voice-library/rex/en.mp3"
+      }
+    },
+    {
+      "id": "rigel",
+      "name": "Rigel",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/rigel/zh.mp3",
+        "en": "/voice-library/rigel/en.mp3"
+      }
+    },
+    {
+      "id": "sal",
+      "name": "Sal",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/sal/zh.mp3",
+        "en": "/voice-library/sal/en.mp3"
+      }
+    },
+    {
+      "id": "sirius",
+      "name": "Sirius",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/sirius/zh.mp3",
+        "en": "/voice-library/sirius/en.mp3"
+      }
+    },
+    {
+      "id": "ursa",
+      "name": "Ursa",
+      "gender": "female",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/ursa/zh.mp3",
+        "en": "/voice-library/ursa/en.mp3"
+      }
+    },
+    {
+      "id": "zagan",
+      "name": "Zagan",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/zagan/zh.mp3",
+        "en": "/voice-library/zagan/en.mp3"
+      }
+    },
+    {
+      "id": "zenith",
+      "name": "Zenith",
+      "gender": "male",
+      "language": "multilingual",
+      "samples": {
+        "zh": "/voice-library/zenith/zh.mp3",
+        "en": "/voice-library/zenith/en.mp3"
+      }
+    }
+  ]
+}
