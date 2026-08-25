@@ -871,7 +871,7 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 		}
 		assets = append(assets, uploaded.MetadataID)
 	}
-	payload := buildImageEditPayload(request.Prompt, assets, ratio)
+	payload := buildImageEditPayload(request.Prompt, assets, ratio, request.SelectionRegions)
 	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.ImageTimeoutSeconds)*time.Second, cfg.BaseURL+"/imagine")
 	if err != nil {
 		return nil, err
@@ -926,13 +926,20 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 	return result, err
 }
 
-func buildImageEditPayload(prompt string, assets []string, aspectRatio string) map[string]any {
+func buildImageEditPayload(prompt string, assets []string, aspectRatio string, regions []provider.ImageSelectionRegion) map[string]any {
 	imageToImage := map[string]any{
 		"prompt":      prompt,
 		"inputAssets": assets,
 	}
 	if aspectRatio != "" {
 		imageToImage["aspectRatio"] = aspectRatio
+	}
+	if len(regions) > 0 {
+		items := make([]map[string]any, 0, len(regions))
+		for _, region := range regions {
+			items = append(items, map[string]any{"outer": map[string]any{"points": append([]float64(nil), region.Points...)}})
+		}
+		imageToImage["selectionRegions"] = items
 	}
 	return map[string]any{
 		"modelName": "imagine-image-edit", "message": prompt,

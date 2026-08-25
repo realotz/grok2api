@@ -891,7 +891,7 @@ func TestImageEditRejectsUnsupportedCountAndStreamingOptions(t *testing.T) {
 
 func TestBuildImageEditPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
 	assets := []string{"metadata-1", "metadata-2"}
-	payload := buildImageEditPayload("改成兔子", assets, "1:1")
+	payload := buildImageEditPayload("改成兔子", assets, "1:1", nil)
 	mediaGenInput, ok := payload["mediaGenInput"].(map[string]any)
 	if !ok {
 		t.Fatalf("mediaGenInput = %#v", payload["mediaGenInput"])
@@ -912,7 +912,18 @@ func TestBuildImageEditPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
 			t.Fatalf("legacy field %q leaked into payload: %#v", field, payload)
 		}
 	}
-	withoutRatio := buildImageEditPayload("edit", []string{"metadata-1"}, "")
+	withoutRatio := buildImageEditPayload("edit", []string{"metadata-1"}, "", nil)
+	segmented := buildImageEditPayload("改鞋子", []string{"metadata-1"}, "auto", []provider.ImageSelectionRegion{
+		{Points: []float64{0.1, 0.7, 0.4, 0.7, 0.4, 0.95, 0.1, 0.95, 0.1, 0.7}},
+	})
+	segmentedInput := segmented["mediaGenInput"].(map[string]any)["imageToImage"].(map[string]any)
+	if segmentedInput["aspectRatio"] != "auto" {
+		t.Fatalf("segmented aspect = %#v", segmentedInput["aspectRatio"])
+	}
+	regions, _ := segmentedInput["selectionRegions"].([]map[string]any)
+	if len(regions) != 1 {
+		t.Fatalf("selectionRegions = %#v", segmentedInput["selectionRegions"])
+	}
 	mediaGenInput = withoutRatio["mediaGenInput"].(map[string]any)
 	imageToImage = mediaGenInput["imageToImage"].(map[string]any)
 	if _, exists := imageToImage["aspectRatio"]; exists {
