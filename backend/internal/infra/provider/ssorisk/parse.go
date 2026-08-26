@@ -19,9 +19,10 @@ var (
 )
 
 // ParseUserMessage reads prod_auth.User bot_flag_source / bot_flag_details.
-// GetUser omits both fields on clean accounts; that is a successful inspect.
+// GetUser strips INTERNAL bot-flag fields, so omitted source+details is unknown,
+// not clean. Only an explicit source or details string counts as inspected.
 func ParseUserMessage(message []byte) (AccountState, error) {
-	state := AccountState{Found: true}
+	state := AccountState{}
 	rest := message
 	for len(rest) > 0 {
 		number, fieldType, n := protowire.ConsumeTag(rest)
@@ -54,6 +55,7 @@ func ParseUserMessage(message []byte) (AccountState, error) {
 		}
 	}
 	applyDetails(&state)
+	state.Found = state.BotFlagSet || strings.TrimSpace(state.Details) != ""
 	return state, nil
 }
 

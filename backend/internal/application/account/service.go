@@ -4345,14 +4345,17 @@ func (s *Service) detectSSOAccount(ctx context.Context, inspector provider.SSORi
 		item.Reason = reason
 		return item
 	}
-	if err != nil || !risk.Inspected {
+	if err != nil {
 		if risk.Error != "" {
 			item.Reason = risk.Error
-		} else if err != nil {
-			item.Reason = err.Error()
 		} else {
-			item.Reason = "未解析到 grok.com 风控字段"
+			item.Reason = err.Error()
 		}
+		return item
+	}
+	if !risk.Inspected {
+		item.Outcome = SSODetectOutcomeOK
+		item.Reason = "上游未返回风控字段，保留已有标记"
 		return item
 	}
 	source := accountdomain.PersistSSOInspectSource(risk.Source)

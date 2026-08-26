@@ -144,6 +144,53 @@ func TestDetectSSOAccountPersistsRobotMarkWithoutRewritingToken(t *testing.T) {
 	}
 }
 
+func TestDetectSSOAccountKeepsExistingMarkWhenUpstreamOmitsBotFlag(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "sso-detect-omit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := cipher.Encrypt("omit-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := relational.NewAccountRepository(database)
+	credential, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO, Name: "omit", SourceKey: "omit",
+		EncryptedAccessToken: token, Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	flagged := detectSSORiskAdapter{risk: provider.SSOAccountRisk{
+		Inspected: true, Flagged: true, Source: 1, Details: "event=$registration,policy=deny,risk=0.95",
+		Policy: "deny", Event: "$registration", Risk: 0.95, RiskSet: true,
+	}}
+	service := NewService(repo, nil, nil, nil, provider.NewRegistry(flagged), cipher, nil)
+	if item := service.detectSSOAccount(ctx, flagged, credential.ID); item.Outcome != SSODetectOutcomeFlagged {
+		t.Fatalf("seed item = %#v", item)
+	}
+	item := service.detectSSOAccount(ctx, detectSSORiskAdapter{risk: provider.SSOAccountRisk{Inspected: false}}, credential.ID)
+	if item.Outcome != SSODetectOutcomeOK {
+		t.Fatalf("omit item = %#v", item)
+	}
+	stored, err := repo.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.SSOBotFlagSource != 1 || stored.SSOBotPolicy != "deny" || stored.SSOBotEvent != "$registration" || !stored.SSOBotRiskSet || stored.SSOBotRisk != 0.95 || !stored.SSOBotRiskEver {
+		t.Fatalf("omitted inspect cleared mark = %#v", stored)
+	}
+}
+
 func TestDetectSSOAccountSyncsInspectToLinkedBuildAndConsole(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "sso-detect-sync.db"))

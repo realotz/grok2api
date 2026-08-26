@@ -55,7 +55,7 @@ func TestInspectSSORiskParsesGetUserBotFlag(t *testing.T) {
 	}
 }
 
-func TestInspectSSORiskTreatsOmittedBotFlagAsClean(t *testing.T) {
+func TestInspectSSORiskTreatsOmittedBotFlagAsUnknown(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/auth_mgmt.AuthManagement/GetUser" || request.Method != http.MethodPost {
@@ -78,7 +78,7 @@ func TestInspectSSORiskTreatsOmittedBotFlagAsClean(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !risk.Inspected || risk.Flagged || risk.Source != 0 || risk.Unauthorized {
+	if risk.Inspected || risk.Flagged || risk.Source != 0 || risk.Unauthorized {
 		t.Fatalf("risk = %#v", risk)
 	}
 }

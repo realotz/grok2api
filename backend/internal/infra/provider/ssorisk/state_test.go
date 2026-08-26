@@ -81,11 +81,11 @@ func TestParseUserMessageGetUserProto(t *testing.T) {
 		found   bool
 	}{
 		{
-			name:    "omitted flags are clean",
+			name:    "omitted flags are unknown",
 			message: encodeTestUser(0, "", false),
 			source:  0,
-			verdict: VerdictClean,
-			found:   true,
+			verdict: VerdictUnknown,
+			found:   false,
 		},
 		{
 			name:    "castle deny",
