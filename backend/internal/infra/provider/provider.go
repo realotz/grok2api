@@ -830,7 +830,7 @@ type AccountIdentityAdapter interface {
 	SyncAccountIdentity(ctx context.Context, credential account.Credential) (AccountIdentity, error)
 }
 
-// SSOAccountRisk is the grok.com botFlagSource / policy snapshot for one SSO.
+// SSOAccountRisk is the grok.com GetUser bot_flag_source / policy snapshot for one SSO.
 // It is not derived from Build JWT bfs and must not be written during token refresh.
 type SSOAccountRisk struct {
 	Inspected    bool

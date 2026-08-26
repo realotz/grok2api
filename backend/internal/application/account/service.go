@@ -4222,7 +4222,7 @@ type SSODetectItemResult struct {
 
 type SSODetectItemObserver func(item SSODetectItemResult) error
 
-// DetectSSOAccountsWithProgress inspects grok.com botFlagSource for Web/Console SSO
+// DetectSSOAccountsWithProgress inspects grok.com GetUser bot_flag_source for Web/Console SSO
 // accounts and persists robot marks. It never refreshes or rewrites SSO tokens.
 func (s *Service) DetectSSOAccountsWithProgress(ctx context.Context, provider accountdomain.Provider, ids []uint64, all bool, progress BatchProgressObserver, itemObserver SSODetectItemObserver) (int, int, error) {
 	pool := s.detectPool

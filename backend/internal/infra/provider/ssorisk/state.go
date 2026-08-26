@@ -30,7 +30,7 @@ const (
 )
 
 // FlagSource maps a parsed grok.com snapshot to the persisted robot mark.
-// 1 = account-level robot (botFlagSource=1 or policy=deny), 2 = IP-layer mark.
+// 1 = CASTLE / policy=deny, 2 = BOT_MONITOR.
 func FlagSource(state AccountState) int {
 	if state.BotFlagSet && (state.BotFlagSource == 1 || state.BotFlagSource == 2) {
 		return state.BotFlagSource

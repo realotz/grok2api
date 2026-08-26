@@ -10,7 +10,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/ssorisk"
 )
 
-// InspectSSORisk reads grok.com botFlagSource for a Web SSO account.
+// InspectSSORisk reads grok.com AuthManagement GetUser bot_flag_source.
 // It never refreshes or rewrites the stored token.
 func (a *Adapter) InspectSSORisk(ctx context.Context, credential account.Credential) (provider.SSOAccountRisk, error) {
 	if credential.Provider != account.ProviderWeb || credential.AuthType != account.AuthTypeSSO {
