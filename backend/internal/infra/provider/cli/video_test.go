@@ -19,6 +19,21 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 )
 
+func TestBuildVideoCreatePayloadRejectsOversizePrompt(t *testing.T) {
+	_, err := videoCreatePayload(provider.VideoRequest{
+		Prompt: strings.Repeat("画", buildVideoPromptMaxBytes), Duration: 10, AspectRatio: "9:16", Resolution: "720p",
+	}, "", buildVideoRequestProfile)
+	if err == nil || !strings.Contains(err.Error(), "超过 4096 字节") {
+		t.Fatalf("oversize prompt err=%v", err)
+	}
+	ok, err := videoCreatePayload(provider.VideoRequest{
+		Prompt: "短提示", Duration: 10, AspectRatio: "9:16", Resolution: "720p",
+	}, "", buildVideoRequestProfile)
+	if err != nil || ok["prompt"] != "短提示" {
+		t.Fatalf("compact prompt err=%v payload=%#v", err, ok)
+	}
+}
+
 func TestBuildVideoCreatePayloadNoImageAndSingleR2URL(t *testing.T) {
 	noImage, err := videoCreatePayload(provider.VideoRequest{
 		Prompt: "animate waves", Duration: 6, AspectRatio: "16:9", Resolution: "720p",

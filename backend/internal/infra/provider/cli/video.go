@@ -26,6 +26,7 @@ const (
 	// Align with the gateway ceiling and official xAI video inputs:
 	// image = first frame; reference_images = style/content references (may be length 1).
 	buildVideoMaxImages         = mediadomain.MaxInputImages
+	buildVideoPromptMaxBytes    = 4096
 	buildVideoPollEvery         = 2 * time.Second
 	buildVideoMaxBodySize       = 2 << 20
 	buildVideoErrorSummaryLimit = 256
@@ -284,7 +285,11 @@ func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile
 		"model": profile.model,
 	}
 	if prompt := strings.TrimSpace(request.Prompt); prompt != "" {
-		payload["prompt"] = mediadomain.NormalizeOfficialPromptTags(prompt)
+		prompt = mediadomain.NormalizeOfficialPromptTags(prompt)
+		if profile.model == buildVideoModel && len(prompt) > buildVideoPromptMaxBytes {
+			return nil, fmt.Errorf("Build grok-imagine-video-1.5 prompt 超过 %d 字节，当前为 %d 字节", buildVideoPromptMaxBytes, len(prompt))
+		}
+		payload["prompt"] = prompt
 	}
 	if request.Duration > 0 {
 		payload["duration"] = request.Duration
