@@ -323,6 +323,16 @@ type AccountsConfig struct {
 	// SSOLLMRiskThreshold forbids grok-4.5/4.6 Build LLM at or above this grok.com risk.
 	// 0 disables the restriction. Default 0.8.
 	SSOLLMRiskThreshold float64
+	// SSOVideoRiskEver controls whether historical grok.com risk (sso_bot_risk_ever)
+	// excludes an account from production video scheduling.
+	// auto (default) and on exclude ever=1; off uses only the current snapshot threshold.
+	SSOVideoRiskEver string
+}
+
+// ExcludeSSOVideoRiskEver reports whether production video should skip
+// accounts with historical grok.com risk. auto/on exclude; off does not.
+func (c AccountsConfig) ExcludeSSOVideoRiskEver() bool {
+	return settingsdomain.ExcludeSSOVideoRiskEver(c.SSOVideoRiskEver)
 }
 
 type Secrets struct {
@@ -742,6 +752,9 @@ func (c Config) Validate() error {
 		c.Accounts.SSOLLMRiskThreshold < 0 || c.Accounts.SSOLLMRiskThreshold > 1 {
 		return errors.New("accounts SSO 风控阈值必须在 0 到 1 之间，0 表示不限制")
 	}
+	if !settingsdomain.ValidSSOVideoRiskEver(c.Accounts.SSOVideoRiskEver) {
+		return errors.New("accounts.ssoVideoRiskEver 必须是 auto、on 或 off")
+	}
 	return nil
 }
 
@@ -972,6 +985,7 @@ func defaultConfig() Config {
 			AutoCleanIncludeDisabled:             false,
 			SSOVideoRiskThreshold:                1,
 			SSOLLMRiskThreshold:                  0.8,
+			SSOVideoRiskEver:                     settingsdomain.DefaultSSOVideoRiskEver,
 		},
 	}
 }

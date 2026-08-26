@@ -1938,10 +1938,10 @@ func TestApplySSOVideoRiskFilterKeepsHighRiskAccounts(t *testing.T) {
 	if kept := applySSOVideoRiskFilter(account.QuotaModeWebImagePro, values); len(kept) != 4 {
 		t.Fatalf("non-video should keep all, got %#v", kept)
 	}
-	if kept := applySSORiskFilter(account.ProviderWeb, "", account.QuotaModeWebVideo720p, values, 0, 0.8); len(kept) != 4 {
+	if kept := applySSORiskFilter(account.ProviderWeb, "", account.QuotaModeWebVideo720p, values, 0, 0.8, true); len(kept) != 4 {
 		t.Fatalf("video threshold 0 must not restrict, got %#v", kept)
 	}
-	if kept := applySSORiskFilter(account.ProviderWeb, "", account.QuotaModeWebVideo720p, values, 0.8, 0.8); len(kept) != 2 {
+	if kept := applySSORiskFilter(account.ProviderWeb, "", account.QuotaModeWebVideo720p, values, 0.8, 0.8, true); len(kept) != 2 {
 		t.Fatalf("video threshold 0.8 should drop risk>=0.8, got %#v", kept)
 	}
 }
@@ -1952,18 +1952,42 @@ func TestApplySSORiskFilterBlocksGrok45BuildLLM(t *testing.T) {
 		{Credential: account.Credential{ID: 2, Provider: account.ProviderBuild, SSOBotRiskSet: true, SSOBotRisk: 0.4}},
 		{Credential: account.Credential{ID: 3, Provider: account.ProviderBuild}},
 	}
-	filtered := applySSORiskFilter(account.ProviderBuild, "grok-4.5", "", values, 1, 0.8)
+	filtered := applySSORiskFilter(account.ProviderBuild, "grok-4.5", "", values, 1, 0.8, true)
 	if len(filtered) != 2 || filtered[0].Credential.ID != 2 || filtered[1].Credential.ID != 3 {
 		t.Fatalf("grok-4.5 filtered = %#v", filtered)
 	}
-	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.6-xhigh", "", values, 1, 0.8); len(kept) != 2 {
+	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.6-xhigh", "", values, 1, 0.8, true); len(kept) != 2 {
 		t.Fatalf("grok-4.6 should also exclude risk>=0.8, got %#v", kept)
 	}
-	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.3", "", values, 1, 0.8); len(kept) != 3 {
+	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.3", "", values, 1, 0.8, true); len(kept) != 3 {
 		t.Fatalf("other Build LLM should keep red accounts, got %#v", kept)
 	}
-	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.5", "", values, 1, 0); len(kept) != 3 {
+	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.5", "", values, 1, 0, true); len(kept) != 3 {
 		t.Fatalf("LLM threshold 0 must not restrict, got %#v", kept)
+	}
+}
+
+func TestApplySSORiskFilterExcludesHistoricalRiskFromVideo(t *testing.T) {
+	values := []account.RoutingCandidate{
+		{Credential: account.Credential{ID: 1, SSOBotRiskEver: true, SSOBotRiskSet: true, SSOBotRisk: 0.4}},
+		{Credential: account.Credential{ID: 2, SSOBotRiskSet: true, SSOBotRisk: 0.4}},
+		{Credential: account.Credential{ID: 3}},
+	}
+	filtered := applySSOVideoRiskFilter(account.QuotaModeWebVideo720p, values)
+	if len(filtered) != 2 || filtered[0].Credential.ID != 2 || filtered[1].Credential.ID != 3 {
+		t.Fatalf("auto video must drop historical risk=1, filtered = %#v", filtered)
+	}
+	if kept := applySSORiskFilter(account.ProviderWeb, "", account.QuotaModeWebVideo720p, values, 0, 0.8, true); len(kept) != 2 {
+		t.Fatalf("video threshold 0 must still drop historical risk in auto, got %#v", kept)
+	}
+	if kept := applySSORiskFilter(account.ProviderWeb, "", account.QuotaModeWebVideo720p, values, 1, 0.8, false); len(kept) != 3 {
+		t.Fatalf("off must keep historical risk when current snapshot is below cutoff, got %#v", kept)
+	}
+	if kept := applySSORiskFilter(account.ProviderBuild, "grok-4.5", "", values, 1, 0.8, true); len(kept) != 3 {
+		t.Fatalf("LLM must not use historical-risk exclusion, got %#v", kept)
+	}
+	if kept := applySSORiskFilter(account.ProviderWeb, "", account.QuotaModeWebImagePro, values, 1, 0.8, true); len(kept) != 3 {
+		t.Fatalf("non-video must keep historical risk, got %#v", kept)
 	}
 }
 

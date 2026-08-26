@@ -485,6 +485,26 @@ export function SettingsPage() {
                   />
                 </SettingsField>
                 <SettingsField
+                  controlId="accounts-sso-video-risk-ever"
+                  className="sm:col-span-2"
+                  label={t("settings.accounts.ssoVideoRiskEver")}
+                  description={t("settings.accounts.ssoVideoRiskEverHelp")}
+                >
+                  <Controller
+                    control={form.control}
+                    name="accounts.ssoVideoRiskEver"
+                    render={({ field }) => (
+                      <Tabs value={field.value} onValueChange={field.onChange}>
+                        <TabsList id="accounts-sso-video-risk-ever" className="grid w-full grid-cols-3 bg-muted/55">
+                          <TabsTrigger value="auto" className="font-normal">{t("settings.accounts.ssoVideoRiskEverAuto")}</TabsTrigger>
+                          <TabsTrigger value="on" className="font-normal">{t("settings.accounts.ssoVideoRiskEverOn")}</TabsTrigger>
+                          <TabsTrigger value="off" className="font-normal">{t("settings.accounts.ssoVideoRiskEverOff")}</TabsTrigger>
+                        </TabsList>
+                      </Tabs>
+                    )}
+                  />
+                </SettingsField>
+                <SettingsField
                   controlId="accounts-sso-video-risk-threshold"
                   label={t("settings.accounts.ssoVideoRiskThreshold")}
                   description={t("settings.accounts.ssoVideoRiskThresholdHelp")}

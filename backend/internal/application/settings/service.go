@@ -152,8 +152,10 @@ type AccountsConfig struct {
 	ExcludeBuildBotFlaggedFromSchedulingProvided bool
 	SSOVideoRiskThreshold                        float64
 	SSOLLMRiskThreshold                          float64
+	SSOVideoRiskEver                             string
 	SSOVideoRiskThresholdProvided                bool
 	SSOLLMRiskThresholdProvided                  bool
+	SSOVideoRiskEverProvided                     bool
 }
 
 // EditableConfig 聚合管理端允许修改的运行参数。
@@ -439,6 +441,7 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	base.Accounts.ExcludeBuildBotFlaggedFromScheduling = value.Accounts.ExcludeBuildBotFlaggedFromScheduling
 	base.Accounts.SSOVideoRiskThreshold = ssoRiskThresholdOrDefault(value.Accounts.SSOVideoRiskThreshold, settingsdomain.DefaultSSOVideoRiskThreshold)
 	base.Accounts.SSOLLMRiskThreshold = ssoRiskThresholdOrDefault(value.Accounts.SSOLLMRiskThreshold, settingsdomain.DefaultSSOLLMRiskThreshold)
+	base.Accounts.SSOVideoRiskEver = ssoVideoRiskEverOrDefault(value.Accounts.SSOVideoRiskEver)
 	return base
 }
 
@@ -453,6 +456,13 @@ func ssoRiskThresholdOrDefault(value *float64, fallback float64) float64 {
 		return 1
 	}
 	return *value
+}
+
+func ssoVideoRiskEverOrDefault(value *string) string {
+	if value == nil {
+		return settingsdomain.DefaultSSOVideoRiskEver
+	}
+	return settingsdomain.NormalizeSSOVideoRiskEver(*value)
 }
 
 func toDomainConfig(value config.Config) settingsdomain.Config {
@@ -523,6 +533,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			AutoCleanIncludeDisabled:             value.Accounts.AutoCleanIncludeDisabled,
 			SSOVideoRiskThreshold:                float64Pointer(value.Accounts.SSOVideoRiskThreshold),
 			SSOLLMRiskThreshold:                  float64Pointer(value.Accounts.SSOLLMRiskThreshold),
+			SSOVideoRiskEver:                     stringPointer(settingsdomain.NormalizeSSOVideoRiskEver(value.Accounts.SSOVideoRiskEver)),
 		},
 	}
 }
@@ -626,6 +637,9 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		}
 		if input.Accounts.SSOLLMRiskThresholdProvided {
 			next.Accounts.SSOLLMRiskThreshold = input.Accounts.SSOLLMRiskThreshold
+		}
+		if input.Accounts.SSOVideoRiskEverProvided {
+			next.Accounts.SSOVideoRiskEver = settingsdomain.NormalizeSSOVideoRiskEver(input.Accounts.SSOVideoRiskEver)
 		}
 		next.Accounts.AutoCleanReauthEnabled = input.Accounts.AutoCleanReauthEnabled
 		next.Accounts.AutoCleanIncludeDisabled = input.Accounts.AutoCleanIncludeDisabled
@@ -768,8 +782,10 @@ func toEditable(cfg config.Config) EditableConfig {
 			AutoCleanIncludeDisabled:                     cfg.Accounts.AutoCleanIncludeDisabled,
 			SSOVideoRiskThreshold:                        cfg.Accounts.SSOVideoRiskThreshold,
 			SSOLLMRiskThreshold:                          cfg.Accounts.SSOLLMRiskThreshold,
+			SSOVideoRiskEver:                             settingsdomain.NormalizeSSOVideoRiskEver(cfg.Accounts.SSOVideoRiskEver),
 			SSOVideoRiskThresholdProvided:                true,
 			SSOLLMRiskThresholdProvided:                  true,
+			SSOVideoRiskEverProvided:                     true,
 		},
 		AccountsProvided: true,
 	}
@@ -793,5 +809,9 @@ func normalizeForbiddenCodes(values []string) []string {
 }
 
 func float64Pointer(value float64) *float64 {
+	return &value
+}
+
+func stringPointer(value string) *string {
 	return &value
 }

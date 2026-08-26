@@ -272,44 +272,45 @@ func (l *accountLease) completeSelectorObservation(success bool) {
 
 // Selector 实现可替换的 balanced 账号选择策略。
 type Selector struct {
-	accounts               repository.AccountRepository
-	concurrency            repository.ConcurrencyLimiter
-	sticky                 repository.StickySessionRepository
-	stickyTTL              time.Duration
-	cooldownBase           time.Duration
-	cooldownMax            time.Duration
-	capacityWait           time.Duration
-	preferFreeBuild        bool
-	excludeBuildBotFlagged bool
-	ssoVideoRiskThreshold  float64
-	ssoLLMRiskThreshold    float64
-	segmentedConfig        segmentedSelectorConfig
-	segmentedState         segmentedSelectorState
-	configMu               sync.RWMutex
-	candidateMu            sync.Mutex
-	selectionMu            sync.RWMutex
-	healthMu               sync.RWMutex
-	quotaMu                sync.RWMutex
-	staleLogMu             sync.Mutex
-	logger                 *slog.Logger
-	leaseWakeMu            sync.Mutex
-	leaseWake              chan struct{}
-	lastSelectedAt         map[uint64]time.Time
-	lastSuccessAt          map[uint64]time.Time
-	healthOverrides        map[uint64]routingHealthOverride
-	quotaConsumed          map[quotaConsumptionKey]int
-	staleFallbackLoggedAt  map[string]time.Time
-	candidates             map[candidateCacheKey]candidateSnapshot
-	routingBases           map[routingBaseCacheKey]routingBaseSnapshot
-	routingOverlays        map[routingOverlayCacheKey]routingOverlaySnapshot
-	routingAccountProvider map[uint64]account.Provider
-	baseGlobalVersion      uint64
-	overlayGlobalVersion   uint64
-	baseProviderVersion    map[account.Provider]uint64
-	overlayProviderVersion map[account.Provider]uint64
-	candidateLoads         singleflight.Group
-	concurrencySnapshots   *resultcache.Cache[[32]byte, map[string]int]
-	tierOrders             interface {
+	accounts                repository.AccountRepository
+	concurrency             repository.ConcurrencyLimiter
+	sticky                  repository.StickySessionRepository
+	stickyTTL               time.Duration
+	cooldownBase            time.Duration
+	cooldownMax             time.Duration
+	capacityWait            time.Duration
+	preferFreeBuild         bool
+	excludeBuildBotFlagged  bool
+	ssoVideoRiskThreshold   float64
+	ssoLLMRiskThreshold     float64
+	ssoVideoExcludeRiskEver bool
+	segmentedConfig         segmentedSelectorConfig
+	segmentedState          segmentedSelectorState
+	configMu                sync.RWMutex
+	candidateMu             sync.Mutex
+	selectionMu             sync.RWMutex
+	healthMu                sync.RWMutex
+	quotaMu                 sync.RWMutex
+	staleLogMu              sync.Mutex
+	logger                  *slog.Logger
+	leaseWakeMu             sync.Mutex
+	leaseWake               chan struct{}
+	lastSelectedAt          map[uint64]time.Time
+	lastSuccessAt           map[uint64]time.Time
+	healthOverrides         map[uint64]routingHealthOverride
+	quotaConsumed           map[quotaConsumptionKey]int
+	staleFallbackLoggedAt   map[string]time.Time
+	candidates              map[candidateCacheKey]candidateSnapshot
+	routingBases            map[routingBaseCacheKey]routingBaseSnapshot
+	routingOverlays         map[routingOverlayCacheKey]routingOverlaySnapshot
+	routingAccountProvider  map[uint64]account.Provider
+	baseGlobalVersion       uint64
+	overlayGlobalVersion    uint64
+	baseProviderVersion     map[account.Provider]uint64
+	overlayProviderVersion  map[account.Provider]uint64
+	candidateLoads          singleflight.Group
+	concurrencySnapshots    *resultcache.Cache[[32]byte, map[string]int]
+	tierOrders              interface {
 		TierOrder(account.Provider, string) []account.WebTier
 	}
 }
@@ -321,7 +322,7 @@ func NewSelector(accounts repository.AccountRepository, concurrency repository.C
 	if len(capacityWait) > 0 && capacityWait[0] > 0 {
 		wait = capacityWait[0]
 	}
-	return &Selector{accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders, stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait, ssoVideoRiskThreshold: account.DefaultSSOVideoRiskThreshold, ssoLLMRiskThreshold: account.DefaultSSOLLMRiskThreshold, leaseWake: make(chan struct{}), logger: slog.Default(), lastSelectedAt: make(map[uint64]time.Time), lastSuccessAt: make(map[uint64]time.Time), healthOverrides: make(map[uint64]routingHealthOverride), quotaConsumed: make(map[quotaConsumptionKey]int), staleFallbackLoggedAt: make(map[string]time.Time), candidates: make(map[candidateCacheKey]candidateSnapshot), routingBases: make(map[routingBaseCacheKey]routingBaseSnapshot), routingOverlays: make(map[routingOverlayCacheKey]routingOverlaySnapshot), routingAccountProvider: make(map[uint64]account.Provider), baseProviderVersion: make(map[account.Provider]uint64), overlayProviderVersion: make(map[account.Provider]uint64), concurrencySnapshots: resultcache.New[[32]byte, map[string]int](maxConcurrencySnapshots, concurrencySnapshotTTL)}
+	return &Selector{accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders, stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait, ssoVideoRiskThreshold: account.DefaultSSOVideoRiskThreshold, ssoLLMRiskThreshold: account.DefaultSSOLLMRiskThreshold, ssoVideoExcludeRiskEver: true, leaseWake: make(chan struct{}), logger: slog.Default(), lastSelectedAt: make(map[uint64]time.Time), lastSuccessAt: make(map[uint64]time.Time), healthOverrides: make(map[uint64]routingHealthOverride), quotaConsumed: make(map[quotaConsumptionKey]int), staleFallbackLoggedAt: make(map[string]time.Time), candidates: make(map[candidateCacheKey]candidateSnapshot), routingBases: make(map[routingBaseCacheKey]routingBaseSnapshot), routingOverlays: make(map[routingOverlayCacheKey]routingOverlaySnapshot), routingAccountProvider: make(map[uint64]account.Provider), baseProviderVersion: make(map[account.Provider]uint64), overlayProviderVersion: make(map[account.Provider]uint64), concurrencySnapshots: resultcache.New[[32]byte, map[string]int](maxConcurrencySnapshots, concurrencySnapshotTTL)}
 }
 
 // SetLogger wires the application logger into routing degradation diagnostics.
@@ -400,21 +401,37 @@ func (s *Selector) UpdateSSORiskThresholds(video, llm float64) {
 	s.ssoLLMRiskThreshold = llm
 	s.configMu.Unlock()
 	if changed {
-		s.invalidateProviderCandidateCache(account.ProviderBuild)
-		s.invalidateProviderCandidateCache(account.ProviderWeb)
-		s.invalidateProviderCandidateCache(account.ProviderConsole)
+		s.invalidateSSORiskCandidateCache()
 	}
 }
 
-func (s *Selector) ssoRiskThresholds() (video, llm float64) {
+// UpdateSSOVideoExcludeRiskEver hot-updates whether historical grok.com risk
+// excludes production video scheduling. Default is true (auto/on).
+func (s *Selector) UpdateSSOVideoExcludeRiskEver(exclude bool) {
+	s.configMu.Lock()
+	changed := s.ssoVideoExcludeRiskEver != exclude
+	s.ssoVideoExcludeRiskEver = exclude
+	s.configMu.Unlock()
+	if changed {
+		s.invalidateSSORiskCandidateCache()
+	}
+}
+
+func (s *Selector) invalidateSSORiskCandidateCache() {
+	s.invalidateProviderCandidateCache(account.ProviderBuild)
+	s.invalidateProviderCandidateCache(account.ProviderWeb)
+	s.invalidateProviderCandidateCache(account.ProviderConsole)
+}
+
+func (s *Selector) ssoRiskPolicy() (video, llm float64, excludeVideoRiskEver bool) {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
-	return s.ssoVideoRiskThreshold, s.ssoLLMRiskThreshold
+	return s.ssoVideoRiskThreshold, s.ssoLLMRiskThreshold, s.ssoVideoExcludeRiskEver
 }
 
 func (s *Selector) credentialBlockedBySSORisk(provider account.Provider, quotaMode, upstreamModel string, value account.Credential) bool {
-	video, llm := s.ssoRiskThresholds()
-	return value.BlocksAtSSORisk(ssoRiskThresholdForRequest(provider, quotaMode, upstreamModel, video, llm))
+	video, llm, excludeEver := s.ssoRiskPolicy()
+	return credentialBlockedBySSORiskPolicy(provider, quotaMode, upstreamModel, value, video, llm, excludeEver)
 }
 
 func (s *Selector) invalidateProviderCandidateCache(provider account.Provider) {
@@ -451,22 +468,28 @@ func (s *Selector) applyBuildBotFlaggedFilter(_ context.Context, provider accoun
 }
 
 func applySSOVideoRiskFilter(quotaMode string, values []account.RoutingCandidate) []account.RoutingCandidate {
-	return applySSORiskFilter(account.ProviderWeb, "", quotaMode, values, account.DefaultSSOVideoRiskThreshold, account.DefaultSSOLLMRiskThreshold)
+	return applySSORiskFilter(account.ProviderWeb, "", quotaMode, values, account.DefaultSSOVideoRiskThreshold, account.DefaultSSOLLMRiskThreshold, true)
 }
 
-func applySSORiskFilter(provider account.Provider, upstreamModel, quotaMode string, values []account.RoutingCandidate, videoThreshold, llmThreshold float64) []account.RoutingCandidate {
-	threshold := ssoRiskThresholdForRequest(provider, quotaMode, upstreamModel, videoThreshold, llmThreshold)
-	if len(values) == 0 || threshold <= 0 {
+func applySSORiskFilter(provider account.Provider, upstreamModel, quotaMode string, values []account.RoutingCandidate, videoThreshold, llmThreshold float64, excludeVideoRiskEver bool) []account.RoutingCandidate {
+	if len(values) == 0 {
 		return values
 	}
 	filtered := make([]account.RoutingCandidate, 0, len(values))
 	for _, candidate := range values {
-		if candidate.Credential.BlocksAtSSORisk(threshold) {
+		if credentialBlockedBySSORiskPolicy(provider, quotaMode, upstreamModel, candidate.Credential, videoThreshold, llmThreshold, excludeVideoRiskEver) {
 			continue
 		}
 		filtered = append(filtered, candidate)
 	}
 	return filtered
+}
+
+func credentialBlockedBySSORiskPolicy(provider account.Provider, quotaMode, upstreamModel string, value account.Credential, videoThreshold, llmThreshold float64, excludeVideoRiskEver bool) bool {
+	if isSSOVideoRequest(quotaMode, upstreamModel) && value.BlocksSSOVideoByRiskEver(excludeVideoRiskEver) {
+		return true
+	}
+	return value.BlocksAtSSORisk(ssoRiskThresholdForRequest(provider, quotaMode, upstreamModel, videoThreshold, llmThreshold))
 }
 
 func ssoRiskThresholdForRequest(provider account.Provider, quotaMode, upstreamModel string, videoThreshold, llmThreshold float64) float64 {

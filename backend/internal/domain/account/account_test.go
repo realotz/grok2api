@@ -163,4 +163,13 @@ func TestSSORiskHighStartsAtPointEight(t *testing.T) {
 	if (Credential{SSOBotRiskSet: true, SSOBotRisk: 1}).BlocksAtSSORisk(0) {
 		t.Fatal("threshold 0 must disable SSO risk blocking")
 	}
+	if (Credential{SSOBotRiskEver: true}).BlocksSSOVideoByRiskEver(false) {
+		t.Fatal("historical risk must not block video when exclusion is off")
+	}
+	if !(Credential{SSOBotRiskEver: true}).BlocksSSOVideoByRiskEver(true) {
+		t.Fatal("historical risk must block video when exclusion is auto/on")
+	}
+	if (Credential{}).BlocksSSOVideoByRiskEver(true) {
+		t.Fatal("accounts without historical risk must stay eligible")
+	}
 }

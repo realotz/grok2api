@@ -7,6 +7,7 @@ import (
 	"time"
 
 	settingsapp "github.com/chenyme/grok2api/backend/internal/application/settings"
+	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 )
@@ -139,6 +140,7 @@ type accountsConfigDTO struct {
 	AutoCleanIncludeDisabled             bool      `json:"autoCleanIncludeDisabled"`
 	SSOVideoRiskThreshold                *float64  `json:"ssoVideoRiskThreshold"`
 	SSOLLMRiskThreshold                  *float64  `json:"ssoLLMRiskThreshold"`
+	SSOVideoRiskEver                     *string   `json:"ssoVideoRiskEver"`
 }
 
 type settingsResponse struct {
@@ -264,8 +266,10 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			AutoCleanIncludeDisabled:                     value.Accounts.AutoCleanIncludeDisabled,
 			SSOVideoRiskThreshold:                        float64Value(value.Accounts.SSOVideoRiskThreshold),
 			SSOLLMRiskThreshold:                          float64Value(value.Accounts.SSOLLMRiskThreshold),
+			SSOVideoRiskEver:                             optionalString(value.Accounts.SSOVideoRiskEver),
 			SSOVideoRiskThresholdProvided:                value.Accounts.SSOVideoRiskThreshold != nil,
 			SSOLLMRiskThresholdProvided:                  value.Accounts.SSOLLMRiskThreshold != nil,
+			SSOVideoRiskEverProvided:                     value.Accounts.SSOVideoRiskEver != nil,
 		}
 		result.AccountsProvided = true
 	}
@@ -341,6 +345,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				AutoCleanIncludeDisabled:             config.Accounts.AutoCleanIncludeDisabled,
 				SSOVideoRiskThreshold:                float64Pointer(config.Accounts.SSOVideoRiskThreshold),
 				SSOLLMRiskThreshold:                  float64Pointer(config.Accounts.SSOLLMRiskThreshold),
+				SSOVideoRiskEver:                     stringPointer(settingsdomain.NormalizeSSOVideoRiskEver(config.Accounts.SSOVideoRiskEver)),
 			},
 		},
 		RecommendedProviderBuild: providerBuildRecommendationDTO{

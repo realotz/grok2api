@@ -129,6 +129,9 @@ func TestLegacySettingsRequestPreservesBuildForbiddenCodesWhenOmitted(t *testing
 	if !input.AccountsProvided || !input.Accounts.MarkBuildForbiddenReauthProvided || input.Accounts.BuildForbiddenReauthCodesProvided {
 		t.Fatalf("legacy field presence was not preserved: %#v", input.Accounts)
 	}
+	if input.Accounts.SSOVideoRiskEverProvided {
+		t.Fatal("missing ssoVideoRiskEver was treated as an explicit update")
+	}
 }
 
 func TestSettingsResponseIncludesBuildForbiddenCodes(t *testing.T) {

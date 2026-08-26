@@ -689,6 +689,9 @@ func TestApplyDomainConfigAccountsDefaults(t *testing.T) {
 	if loaded.Accounts.SSOVideoRiskThreshold != 1 || loaded.Accounts.SSOLLMRiskThreshold != 0.8 {
 		t.Fatalf("SSO risk threshold defaults = video=%g llm=%g", loaded.Accounts.SSOVideoRiskThreshold, loaded.Accounts.SSOLLMRiskThreshold)
 	}
+	if loaded.Accounts.SSOVideoRiskEver != settingsdomain.DefaultSSOVideoRiskEver {
+		t.Fatalf("SSO video historical-risk default = %q", loaded.Accounts.SSOVideoRiskEver)
+	}
 	if loaded.Audit.CommitDelay.Value() != base.Audit.CommitDelay.Value() {
 		t.Fatalf("audit commit delay = %s", loaded.Audit.CommitDelay.Value())
 	}
@@ -723,6 +726,35 @@ func TestUpdateSSORiskThresholdZeroMeansUnlimited(t *testing.T) {
 	}
 	if reloaded.Accounts.SSOVideoRiskThreshold != 0 || reloaded.Accounts.SSOLLMRiskThreshold != 0 {
 		t.Fatalf("reloaded unlimited thresholds = %#v", reloaded.Accounts)
+	}
+}
+
+func TestUpdateSSOVideoRiskEverRoundTrip(t *testing.T) {
+	cfg := testConfig(t)
+	repo := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repo, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	if input.Accounts.SSOVideoRiskEver != settingsdomain.SSOVideoRiskEverAuto {
+		t.Fatalf("editable historical-risk default = %q", input.Accounts.SSOVideoRiskEver)
+	}
+	input.Accounts.SSOVideoRiskEver = settingsdomain.SSOVideoRiskEverOff
+	input.Accounts.SSOVideoRiskEverProvided = true
+	if _, err := service.Update(context.Background(), service.Get().Revision, input); err != nil {
+		t.Fatal(err)
+	}
+	if applied.Accounts.SSOVideoRiskEver != settingsdomain.SSOVideoRiskEverOff {
+		t.Fatalf("applied historical-risk = %q", applied.Accounts.SSOVideoRiskEver)
+	}
+	if repo.value.Accounts.SSOVideoRiskEver == nil || *repo.value.Accounts.SSOVideoRiskEver != settingsdomain.SSOVideoRiskEverOff {
+		t.Fatalf("persisted historical-risk = %#v", repo.value.Accounts.SSOVideoRiskEver)
+	}
+	reloaded, _, _, err := LoadPersisted(context.Background(), cfg, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Accounts.SSOVideoRiskEver != settingsdomain.SSOVideoRiskEverOff {
+		t.Fatalf("reloaded historical-risk = %q", reloaded.Accounts.SSOVideoRiskEver)
 	}
 }
 

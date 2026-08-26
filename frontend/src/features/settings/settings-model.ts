@@ -183,6 +183,7 @@ export const settingsSchema = z.object({
     autoCleanIncludeDisabled: z.boolean(),
     ssoVideoRiskThreshold: z.number().min(0).max(1),
     ssoLLMRiskThreshold: z.number().min(0).max(1),
+    ssoVideoRiskEver: z.enum(["auto", "on", "off"]),
   }),
 });
 
@@ -236,6 +237,7 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       autoCleanIncludeDisabled: config.accounts.autoCleanIncludeDisabled,
       ssoVideoRiskThreshold: config.accounts.ssoVideoRiskThreshold,
       ssoLLMRiskThreshold: config.accounts.ssoLLMRiskThreshold,
+      ssoVideoRiskEver: config.accounts.ssoVideoRiskEver,
     },
   };
 }
@@ -287,6 +289,7 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
       autoCleanIncludeDisabled: config.accounts.autoCleanIncludeDisabled,
       ssoVideoRiskThreshold: config.accounts.ssoVideoRiskThreshold,
       ssoLLMRiskThreshold: config.accounts.ssoLLMRiskThreshold,
+      ssoVideoRiskEver: config.accounts.ssoVideoRiskEver,
     },
   };
 }

@@ -321,6 +321,12 @@ func (c Credential) BlocksVideoBySSORisk() bool {
 	return c.BlocksAtSSORisk(DefaultSSOVideoRiskThreshold)
 }
 
+// BlocksSSOVideoByRiskEver reports whether historical grok.com risk should keep
+// this credential out of production video scheduling.
+func (c Credential) BlocksSSOVideoByRiskEver(excludeEver bool) bool {
+	return excludeEver && c.SSOBotRiskEver
+}
+
 // IsVideoQuotaMode reports whether a routing quota mode is a video product.
 func IsVideoQuotaMode(mode string) bool {
 	switch strings.TrimSpace(mode) {

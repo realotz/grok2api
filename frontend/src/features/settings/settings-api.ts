@@ -2,6 +2,8 @@ import { apiRequest } from "@/shared/api/client";
 import { createObjectDecoder, decodeBooleanResult, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isRecordOf, isString } from "@/shared/api/decoder";
 import type { SortOrder } from "@/shared/lib/table-sort";
 
+export type SSOVideoRiskEverMode = "auto" | "on" | "off";
+
 export type SettingsConfigDTO = {
   server: { maxConcurrentRequests: number };
   providerBuild: { baseURL: string; fallbackBaseURL: string; clientVersion: string; clientIdentifier: string; tokenAuth: string; tokenAuthConfigured: boolean; userAgent: string; responseHeaderTimeout: string; streamIdleTimeout: string };
@@ -36,6 +38,7 @@ export type SettingsConfigDTO = {
     autoCleanIncludeDisabled: boolean;
     ssoVideoRiskThreshold: number;
     ssoLLMRiskThreshold: number;
+    ssoVideoRiskEver: SSOVideoRiskEverMode;
   };
 };
 
@@ -150,6 +153,7 @@ const settingsConfigValidator = hasShape({
     autoCleanIncludeDisabled: isBoolean,
     ssoVideoRiskThreshold: isOptional(isNumber),
     ssoLLMRiskThreshold: isOptional(isNumber),
+    ssoVideoRiskEver: isOptional(isOneOf("auto", "on", "off")),
   })),
 });
 const defaultAccountsConfig = (): SettingsConfigDTO["accounts"] => ({
@@ -162,6 +166,7 @@ const defaultAccountsConfig = (): SettingsConfigDTO["accounts"] => ({
   autoCleanIncludeDisabled: false,
   ssoVideoRiskThreshold: 1,
   ssoLLMRiskThreshold: 0.8,
+  ssoVideoRiskEver: "auto",
 });
 function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDTO {
   const accounts = snapshot.config.accounts ?? defaultAccountsConfig();
@@ -203,6 +208,7 @@ function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDT
         autoCleanIncludeDisabled: accounts.autoCleanIncludeDisabled ?? false,
         ssoVideoRiskThreshold: accounts.ssoVideoRiskThreshold ?? 1,
         ssoLLMRiskThreshold: accounts.ssoLLMRiskThreshold ?? 0.8,
+        ssoVideoRiskEver: accounts.ssoVideoRiskEver ?? "auto",
       },
     },
   };

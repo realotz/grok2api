@@ -1,6 +1,9 @@
 package settings
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	DefaultBuildResponseHeaderTimeout = 5 * time.Minute
@@ -155,9 +158,45 @@ type AccountsConfig struct {
 	SSOVideoRiskThreshold *float64
 	// SSOLLMRiskThreshold 禁止 grok-4.5/4.6 Build LLM 的 grok.com risk 下限；nil 表示默认 0.8，0 表示不限制。
 	SSOLLMRiskThreshold *float64
+	// SSOVideoRiskEver 控制历史风控（sso_bot_risk_ever）是否禁止正式视频调度。
+	// nil/空/"auto" 为默认：不调度历史风控=1；"on" 始终排除；"off" 仅按当前阈值。
+	SSOVideoRiskEver *string
 }
 
 const (
 	DefaultSSOVideoRiskThreshold = 1.0
 	DefaultSSOLLMRiskThreshold   = 0.8
+
+	SSOVideoRiskEverAuto    = "auto"
+	SSOVideoRiskEverOn      = "on"
+	SSOVideoRiskEverOff     = "off"
+	DefaultSSOVideoRiskEver = SSOVideoRiskEverAuto
 )
+
+// NormalizeSSOVideoRiskEver maps empty/unknown values to auto.
+func NormalizeSSOVideoRiskEver(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case SSOVideoRiskEverOn:
+		return SSOVideoRiskEverOn
+	case SSOVideoRiskEverOff:
+		return SSOVideoRiskEverOff
+	default:
+		return SSOVideoRiskEverAuto
+	}
+}
+
+// ExcludeSSOVideoRiskEver reports whether production video should skip
+// accounts with historical grok.com risk. auto and on exclude; off does not.
+func ExcludeSSOVideoRiskEver(value string) bool {
+	return NormalizeSSOVideoRiskEver(value) != SSOVideoRiskEverOff
+}
+
+// ValidSSOVideoRiskEver reports whether value is empty or a known mode.
+func ValidSSOVideoRiskEver(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", SSOVideoRiskEverAuto, SSOVideoRiskEverOn, SSOVideoRiskEverOff:
+		return true
+	default:
+		return false
+	}
+}
