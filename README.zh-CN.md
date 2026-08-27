@@ -187,6 +187,8 @@ docker compose up -d
 docker compose logs -f grok2api
 ```
 
+docker build -t grok2api:local . && GROK2API_IMAGE=grok2api:local docker compose up -d
+
 访问 `http://127.0.0.1:7878`。镜像已包含前端，SQLite 数据库与本地媒体保存在 Compose 数据卷中。
 
 ### 源码运行

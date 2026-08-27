@@ -499,6 +499,21 @@ func TestLoadPersistedBackfillsMissingServerConcurrency(t *testing.T) {
 	}
 }
 
+func TestLoadPersistedBackfillsMissingDetectConcurrency(t *testing.T) {
+	cfg := testConfig(t)
+	value := toDomainConfig(cfg)
+	value.Batch.DetectConcurrency = 0
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Batch.DetectConcurrency != cfg.Batch.DetectConcurrency {
+		t.Fatalf("detectConcurrency = %d, want %d", loaded.Batch.DetectConcurrency, cfg.Batch.DetectConcurrency)
+	}
+}
+
 func TestApplyDomainConfigPreservesExplicitCapacitySettings(t *testing.T) {
 	base := testConfig(t)
 	value := toDomainConfig(base)

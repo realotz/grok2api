@@ -190,6 +190,13 @@ export const settingsSchema = z.object({
 export type SettingsForm = z.infer<typeof settingsSchema>;
 
 export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
+  const batch = {
+    ...config.batch,
+    // Older backends may return zero until their persisted settings are
+    // migrated; keep the native number input valid so hidden tabs do not block
+    // form submission with a non-focusable constraint error.
+    detectConcurrency: config.batch.detectConcurrency === 0 ? 32 : config.batch.detectConcurrency,
+  };
   return {
     server: config.server,
     providerBuild: { ...config.providerBuild, responseHeaderTimeout: parseDuration(config.providerBuild.responseHeaderTimeout), streamIdleTimeout: parseDuration(config.providerBuild.streamIdleTimeout) },
@@ -202,7 +209,7 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       recoveryBackoffBase: parseDuration(config.providerWeb.recoveryBackoffBase), recoveryBackoffMax: parseDuration(config.providerWeb.recoveryBackoffMax),
     },
     providerConsole: { ...config.providerConsole, chatTimeout: parseDuration(config.providerConsole.chatTimeout), streamIdleTimeout: parseDuration(config.providerConsole.streamIdleTimeout) },
-    batch: { ...config.batch, randomDelay: parseDurationMilliseconds(config.batch.randomDelay) },
+    batch: { ...batch, randomDelay: parseDurationMilliseconds(config.batch.randomDelay) },
     media: {
       maxImageSize: parseByteSize(config.media.maxImageBytes), maxTotalSize: parseByteSize(config.media.maxTotalBytes),
       cleanupThresholdPercent: config.media.cleanupThresholdPercent,

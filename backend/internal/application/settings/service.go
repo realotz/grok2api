@@ -374,10 +374,16 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	if value.Batch.RandomDelay != nil {
 		randomDelay = *value.Batch.RandomDelay
 	}
+	detectConcurrency := value.Batch.DetectConcurrency
+	// Detect concurrency was added after the initial persisted settings
+	// schema. Keep older rows valid instead of exposing zero to the admin form.
+	if detectConcurrency == 0 {
+		detectConcurrency = base.Batch.DetectConcurrency
+	}
 	base.Batch = config.BatchConfig{
 		ImportConcurrency: value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
 		SyncConcurrency: value.Batch.SyncConcurrency, RefreshConcurrency: value.Batch.RefreshConcurrency,
-		DetectConcurrency: value.Batch.DetectConcurrency, RandomDelay: config.Duration(randomDelay),
+		DetectConcurrency: detectConcurrency, RandomDelay: config.Duration(randomDelay),
 	}
 	base.Media.MaxImageBytes = value.Media.MaxImageBytes
 	base.Media.MaxTotalBytes = value.Media.MaxTotalBytes
