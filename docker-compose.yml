@@ -5,7 +5,7 @@ services:
     container_name: grok2api
     image: "${GROK2API_IMAGE:-ghcr.io/chenyme/grok2api:v3.1.1}"
     ports:
-      - "${GROK2API_PORT:-8000}:8000"
+      - "${GROK2API_PORT:-7878}:8000"
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
       # 非空时覆盖 config.yaml 的 PostgreSQL DSN，并自动启用 postgres。

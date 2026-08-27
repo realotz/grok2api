@@ -6,8 +6,11 @@
 server:
   # [通常不要修改] Docker 镜像会通过启动参数覆盖为 0.0.0.0:8000。
   listen: "127.0.0.1:8000"
-  # [通常不要修改] 单次请求体上限 32 MiB。
-  maxBodyBytes: 33554432
+  # [按需修改] 单次请求体上限 100 MiB。
+  maxBodyBytes: 104857600
+  # [大账号池推荐] 单实例同时处理的 /v1 请求上限。账号池和上游连接数较大时，
+  # 32 核服务器可提高该值；实际吞吐仍受上游限流、出口节点和 Client Key 限制。
+  maxConcurrentRequests: 4096
   # [按需修改] 仅列出会覆盖 X-Forwarded-For / X-Real-IP 的可信反向代理。
   # 留空时忽略所有转发头并记录直连对端 IP；不要使用 0.0.0.0/0 或 ::/0。
   # Docker/Nginx 示例：["127.0.0.1", "172.16.0.0/12"]
@@ -23,8 +26,8 @@ auth:
   # [通常不要修改] 管理端访问与刷新令牌有效期。
   accessTokenTTL: 15m
   refreshTokenTTL: 720h
-  # [按需修改] 外部地址使用 HTTPS 时必须设为 true。
-  secureCookies: false
+  # [生产推荐] 外部地址使用 HTTPS 时启用安全 Cookie。
+  secureCookies: true
 
 secrets:
   # [必须修改] 至少 32 个字符。快速生成：openssl rand -hex 32
@@ -40,11 +43,13 @@ bootstrapAdmin:
   password: "replace-with-a-strong-password"
 
 frontend:
+  # [按需修改] 用于生成媒体公开 URL 和文档示例；使用 Nginx/HTTPS 时填写实际域名。
+  publicApiBaseURL: "http://127.0.0.1:7878"
   # [通常不要修改] Go 服务同源托管的前端构建目录。
   staticPath: "./frontend/dist"
 
 database:
-  # [按需修改] 单实例使用 sqlite；多实例改为 postgres。
+  # [按需修改] 小规模单实例可使用 sqlite；几万账号或多实例部署推荐 postgres。
   driver: sqlite # sqlite | postgres
   sqlite:
     # [通常不要修改] 相对路径以本配置文件所在目录为基准。
@@ -54,8 +59,9 @@ database:
     # 也可通过 GROK2API_DATABASE_URL 注入；非空环境变量会覆盖本字段并自动启用 postgres。
     dsn: "postgres://user:password@127.0.0.1:5432/grok2api?sslmode=disable"
     # [按需修改] 根据数据库连接容量调整。
-    maxOpenConns: 50
-    maxIdleConns: 10
+    # [大账号池推荐] PostgreSQL 连接池；仅 driver=postgres 时生效。
+    maxOpenConns: 256
+    maxIdleConns: 64
 
 runtimeStore:
   # [按需修改] 单实例使用 memory；多实例改为 redis。
@@ -98,20 +104,24 @@ routing:
   # [通常不要修改] 大账号池默认使用有界分段选号；保留完整池回退、额度优先级和原子并发门禁。
   segmentedSelectorEnabled: true
   segmentedSelectorMinCandidates: 3000
-  segmentedSelectorWindowSize: 64
-  # [按需修改] 大账号池才需要打开。0 保持历史行为：不健康节点上的 auto 账号会一次性迁走。
+  # [大账号池推荐] 每次动态并发读取的候选窗口。128 可减少几万账号池在高并发下
+  # 触发完整选号回退；如 Redis 延迟或上游出口压力升高，可退回 64。
+  segmentedSelectorWindowSize: 128
+  # [大账号池推荐] 每个健康出口最多吸收活跃账号池的 20%，防止单节点故障时
+  # 账号集中到少数出口；节点数量不足以承载总池时，应结合节点容量调整该比例。
   # 0.05–1 表示每个健康节点最多吸收该比例的活跃账号。环境变量
   # GROK2API_AUTO_ASSIGN_MAX_NODE_SHARE 可覆盖。
-  autoAssignMaxNodeShare: 0
-  # [按需修改] 大账号池才需要打开。0 保持历史行为：首轮疏散不限额，容量/再均衡仍最多 200 次。
+  autoAssignMaxNodeShare: 0.2
+  # [大账号池推荐] 单轮最多迁移活跃账号池的 5%，将故障疏散摊到多个维护周期，
+  # 避免几万条绑定更新在同一轮集中冲击数据库和出口代理。
   # 0.05–1 限制单轮已绑定账号迁移比例。环境变量
   # GROK2API_AUTO_ASSIGN_MAX_MIGRATION_SHARE 可覆盖。
-  autoAssignMaxMigrationShare: 0
+  autoAssignMaxMigrationShare: 0.05
 
 audit:
-  # [通常不要修改] 审计批量写入参数；bufferSize 的修改需重启生效。
-  bufferSize: 16384
-  batchSize: 256
+  # [大账号池推荐] 提高突发请求下的审计缓冲和单事务批量；需要重启生效。
+  bufferSize: 65536
+  batchSize: 1024
   flushInterval: 250ms
   # [通常不要修改] 需要调用方确认提交的审计最多聚合等待该时长；建议保持 1ms–50ms。
   commitDelay: 5ms

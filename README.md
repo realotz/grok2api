@@ -186,7 +186,7 @@ docker compose up -d
 docker compose logs -f grok2api
 ```
 
-Open `http://127.0.0.1:8000`. The image already includes the frontend; SQLite data and local media are stored in the Compose volume.
+Open `http://127.0.0.1:7878`. The image already includes the frontend; SQLite data and local media are stored in the Compose volume.
 
 ### Run from source
 
@@ -330,7 +330,7 @@ Stored responses and compact depend on the selected Provider. The signed-in admi
 Client keys support model allowlists and optional RPM, concurrency, spend, and expiry limits.
 
 ```bash
-curl http://127.0.0.1:8000/v1/responses \
+curl http://127.0.0.1:7878/v1/responses \
   -H "Authorization: Bearer g2a_xxx_xxx" \
   -H "Content-Type: application/json" \
   -d '{
@@ -446,7 +446,7 @@ Request audits record the normalized client IPv4 or IPv6 address. Direct deploym
 
 ```nginx
 location / {
-    proxy_pass http://127.0.0.1:8000;
+    proxy_pass http://127.0.0.1:7878;
 
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;

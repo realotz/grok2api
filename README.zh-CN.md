@@ -187,7 +187,7 @@ docker compose up -d
 docker compose logs -f grok2api
 ```
 
-访问 `http://127.0.0.1:8000`。镜像已包含前端，SQLite 数据库与本地媒体保存在 Compose 数据卷中。
+访问 `http://127.0.0.1:7878`。镜像已包含前端，SQLite 数据库与本地媒体保存在 Compose 数据卷中。
 
 ### 源码运行
 
@@ -327,7 +327,7 @@ stored response 和 compact 取决于最终 Provider。登录管理端后可在 
 客户端密钥支持模型白名单，以及可选的 RPM、并发、用量和截止日期限制。
 
 ```bash
-curl http://127.0.0.1:8000/v1/responses \
+curl http://127.0.0.1:7878/v1/responses \
   -H "Authorization: Bearer g2a_xxx_xxx" \
   -H "Content-Type: application/json" \
   -d '{
@@ -436,7 +436,7 @@ GROK2API_DATABASE_URL='postgresql://user:password@host:5432/grok2api?sslmode=req
 
 ```nginx
 location / {
-    proxy_pass http://127.0.0.1:8000;
+    proxy_pass http://127.0.0.1:7878;
 
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
