@@ -22,7 +22,7 @@ const (
 	qualityRetryFailClosed           = "fail_closed"
 	defaultQualityMaxAttempts        = 6
 	defaultQualityHoldTimeout        = 30 * time.Second
-	defaultQualityMinOutput          = int64(8)
+	defaultQualityMinOutput          = int64(5)
 	defaultMissingThinkingCooldown   = 12 * time.Hour
 	lastErrorMissingThinking         = accountdomain.LastErrorMissingThinking
 	lastErrorMissingThinkingDisabled = accountdomain.LastErrorMissingThinkingDisabled
@@ -125,16 +125,15 @@ func (s *Service) qualityRetryConfig() QualityRetryRuntime {
 // does not — degraded upstreams fill that field without ciphertext or
 // deltas. A finished sample with enough visible output and no streamed
 // thinking is withheld.
-// Short replies below minOutput are delivered so "ok"/"yes" is not retried.
+// Replies below minOutput are delivered; production uses 5 so output > 4 is
+// withheld when no real thinking was streamed.
 // A hold timeout with no visible output is not fail-open: keep waiting for
 // more bytes or a stream abort so an empty hang is not flushed as HTTP 200.
 //
 // An empty reasoning stub is not thinking. Before the hold deadline, wait for
-// real evidence or a terminal event. If the deadline expires while the stream
-// is still open and already has visible output, the result is inconclusive:
-// release it without penalizing the account. A stub-only empty stream keeps
-// waiting for idle/terminal handling. This keeps HoldTimeout a real latency
-// bound without reopening the empty-stream 200 response path.
+// real evidence or a terminal event. If the deadline expires with enough
+// visible output but still no real thinking, withhold it. A stub-only empty
+// stream keeps waiting for idle/terminal handling.
 func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdict {
 	if minOutput <= 0 {
 		minOutput = defaultQualityMinOutput
@@ -152,8 +151,8 @@ func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdi
 	}
 	enough := output >= minOutput
 	if sig.ReasoningStarted && !sig.Terminal {
-		if sig.HoldExpired && output > 0 {
-			return QualityDeliver
+		if sig.HoldExpired && enough {
+			return QualityWithhold
 		}
 		return QualityWait
 	}
@@ -303,14 +302,6 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
-	// Client-executed tools are safe to hold: their calls have not reached the
-	// client yet, and completed results in the next request are immutable input.
-	// Hosted tools are different. Retrying them can repeat an upstream search,
-	// sandbox run, image job, or remote MCP call, so retain the old no-replay
-	// safety boundary for any request that declares one.
-	if qualityRequestHasReplayUnsafeHostedTools(input.Body) {
-		return false
-	}
 	// Aliases are rewritten before this gate, so inspect the effective request
 	// body instead of only the reasoning-capable base model. In particular,
 	// grok-4.3-none becomes grok-4.3 plus an explicit disabled setting.
@@ -321,78 +312,6 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 		return true
 	}
 	return modeldomain.SupportsReasoningForProvider(route.Provider, route.UpstreamModel)
-}
-
-func qualityRequestHasReplayUnsafeHostedTools(body []byte) bool {
-	var payload map[string]any
-	if json.Unmarshal(body, &payload) != nil || payload == nil {
-		return false
-	}
-	if raw, exists := payload["web_search_options"]; exists && raw != nil {
-		return true
-	}
-	if raw, exists := payload["mcp_servers"]; exists && raw != nil {
-		servers, ok := raw.([]any)
-		if !ok || len(servers) > 0 {
-			return true
-		}
-	}
-	if qualityToolListHasReplayUnsafeHostedTool(payload["tools"]) {
-		return true
-	}
-	// Responses Tool Search can load declarations later in the request. Only
-	// inspect additional_tools items; arbitrary user/schema objects may also
-	// contain a field named "tools" and must not affect the retry policy.
-	items, _ := payload["input"].([]any)
-	for _, rawItem := range items {
-		item, ok := rawItem.(map[string]any)
-		if !ok || jsonNodeString(item["type"]) != "additional_tools" {
-			continue
-		}
-		if qualityToolListHasReplayUnsafeHostedTool(item["tools"]) {
-			return true
-		}
-	}
-	return false
-}
-
-func qualityToolListHasReplayUnsafeHostedTool(value any) bool {
-	tools, ok := value.([]any)
-	if !ok {
-		return false
-	}
-	for _, rawTool := range tools {
-		tool, ok := rawTool.(map[string]any)
-		if !ok {
-			continue
-		}
-		kind := jsonNodeString(tool["type"])
-		switch kind {
-		case "", "function", "custom", "local_shell", "apply_patch", "tool_search":
-			// These declarations only ask the model to return a call. Execution
-			// happens in the client after the held response is committed.
-			continue
-		case "shell":
-			environment, _ := tool["environment"].(map[string]any)
-			if jsonNodeString(environment["type"]) != "local" {
-				return true
-			}
-		case "namespace":
-			if qualityToolListHasReplayUnsafeHostedTool(tool["tools"]) {
-				return true
-			}
-		default:
-			// Default to no replay for every server/native tool, including types
-			// added by future protocol versions that this gateway does not know yet.
-			return true
-		}
-	}
-	return false
-}
-
-func jsonNodeString(value any) string {
-	text, _ := value.(string)
-	return strings.ToLower(strings.TrimSpace(text))
 }
 
 func qualityRequestDisablesReasoning(body []byte) bool {

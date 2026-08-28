@@ -41,7 +41,7 @@ func TestClassifyQualityHold(t *testing.T) {
 		{name: "empty terminal waits for transport handling", sig: QualityStreamSignals{Terminal: true}, want: QualityWait},
 		{name: "midstream enough content withhold", sig: QualityStreamSignals{VisibleTokens: 64}, want: QualityWithhold},
 		{name: "stub midstream waits even with enough visible", sig: QualityStreamSignals{ReasoningStarted: true, VisibleTokens: 64}, want: QualityWait},
-		{name: "stub hold expiry is inconclusive and delivers", sig: QualityStreamSignals{ReasoningStarted: true, VisibleTokens: 64, HoldExpired: true}, want: QualityDeliver},
+		{name: "stub hold expiry without thinking withholds", sig: QualityStreamSignals{ReasoningStarted: true, VisibleTokens: 64, HoldExpired: true}, want: QualityWithhold},
 		{name: "stub-only hold expiry keeps waiting", sig: QualityStreamSignals{ReasoningStarted: true, HoldExpired: true}, want: QualityWait},
 		{name: "stub terminal enough withhold", sig: QualityStreamSignals{ReasoningStarted: true, VisibleTokens: 64, Terminal: true}, want: QualityWithhold},
 		{name: "wait for more", sig: QualityStreamSignals{VisibleTokens: 8}, want: QualityWait},
@@ -56,6 +56,16 @@ func TestClassifyQualityHold(t *testing.T) {
 				t.Fatalf("ClassifyQualityHold() = %s, want %s", got, test.want)
 			}
 		})
+	}
+}
+
+func TestClassifyQualityHoldFiveTokenBoundary(t *testing.T) {
+	t.Parallel()
+	if got := ClassifyQualityHold(QualityStreamSignals{VisibleTokens: 4, Terminal: true}, 5); got != QualityDeliver {
+		t.Fatalf("four visible tokens = %s, want deliver", got)
+	}
+	if got := ClassifyQualityHold(QualityStreamSignals{VisibleTokens: 5, Terminal: true}, 5); got != QualityWithhold {
+		t.Fatalf("five visible tokens = %s, want withhold", got)
 	}
 }
 
@@ -608,7 +618,7 @@ func TestPeekQualityStreamHoldTimeoutInterruptsBlockedReadAndPreservesRemainder(
 	}
 }
 
-func TestPeekQualityStreamHoldTimeoutDeliversStartedReasoningAndPreservesLateEvidence(t *testing.T) {
+func TestPeekQualityStreamHoldTimeoutWithholdsStartedReasoningWithoutEvidence(t *testing.T) {
 	t.Parallel()
 	reader, writer := io.Pipe()
 	content := strings.Repeat("abcd", 40)
@@ -650,8 +660,8 @@ func TestPeekQualityStreamHoldTimeoutDeliversStartedReasoningAndPreservesLateEvi
 	if elapsed := time.Since(started); elapsed < 20*time.Millisecond || elapsed > 200*time.Millisecond {
 		t.Fatalf("peek returned after %s, want the 30ms hold timeout", elapsed)
 	}
-	if verdict != QualityDeliver {
-		t.Fatalf("started reasoning at hold timeout verdict = %s, want deliver", verdict)
+	if verdict != QualityWithhold {
+		t.Fatalf("started reasoning at hold timeout verdict = %s, want withhold", verdict)
 	}
 	close(continueWrite)
 	body, err := io.ReadAll(replay)
@@ -1069,22 +1079,10 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			request := input
 			request.Body = []byte(test.body)
-			if !qualityRequestHasReplayUnsafeHostedTools(request.Body) {
-				t.Fatal("fixture must be classified as replay-unsafe hosted tooling")
-			}
-			if shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
-				t.Fatal("hosted tools must not be held because account retry can execute them again")
+			if !shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
+				t.Fatal("hosted tool requests must be held when thinking is missing")
 			}
 		})
-	}
-	for _, body := range []string{
-		`{"tools":[{"type":"function","name":"read_file","parameters":{"type":"object","properties":{"tools":{"type":"array"}}}}]}`,
-		`{"mcp_servers":[]}`,
-		`{"web_search_options":null}`,
-	} {
-		if qualityRequestHasReplayUnsafeHostedTools([]byte(body)) {
-			t.Fatalf("safe or empty tool metadata classified as hosted: %s", body)
-		}
 	}
 	toolCache := input
 	toolCache.Body = []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
@@ -1409,7 +1407,7 @@ func TestAttemptLoopQualityFailOpenFallbackAndTotalAttemptCap(t *testing.T) {
 func TestNormalizeQualityRetryDefaults(t *testing.T) {
 	t.Parallel()
 	got := normalizeQualityRetry(QualityRetryRuntime{Enabled: true})
-	if !got.Enabled || got.MaxAttempts != 6 || got.MinOutputTokens != 8 || got.OnExhausted != qualityRetryFailClosed || got.HoldTimeout != 30*time.Second || got.AccountCooldown != 12*time.Hour || got.IdleAccountCooldown != 15*time.Minute {
+	if !got.Enabled || got.MaxAttempts != 6 || got.MinOutputTokens != 5 || got.OnExhausted != qualityRetryFailClosed || got.HoldTimeout != 30*time.Second || got.AccountCooldown != 12*time.Hour || got.IdleAccountCooldown != 15*time.Minute {
 		t.Fatalf("defaults = %#v", got)
 	}
 }

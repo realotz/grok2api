@@ -371,7 +371,7 @@ qualityGuard:
     enabled: true
     maxAttempts: 6
     holdTimeout: 30s
-    minOutputTokens: 8
+    minOutputTokens: 5
     onExhausted: fail_closed # fail_open | fail_closed
     accountCooldown: 12h
     idleAccountCooldown: 15m

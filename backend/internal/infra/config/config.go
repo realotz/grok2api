@@ -823,8 +823,8 @@ func validateQualityGuardRequestRetry(value QualityGuardRequestRetryConfig) erro
 	if d := value.HoldTimeout.Value(); d != 0 && (d < 200*time.Millisecond || d > 30*time.Second) {
 		return errors.New("qualityGuard.requestRetry.holdTimeout 必须在 200ms 到 30s 之间")
 	}
-	if value.MinOutputTokens != 0 && (value.MinOutputTokens < 8 || value.MinOutputTokens > 256) {
-		return errors.New("qualityGuard.requestRetry.minOutputTokens 必须在 8 到 256 之间")
+	if value.MinOutputTokens != 0 && (value.MinOutputTokens < 1 || value.MinOutputTokens > 256) {
+		return errors.New("qualityGuard.requestRetry.minOutputTokens 必须在 1 到 256 之间")
 	}
 	switch strings.TrimSpace(value.OnExhausted) {
 	case "", "fail_open", "fail_closed":
@@ -970,7 +970,7 @@ func defaultConfig() Config {
 			MinimumHealthyNodes: 3, MaxOutputTokens: 384,
 			MinimumGenerationWindow: Duration(time.Second), RotationTimeout: Duration(45 * time.Second),
 			RequestRetry: QualityGuardRequestRetryConfig{
-				MaxAttempts: 6, HoldTimeout: Duration(30 * time.Second), MinOutputTokens: 8, OnExhausted: "fail_closed",
+				MaxAttempts: 6, HoldTimeout: Duration(30 * time.Second), MinOutputTokens: 5, OnExhausted: "fail_closed",
 				AccountCooldown: Duration(12 * time.Hour), IdleAccountCooldown: Duration(15 * time.Minute),
 			},
 		},
