@@ -11,10 +11,9 @@ import (
 )
 
 type segmentedSelectorActiveRequest struct {
-	provider      account.Provider
-	upstreamModel string
-	windowSize    int
-	cursor        uint64
+	provider   account.Provider
+	windowSize int
+	cursor     uint64
 }
 
 type segmentedSelectorCohortBucket struct {
@@ -47,18 +46,17 @@ func (s *Selector) nextSegmentedActiveRequest(provider account.Provider, upstrea
 	}
 	shard := segmentedSelectorShard(provider, upstreamModel, quotaMode)
 	cursor := s.segmentedState.activeCursors[shard].Add(uint64(config.windowSize)) - uint64(config.windowSize)
-	return &segmentedSelectorActiveRequest{provider: provider, upstreamModel: upstreamModel, windowSize: config.windowSize, cursor: cursor}
+	return &segmentedSelectorActiveRequest{provider: provider, windowSize: config.windowSize, cursor: cursor}
 }
 
-func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []account.RoutingCandidate, indexes []int, quotaMode string, tierOrder []account.WebTier, request segmentedSelectorActiveRequest) (*accountLease, error) {
+func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []account.RoutingCandidate, indexes []int, quotaMode string, tierOrder []account.WebTier, request segmentedSelectorActiveRequest, materialFailures *credentialMaterialFailureTracker) (*accountLease, error) {
 	startedAt := time.Now()
 	_, _, _, capacityWait := s.routingConfig()
 	waitDeadline := time.Now().Add(capacityWait)
 	windowsScanned := 0
 	candidatesScanned := 0
 	fullPlannerOnly := false
-	preferFreeBuild := s.preferFreeBuildForModel(request.upstreamModel)
-	preferEarlierImport := isSSOVideoRequest(quotaMode, request.upstreamModel)
+	preferFreeBuild := s.preferFreeBuildEnabled()
 	for {
 		now := time.Now().UTC()
 		if fullPlannerOnly {
@@ -67,12 +65,12 @@ func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []acco
 				length = len(values)
 			}
 			candidatesScanned += length
-			plan, err := s.planCandidateIndexesWithHints(ctx, values, indexes, now, tierOrder, nil, preferFreeBuild, preferEarlierImport)
+			plan, err := s.planCandidateIndexesWithHints(ctx, values, indexes, now, tierOrder, nil, preferFreeBuild, isSSOVideoRequest(quotaMode, ""))
 			if err != nil {
 				observeSegmentedActive(request.provider, "error", "full_fallback", startedAt, windowsScanned, candidatesScanned)
 				return nil, err
 			}
-			claim, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, "full_fallback")
+			claim, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, "full_fallback", materialFailures)
 			if err != nil {
 				observeSegmentedActive(request.provider, "error", "full_fallback", startedAt, windowsScanned, candidatesScanned)
 				return nil, err
@@ -96,13 +94,13 @@ func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []acco
 					windowsScanned++
 					roundWindows++
 					candidatesScanned += len(windowIndexes)
-					plan, err := s.planCandidateIndexesWithHints(ctx, values, windowIndexes, now, tierOrder, concurrencyHints, preferFreeBuild, preferEarlierImport)
+					plan, err := s.planCandidateIndexesWithHints(ctx, values, windowIndexes, now, tierOrder, concurrencyHints, preferFreeBuild, isSSOVideoRequest(quotaMode, ""))
 					if err != nil {
 						observeSegmentedActive(request.provider, "error", "planning", startedAt, windowsScanned, candidatesScanned)
 						return nil, err
 					}
 					stage := segmentedActiveSelectionStage(cohortIndex, windowOffset)
-					claim, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, stage)
+					claim, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, stage, materialFailures)
 					if err != nil {
 						observeSegmentedActive(request.provider, "error", "claim", startedAt, windowsScanned, candidatesScanned)
 						return nil, err
@@ -126,12 +124,12 @@ func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []acco
 					length = len(values)
 				}
 				candidatesScanned += length
-				plan, err := s.planCandidateIndexesWithHints(ctx, values, indexes, now, tierOrder, concurrencyHints, preferFreeBuild, preferEarlierImport)
+				plan, err := s.planCandidateIndexesWithHints(ctx, values, indexes, now, tierOrder, concurrencyHints, preferFreeBuild, isSSOVideoRequest(quotaMode, ""))
 				if err != nil {
 					observeSegmentedActive(request.provider, "error", "full_fallback", startedAt, windowsScanned, candidatesScanned)
 					return nil, err
 				}
-				claim, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, "full_fallback")
+				claim, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, "full_fallback", materialFailures)
 				if err != nil {
 					observeSegmentedActive(request.provider, "error", "full_fallback", startedAt, windowsScanned, candidatesScanned)
 					return nil, err
@@ -163,10 +161,10 @@ func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []acco
 	}
 }
 
-func (s *Selector) claimSegmentedPlan(ctx context.Context, plan *candidatePlan, provider account.Provider, quotaMode, stage string) (segmentedClaimResult, error) {
+func (s *Selector) claimSegmentedPlan(ctx context.Context, plan *candidatePlan, provider account.Provider, quotaMode, stage string, materialFailures *credentialMaterialFailureTracker) (segmentedClaimResult, error) {
 	result := segmentedClaimResult{}
 	for candidate, ok := plan.Next(); ok; candidate, ok = plan.Next() {
-		lease, err := s.claimAccountSlotFor(ctx, candidate.Credential, candidate.Billing)
+		lease, err := s.claimAccountSlotTracked(ctx, candidate.Credential, materialFailures)
 		if err != nil {
 			if errors.Is(err, errRoutingCredentialStale) {
 				result.staleClaims++
@@ -199,15 +197,10 @@ func segmentedCandidateCohorts(values []account.RoutingCandidate, indexes []int,
 		if candidate.Credential.Provider == account.ProviderWeb && len(tierOrder) > 0 && webTierInOrder(tierOrder, candidate.Credential.WebTier) {
 			supportsModel, capabilityKnown = true, true
 		}
-		priority := candidate.Credential.Priority
-		if routingCandidateIsSuper(candidate) {
-			priority = 0
-		}
 		cohort := segmentedSelectorCohort{
 			supportsModel: supportsModel, capabilityKnown: capabilityKnown,
-			ssoRisk:         ssoRiskRank(candidate.Credential),
 			preferFreeBuild: preferFreeBuild && candidate.IsKnownFreeBuild(),
-			tier:            tierOrderRank(tierOrder, candidate.Credential.WebTier), priority: priority,
+			tier:            tierOrderRank(tierOrder, candidate.Credential.WebTier), priority: candidate.Credential.Priority,
 		}
 		if candidate.QuotaWindow != nil && candidate.QuotaWindow.Source == account.QuotaSourceUpstream {
 			cohort.quotaKnown = true

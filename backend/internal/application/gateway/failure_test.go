@@ -31,6 +31,13 @@ func TestTransportUpstreamFailureClassifiesProviderStreamIdleTimeout(t *testing.
 	}
 }
 
+func TestTransportUpstreamFailureClassifiesEmptyResponse(t *testing.T) {
+	failure := newTransportUpstreamFailure(neterror.ErrUpstreamResponseEmpty, 42, "build")
+	if failure.HTTPStatus != http.StatusBadGateway || failure.Code != "upstream_response_empty" || failure.AccountScoped {
+		t.Fatalf("failure = %#v", failure)
+	}
+}
+
 func TestTransportUpstreamFailureClassifiesResponseHeaderTimeout(t *testing.T) {
 	failure := newTransportUpstreamFailure(responseHeaderTimeoutTestError{}, 42, "build")
 	if failure.HTTPStatus != http.StatusGatewayTimeout || failure.Code != "upstream_header_timeout" || failure.PublicMessage != "等待上游响应头超时" || failure.AuditCode() != "upstream_header_timeout" {
@@ -233,6 +240,52 @@ func TestHTTPUpstreamFailureLeavesPaymentRecoveryKindToBilling(t *testing.T) {
 	}`), 42, "build")
 	if !failure.AccountScoped || !failure.QuotaExhausted || failure.FreeQuotaExhausted || failure.UpstreamCode != "personal-team-blocked:spending-limit" {
 		t.Fatalf("failure = %#v", failure)
+	}
+}
+
+func TestRetryableResponseRotatesOnlyOnInternalBuildReasoningRecoveryFailure(t *testing.T) {
+	failedHeader := make(http.Header)
+	failedHeader.Set("X-Grok2API-Compatibility-Warnings", "reasoning_encrypted_content_downgraded,reasoning_recovery_failed")
+	failed := &provider.Response{
+		StatusCode:              http.StatusBadRequest,
+		Header:                  failedHeader,
+		Body:                    io.NopCloser(strings.NewReader(`{"error":"Could not decode the compaction blob"}`)),
+		ReasoningRecoveryFailed: true,
+	}
+	if !isRetryableResponse(failed, accountdomain.ProviderBuild) {
+		t.Fatal("reasoning_recovery_failed 400 must rotate accounts")
+	}
+	if isRetryableResponse(failed, accountdomain.ProviderWeb) {
+		t.Fatal("reasoning recovery failover must remain Build-specific")
+	}
+
+	spoofed := &provider.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     failedHeader,
+		Body:       io.NopCloser(strings.NewReader(`{"error":"unrelated bad request"}`)),
+	}
+	if isRetryableResponse(spoofed, accountdomain.ProviderBuild) {
+		t.Fatal("an upstream-controlled compatibility warning must not trigger account rotation")
+	}
+
+	plain := &provider.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"error":"Could not decode the compaction blob"}`)),
+		Diagnostic: &provider.DiagnosticResponse{Body: []byte(`{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`)},
+	}
+	if isRetryableResponse(plain, accountdomain.ProviderBuild) {
+		t.Fatal("plain compaction 400 must not rotate accounts without reasoning_recovery_failed")
+	}
+
+	unrelated := &provider.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"error":"invalid request history"}`)),
+		Diagnostic: &provider.DiagnosticResponse{Body: []byte(`{"error":"could not decode request json"}`)},
+	}
+	if isRetryableResponse(unrelated, accountdomain.ProviderBuild) {
+		t.Fatal("unrelated 400 must not match encrypted_content/decode substrings")
 	}
 }
 

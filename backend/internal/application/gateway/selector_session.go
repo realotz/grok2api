@@ -28,6 +28,7 @@ type selectionSession struct {
 	retryAccountID   uint64
 	stickyTried      bool
 	staleCandidates  map[uint64]bool
+	materialFailures credentialMaterialFailureTracker
 }
 
 func (s *Selector) beginSelectionSession(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool) (*selectionSession, error) {
@@ -150,7 +151,7 @@ func (session *selectionSession) Acquire(ctx context.Context, excluded map[uint6
 		session.retryAccountID = 0
 		if !session.candidateExcluded(excluded, accountID) {
 			if candidate, ok := routingCandidateByID(session.values, session.normalCandidates, accountID); ok {
-				lease, err := session.selector.claimAccountSlotFor(ctx, candidate.Credential, candidate.Billing)
+				lease, err := session.selector.claimAccountSlotTracked(ctx, candidate.Credential, &session.materialFailures)
 				if err != nil {
 					if errors.Is(err, errRoutingCredentialStale) {
 						session.markCandidateStale(accountID)
@@ -191,7 +192,7 @@ func (session *selectionSession) acquireQuotaProbe(ctx context.Context, excluded
 		return nil, nil
 	}
 	if session.probePlan == nil {
-		plan, err := session.selector.planCandidateIndexesWithHints(ctx, session.values, session.probeCandidates, time.Now().UTC(), session.selector.resolveTierOrder(session.provider, session.upstreamModel, session.quotaMode), nil, session.selector.preferFreeBuildForModel(session.upstreamModel), isSSOVideoRequest(session.quotaMode, session.upstreamModel))
+		plan, err := session.selector.planCandidateIndexes(ctx, session.values, session.probeCandidates, time.Now().UTC(), session.selector.resolveTierOrder(session.provider, session.upstreamModel, session.quotaMode))
 		if err != nil {
 			return nil, err
 		}
@@ -201,7 +202,7 @@ func (session *selectionSession) acquireQuotaProbe(ctx context.Context, excluded
 		if session.candidateExcluded(excluded, candidate.Credential.ID) {
 			continue
 		}
-		lease, err := session.selector.claimAccountSlotFor(ctx, candidate.Credential, candidate.Billing)
+		lease, err := session.selector.claimAccountSlotTracked(ctx, candidate.Credential, &session.materialFailures)
 		if err != nil {
 			if errors.Is(err, errRoutingCredentialStale) {
 				session.markCandidateStale(candidate.Credential.ID)
@@ -246,7 +247,7 @@ func (session *selectionSession) acquireNormal(ctx context.Context, excluded map
 				if candidate.Credential.ID != stickyID {
 					continue
 				}
-				lease, err := session.selector.acquirePinnedCapacity(ctx, candidate.Credential)
+				lease, err := session.selector.acquirePinnedCapacity(ctx, candidate.Credential, &session.materialFailures)
 				if err != nil {
 					if errors.Is(err, errRoutingCredentialStale) {
 						session.markCandidateStale(stickyID)
@@ -268,7 +269,7 @@ func (session *selectionSession) acquireNormal(ctx context.Context, excluded map
 	indexes := session.unexcludedNormalIndexes(excluded)
 	activeRequest := session.selector.nextSegmentedActiveRequest(session.provider, session.upstreamModel, session.quotaMode, len(indexes))
 	if activeRequest != nil {
-		lease, err := session.selector.acquireSegmentedCandidates(ctx, session.values, indexes, session.quotaMode, session.selector.resolveTierOrder(session.provider, session.upstreamModel, session.quotaMode), *activeRequest)
+		lease, err := session.selector.acquireSegmentedCandidates(ctx, session.values, indexes, session.quotaMode, session.selector.resolveTierOrder(session.provider, session.upstreamModel, session.quotaMode), *activeRequest, &session.materialFailures)
 		if err != nil || lease == nil || session.stickyKey == "" {
 			return lease, err
 		}
@@ -282,7 +283,7 @@ func (session *selectionSession) acquireNormal(ctx context.Context, excluded map
 	deadline := time.Now().Add(capacityWait)
 	for {
 		if session.normalPlan == nil {
-			plan, err := session.selector.planCandidateIndexesWithHints(ctx, session.values, session.normalCandidates, time.Now().UTC(), session.selector.resolveTierOrder(session.provider, session.upstreamModel, session.quotaMode), nil, session.selector.preferFreeBuildForModel(session.upstreamModel), isSSOVideoRequest(session.quotaMode, session.upstreamModel))
+			plan, err := session.selector.planCandidateIndexes(ctx, session.values, session.normalCandidates, time.Now().UTC(), session.selector.resolveTierOrder(session.provider, session.upstreamModel, session.quotaMode))
 			if err != nil {
 				return nil, err
 			}
@@ -292,7 +293,7 @@ func (session *selectionSession) acquireNormal(ctx context.Context, excluded map
 			if session.candidateExcluded(excluded, candidate.Credential.ID) {
 				continue
 			}
-			lease, err := session.selector.claimAccountSlotFor(ctx, candidate.Credential, candidate.Billing)
+			lease, err := session.selector.claimAccountSlotTracked(ctx, candidate.Credential, &session.materialFailures)
 			if err != nil {
 				if errors.Is(err, errRoutingCredentialStale) {
 					session.markCandidateStale(candidate.Credential.ID)
@@ -333,7 +334,7 @@ func (session *selectionSession) completeNormalLease(ctx context.Context, lease 
 		}
 		if boundID != candidate.Credential.ID {
 			if boundCandidate, eligible := routingCandidateByID(session.values, session.normalCandidates, boundID); eligible && !session.candidateExcluded(excluded, boundID) {
-				boundLease, acquireErr := session.selector.claimAccountSlotFor(ctx, boundCandidate.Credential, boundCandidate.Billing)
+				boundLease, acquireErr := session.selector.claimAccountSlotTracked(ctx, boundCandidate.Credential, &session.materialFailures)
 				if acquireErr != nil {
 					if errors.Is(acquireErr, errRoutingCredentialStale) {
 						session.markCandidateStale(boundID)
