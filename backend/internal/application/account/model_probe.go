@@ -299,9 +299,15 @@ func (s *Service) probeAccountVideo(ctx context.Context, credential accountdomai
 	return result, nil
 }
 
-// MarkAccountRisk writes risk=1 from a 10s scenery video and copies the
-// snapshot onto linked Build/Console credentials. Historical risk-ever is sticky.
+// MarkAccountRisk preserves the video probe call site while using the shared
+// media-risk writer.
 func (s *Service) MarkAccountRisk(ctx context.Context, value accountdomain.Credential) error {
+	return s.MarkAccountMediaRisk(ctx, value, "video_scenery")
+}
+
+// MarkAccountMediaRisk writes risk=1 from a suspiciously fast media result and
+// copies the snapshot onto linked credentials. Historical risk-ever is sticky.
+func (s *Service) MarkAccountMediaRisk(ctx context.Context, value accountdomain.Credential, details string) error {
 	indexed, ok := s.accounts.(buildBotFlagIndexRepository)
 	if !ok {
 		return fmt.Errorf("账号仓储未实现风控写入")
@@ -320,7 +326,7 @@ func (s *Service) MarkAccountRisk(ctx context.Context, value accountdomain.Crede
 	update := repository.SSOBotFlagSourceUpdate{
 		AccountID: value.ID, ExpectedEncryptedAccessToken: value.EncryptedAccessToken, Source: source,
 		Policy: value.SSOBotPolicy, Event: value.SSOBotEvent, Risk: 1, RiskSet: true,
-		Details: firstNonEmpty(value.SSOBotDetails, "video_scenery"), Inspected: true,
+		Details: firstNonEmpty(value.SSOBotDetails, strings.TrimSpace(details), "media_scenery"), Inspected: true,
 	}
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialStateWriteTimeout)
 	defer cancel()

@@ -588,6 +588,14 @@ func isSSOVideoRequest(quotaMode, upstreamModel string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(upstreamModel)), "imagine-video")
 }
 
+func (s *Selector) credentialBlockedByGuardedWebImageRisk(value account.Credential) bool {
+	videoThreshold, _, excludeRiskEver := s.ssoRiskPolicy()
+	if value.BlocksSSOVideoByRiskEver(excludeRiskEver) {
+		return true
+	}
+	return value.BlocksAtSSORisk(videoThreshold)
+}
+
 func (s *Selector) preferFreeBuildForModel(upstreamModel string) bool {
 	return s.preferFreeBuildEnabled() || model.IsGrok45Or46LLM(upstreamModel)
 }

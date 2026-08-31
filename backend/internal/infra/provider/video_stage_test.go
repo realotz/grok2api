@@ -47,3 +47,16 @@ func TestIsFastRemoteVideoRisk(t *testing.T) {
 		t.Fatal("empty result should not be risk")
 	}
 }
+
+func TestIsFastImageRisk(t *testing.T) {
+	t.Parallel()
+	if !IsFastImageRisk(time.Second) {
+		t.Fatal("1s image should be risk")
+	}
+	if IsFastImageRisk(ImageRiskReadyWithin) {
+		t.Fatal("exactly 10s should not be image risk")
+	}
+	if IsFastImageRisk(11 * time.Second) {
+		t.Fatal("slow image should not be risk")
+	}
+}

@@ -319,20 +319,20 @@ type AccountsConfig struct {
 	AutoCleanReauthInterval              Duration
 	AutoCleanReauthMinAge                Duration
 	AutoCleanIncludeDisabled             bool
-	// SSOVideoRiskThreshold forbids video scheduling at or above this grok.com risk.
+	// SSOVideoRiskThreshold forbids video and guarded Web Image 2.0 scheduling at or above this grok.com risk.
 	// 0 disables the restriction. Default 1.
 	SSOVideoRiskThreshold float64
 	// SSOLLMRiskThreshold forbids grok-4.5/4.6 Build LLM at or above this grok.com risk.
 	// 0 disables the restriction. Default 0.8.
 	SSOLLMRiskThreshold float64
 	// SSOVideoRiskEver controls whether historical grok.com risk (sso_bot_risk_ever)
-	// excludes an account from production video scheduling.
+	// excludes an account from production video and guarded Web Image 2.0 scheduling.
 	// auto (default) and on exclude ever=1; off uses only the current snapshot threshold.
 	SSOVideoRiskEver string
 }
 
-// ExcludeSSOVideoRiskEver reports whether production video should skip
-// accounts with historical grok.com risk. auto/on exclude; off does not.
+// ExcludeSSOVideoRiskEver reports whether production video and guarded Web
+// Image 2.0 should skip accounts with historical grok.com risk.
 func (c AccountsConfig) ExcludeSSOVideoRiskEver() bool {
 	return settingsdomain.ExcludeSSOVideoRiskEver(c.SSOVideoRiskEver)
 }

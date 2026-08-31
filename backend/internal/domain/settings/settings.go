@@ -154,11 +154,11 @@ type AccountsConfig struct {
 	AutoCleanReauthMinAge time.Duration
 	// AutoCleanIncludeDisabled 为 true 时，reauth 清理时包含 enabled=false 的账号。
 	AutoCleanIncludeDisabled bool
-	// SSOVideoRiskThreshold 禁止视频调度的 grok.com risk 下限；nil 表示默认 1，0 表示不限制。
+	// SSOVideoRiskThreshold 禁止视频及 Web Image 2.0 调度的 grok.com risk 下限；nil 表示默认 1，0 表示不限制。
 	SSOVideoRiskThreshold *float64
 	// SSOLLMRiskThreshold 禁止 grok-4.5/4.6 Build LLM 的 grok.com risk 下限；nil 表示默认 0.8，0 表示不限制。
 	SSOLLMRiskThreshold *float64
-	// SSOVideoRiskEver 控制历史风控（sso_bot_risk_ever）是否禁止正式视频调度。
+	// SSOVideoRiskEver 控制历史风控（sso_bot_risk_ever）是否禁止正式视频及 Web Image 2.0 调度。
 	// nil/空/"auto" 为默认：不调度历史风控=1；"on" 始终排除；"off" 仅按当前阈值。
 	SSOVideoRiskEver *string
 }

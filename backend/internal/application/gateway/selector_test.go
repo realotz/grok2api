@@ -2082,6 +2082,24 @@ func TestApplySSORiskFilterExcludesHistoricalRiskFromVideo(t *testing.T) {
 	}
 }
 
+func TestCredentialBlockedByGuardedWebImageRisk(t *testing.T) {
+	selector := &Selector{ssoVideoRiskThreshold: 1, ssoVideoExcludeRiskEver: true}
+	if !selector.credentialBlockedByGuardedWebImageRisk(account.Credential{SSOBotRiskSet: true, SSOBotRisk: 1}) {
+		t.Fatal("risk=1 must block guarded Web Image 2.0")
+	}
+	if selector.credentialBlockedByGuardedWebImageRisk(account.Credential{SSOBotRiskSet: true, SSOBotRisk: 0.99}) {
+		t.Fatal("risk below the configured threshold must remain eligible")
+	}
+	if !selector.credentialBlockedByGuardedWebImageRisk(account.Credential{SSOBotRiskEver: true}) {
+		t.Fatal("historical risk must block guarded Web Image 2.0 by default")
+	}
+	selector.ssoVideoRiskThreshold = 0
+	selector.ssoVideoExcludeRiskEver = false
+	if selector.credentialBlockedByGuardedWebImageRisk(account.Credential{SSOBotRiskEver: true, SSOBotRiskSet: true, SSOBotRisk: 1}) {
+		t.Fatal("disabled threshold and historical exclusion must keep the account eligible")
+	}
+}
+
 func TestCandidateScorePrefersLowerSSORiskThenFreeBuild(t *testing.T) {
 	paidHigh := account.RoutingCandidate{Credential: account.Credential{ID: 1, Priority: 100, SSOBotRiskSet: true, SSOBotRisk: 0.9}}
 	freeMid := account.RoutingCandidate{Credential: account.Credential{ID: 2, Priority: 1, ObservedModel: "grok-4.5-build-free", SSOBotRiskSet: true, SSOBotRisk: 0.2}}

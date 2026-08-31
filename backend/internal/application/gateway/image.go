@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -266,6 +267,7 @@ func (s *Service) executeImage(
 		preselectedSession = nil
 	}
 	externalModel := modeldomain.ExternalPublicID(route.Provider, route.PublicID)
+	guardFastResult := isFastWebImage20Route(route, operation)
 	auditBase := audit.Record{
 		EventID: eventID, RequestID: requestID, ClientKeyID: key.ID, ClientKeyName: key.Name,
 		ClientIP:     requestmeta.ClientIP(ctx),
@@ -337,11 +339,20 @@ func (s *Service) executeImage(
 	var lastCredentialFailure *accountdomain.Credential
 	var lastCredentialError error
 	for attempt := 0; attemptPolicy.allows(attempt); attempt++ {
-		if selection == nil {
-			selection, err = s.selector.beginSelectionSessionForKey(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, key.AccountScope())
-		}
-		if err == nil {
-			lease, err = selection.Acquire(ctx, excluded, false)
+		attemptStarted := time.Now()
+		for {
+			if selection == nil {
+				selection, err = s.selector.beginSelectionSessionForKey(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, key.AccountScope())
+			}
+			if err == nil {
+				lease, err = selection.Acquire(ctx, excluded, false)
+			}
+			if err != nil || !guardFastResult || !s.selector.credentialBlockedByGuardedWebImageRisk(lease.Credential) {
+				break
+			}
+			excluded[lease.Credential.ID] = true
+			lease.Release()
+			lease = nil
 		}
 		if err != nil {
 			errorCode := "upstream_unavailable"
@@ -417,6 +428,44 @@ func (s *Service) executeImage(
 				continue
 			}
 		}
+		if guardFastResult && response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+			var fastRisk bool
+			response.Body, fastRisk, err = holdImageRiskResponse(ctx, response.Body, streaming, attemptStarted, s.imageRiskWindow())
+			if err != nil {
+				s.logger.Error("image_risk_hold_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
+				if !provider.IsMediaPostProcessingError(err) {
+					s.selector.MarkFailure(ctx, credential, 0, 0)
+				}
+				lease.Release()
+				errorCode := "upstream_unavailable"
+				if provider.IsMediaPostProcessingError(err) {
+					errorCode = "media_postprocessing_failed"
+				}
+				writeFailureAudit(http.StatusBadGateway, errorCode, &credential)
+				return nil, err
+			}
+			if fastRisk {
+				if response.Body != nil {
+					_ = response.Body.Close()
+				}
+				elapsed := time.Since(attemptStarted)
+				s.logger.Warn("image_risk_scenery_detected", "event_id", eventID, "request_id", requestID, "model", externalModel, "account_id", credential.ID, "elapsed_ms", elapsed.Milliseconds())
+				markCtx, markCancel := context.WithTimeout(context.Background(), accountStateWriteTimeout)
+				markErr := s.accounts.MarkAccountMediaRisk(markCtx, credential, "image_scenery")
+				markCancel()
+				if markErr != nil {
+					s.logger.Error("image_risk_mark_failed", "event_id", eventID, "request_id", requestID, "account_id", credential.ID, "error", markErr)
+				} else {
+					s.selector.evictCandidate(credential.Provider, credential.ID)
+				}
+				failedCredential := credential
+				lastCredentialFailure = &failedCredential
+				lastCredentialError = provider.ErrImageRiskScenery
+				response = nil
+				lease.Release()
+				continue
+			}
+		}
 		break
 	}
 	if response == nil {
@@ -487,6 +536,142 @@ func (s *Service) executeImage(
 	}
 	finalizationOwnsReservation = true
 	return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, Finalize: finalize}, nil
+}
+
+func isFastWebImage20Route(route modeldomain.Route, operation audit.Operation) bool {
+	if route.Provider != accountdomain.ProviderWeb || (operation != audit.OperationImage && operation != audit.OperationImageEdit) {
+		return false
+	}
+	return strings.EqualFold(modeldomain.ExternalPublicID(route.Provider, route.PublicID), "grok-imagine-image-2.0-web")
+}
+
+func (s *Service) imageRiskWindow() time.Duration {
+	if s.imageRiskReadyWithin > 0 {
+		return s.imageRiskReadyWithin
+	}
+	return provider.ImageRiskReadyWithin
+}
+
+func holdImageRiskResponse(ctx context.Context, body io.ReadCloser, streaming bool, startedAt time.Time, window time.Duration) (io.ReadCloser, bool, error) {
+	elapsed := time.Since(startedAt)
+	if !streaming || elapsed < 0 || elapsed >= window {
+		return body, imageRiskReadyWithin(elapsed, window), nil
+	}
+	if body == nil {
+		return nil, true, nil
+	}
+
+	prefix, err := os.CreateTemp("", "grok2api-image-risk-*")
+	if err != nil {
+		_ = body.Close()
+		return nil, false, fmt.Errorf("创建图片风控流暂存文件: %w", err)
+	}
+	pump := newQualityReadPump(body)
+	cleanup := func() error {
+		return closeImageRiskReplay(prefix, pump, prefix.Name())
+	}
+	timer := time.NewTimer(time.Until(startedAt.Add(window)))
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			_ = cleanup()
+			return nil, false, ctx.Err()
+		case <-timer.C:
+			if eofAt := pump.eofAt.Load(); eofAt > 0 && imageRiskReadyWithin(time.Unix(0, eofAt).Sub(startedAt), window) {
+				_ = cleanup()
+				return nil, true, nil
+			}
+			if _, err := prefix.Seek(0, io.SeekStart); err != nil {
+				_ = cleanup()
+				return nil, false, fmt.Errorf("回放图片风控流: %w", err)
+			}
+			return newImageRiskReplayBody(prefix, pump), false, nil
+		case result, ok := <-pump.results:
+			if !ok {
+				if imageRiskReadyWithin(time.Since(startedAt), window) {
+					_ = cleanup()
+					return nil, true, nil
+				}
+				if _, err := prefix.Seek(0, io.SeekStart); err != nil {
+					_ = cleanup()
+					return nil, false, fmt.Errorf("回放图片风控流: %w", err)
+				}
+				return newImageRiskReplayBody(prefix, pump), false, nil
+			}
+			if len(result.data) > 0 {
+				if _, err := prefix.Write(result.data); err != nil {
+					_ = cleanup()
+					return nil, false, fmt.Errorf("暂存图片风控流: %w", err)
+				}
+			}
+			if result.err == nil {
+				continue
+			}
+			if errors.Is(result.err, io.EOF) {
+				completedAt := result.at
+				if completedAt.IsZero() {
+					completedAt = time.Now()
+				}
+				fastRisk := imageRiskReadyWithin(completedAt.Sub(startedAt), window)
+				if fastRisk {
+					_ = cleanup()
+					return nil, true, nil
+				}
+				if _, err := prefix.Seek(0, io.SeekStart); err != nil {
+					_ = cleanup()
+					return nil, false, fmt.Errorf("回放图片风控流: %w", err)
+				}
+				return newImageRiskReplayBody(prefix, pump), false, nil
+			}
+			_ = cleanup()
+			return nil, false, result.err
+		}
+	}
+}
+
+func imageRiskReadyWithin(elapsed, window time.Duration) bool {
+	if window == provider.ImageRiskReadyWithin {
+		return provider.IsFastImageRisk(elapsed)
+	}
+	return elapsed >= 0 && elapsed < window
+}
+
+type imageRiskReplayBody struct {
+	io.Reader
+	prefix    *os.File
+	source    io.ReadCloser
+	path      string
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func newImageRiskReplayBody(prefix *os.File, source io.ReadCloser) io.ReadCloser {
+	return &imageRiskReplayBody{Reader: io.MultiReader(prefix, source), prefix: prefix, source: source, path: prefix.Name()}
+}
+
+func (b *imageRiskReplayBody) Close() error {
+	b.closeOnce.Do(func() {
+		b.closeErr = closeImageRiskReplay(b.prefix, b.source, b.path)
+	})
+	return b.closeErr
+}
+
+func closeImageRiskReplay(prefix *os.File, source io.Closer, path string) error {
+	var errs []error
+	if source != nil {
+		errs = append(errs, source.Close())
+	}
+	if prefix != nil {
+		errs = append(errs, prefix.Close())
+	}
+	if path != "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // quotaFinalizationModes separates the immediate local consumption fence from

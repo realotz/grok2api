@@ -650,8 +650,14 @@ type VideoResult struct {
 // as a risk result and must not be downloaded.
 const VideoRiskReadyWithin = 10 * time.Second
 
+// ImageRiskReadyWithin is the matching window for guarded Web image results.
+const ImageRiskReadyWithin = VideoRiskReadyWithin
+
 // ErrVideoRiskScenery is returned when a remote video becomes available too quickly.
 var ErrVideoRiskScenery = errors.New("视频过快完成，判定为风控风景片")
+
+// ErrImageRiskScenery is returned when a guarded Web image completes too quickly.
+var ErrImageRiskScenery = errors.New("图片过快完成，判定为风控图片")
 
 // ErrVideoModerated is returned when grok.com marks the generated video as moderated.
 var ErrVideoModerated = errors.New("视频已被审核拦截")
@@ -667,6 +673,12 @@ func IsFastRemoteVideoRisk(elapsed time.Duration, result VideoResult) bool {
 		return false
 	}
 	return elapsed >= 0 && elapsed < VideoRiskReadyWithin
+}
+
+// IsFastImageRisk reports whether a guarded image result completed inside the
+// same strict window used by video scenery detection.
+func IsFastImageRisk(elapsed time.Duration) bool {
+	return elapsed >= 0 && elapsed < ImageRiskReadyWithin
 }
 
 type TTSOutputFormat struct {

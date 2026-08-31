@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -46,6 +47,7 @@ type qualityScanState struct {
 type qualityReadResult struct {
 	data []byte
 	err  error
+	at   time.Time
 }
 
 // qualityReadPump is the sole reader of the upstream body. It lets the hold
@@ -58,6 +60,7 @@ type qualityReadPump struct {
 	closeOnce sync.Once
 	pending   []byte
 	finalErr  error
+	eofAt     atomic.Int64
 }
 
 func newQualityReadPump(source io.ReadCloser) *qualityReadPump {
@@ -78,9 +81,13 @@ func (p *qualityReadPump) run() {
 		if n == 0 && err == nil {
 			continue
 		}
-		result := qualityReadResult{err: err}
+		readAt := time.Now()
+		result := qualityReadResult{err: err, at: readAt}
 		if n > 0 {
 			result.data = append([]byte(nil), buf[:n]...)
+		}
+		if err == io.EOF {
+			p.eofAt.Store(readAt.UnixNano())
 		}
 		select {
 		case p.results <- result:
