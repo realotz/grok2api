@@ -217,7 +217,7 @@ func TestStatsigSignerSendsMethodPathAndMetaContent(t *testing.T) {
 		body, _ := json.Marshal(map[string]string{"x-statsig-id": encoded})
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body))), Header: http.Header{}}, nil
 	})}
-	value, err := signer.requestSignature(context.Background(), "https://signer.example/sign", "post", "/rest/app-chat/conversations/new", "meta-value", "")
+	value, err := signer.requestSignature(context.Background(), "https://signer.example/sign", "post", "/rest/app-chat/conversations/new", "meta-value")
 	if err != nil || value != encoded {
 		t.Fatalf("value=%q err=%v", value, err)
 	}
@@ -229,7 +229,7 @@ func TestStatsigSignerRejectsInvalidShape(t *testing.T) {
 	signer.client = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"x-statsig-id":"invalid"}`)), Header: http.Header{}}, nil
 	})}
-	if _, err := signer.requestSignature(context.Background(), "https://signer.example/sign", "POST", "/rest/test", "meta", ""); err == nil {
+	if _, err := signer.requestSignature(context.Background(), "https://signer.example/sign", "POST", "/rest/test", "meta"); err == nil {
 		t.Fatal("invalid signature was accepted")
 	}
 }
@@ -399,7 +399,7 @@ func TestStatsigInvalidationDoesNotReuseRejectedValue(t *testing.T) {
 	previous := base64.RawStdEncoding.EncodeToString(raw)
 	signer := newStatsigSigner()
 	signer.now = func() time.Time { return now }
-	key, _, err := statsigSignatureKey("https://grok.com", "https://signer.example/sign", http.MethodPost, "https://grok.com/rest/test", "")
+	key, _, err := statsigSignatureKey("https://grok.com", "https://signer.example/sign", http.MethodPost, "https://grok.com/rest/test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,15 +414,35 @@ func TestStatsigInvalidationDoesNotReuseRejectedValue(t *testing.T) {
 	}
 }
 
-func TestApplySignedStatsigUsesLocalGenerator(t *testing.T) {
-	adapter := &Adapter{cfg: Config{BaseURL: "https://grok.com", StatsigMode: "url", StatsigSignerURL: "https://signer.example/sign"}}
+func TestApplySignedStatsigUsesRemoteSigner(t *testing.T) {
+	raw := make([]byte, 70)
+	raw[0] = 7
+	want := base64.RawStdEncoding.EncodeToString(raw)
+	signerCalls := 0
+	signer := newStatsigSigner()
+	signer.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		return "live-meta", nil
+	}
+	signer.validateEndpoint = func(context.Context, string) error { return nil }
+	signer.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		signerCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"x-statsig-id":"` + want + `"}`)),
+			Header:     http.Header{},
+		}, nil
+	})}
+	adapter := &Adapter{
+		cfg:     Config{BaseURL: "https://grok.com", StatsigMode: "url", StatsigSignerURL: "https://signer.example/sign"},
+		statsig: signer,
+	}
 	request, err := http.NewRequest(http.MethodPost, "https://grok.com/rest/app-chat/conversations/new", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	adapter.applySignedStatsig(context.Background(), request, "token", nil)
-	if !validStatsigID(request.Header.Get("x-statsig-id")) {
-		t.Fatalf("x-statsig-id = %q", request.Header.Get("x-statsig-id"))
+	if got := request.Header.Get("x-statsig-id"); got != want || signerCalls != 1 {
+		t.Fatalf("x-statsig-id=%q signer_calls=%d", got, signerCalls)
 	}
 }
 
@@ -440,7 +460,6 @@ func TestApplySignedStatsigNeverLeavesRandomFallback(t *testing.T) {
 }
 
 func TestStatsigInvalidationOnlyAppliesToURLMode(t *testing.T) {
-	t.Cleanup(resetStatsigRefreshState)
 	manual := &Adapter{cfg: Config{StatsigMode: "manual"}, statsig: newStatsigSigner()}
 	if manual.invalidateSignedStatsig(http.MethodPost, "https://grok.com/rest/test") {
 		t.Fatal("manual Statsig must not be invalidated automatically")
@@ -448,12 +467,5 @@ func TestStatsigInvalidationOnlyAppliesToURLMode(t *testing.T) {
 	urlMode := &Adapter{cfg: Config{BaseURL: "https://grok.com", StatsigMode: "url", StatsigSignerURL: "https://signer.example/sign"}, statsig: newStatsigSigner()}
 	if !urlMode.invalidateSignedStatsig(http.MethodPost, "https://grok.com/rest/test") {
 		t.Fatal("URL Statsig must be invalidated after anti-bot rejection")
-	}
-	local := &Adapter{cfg: Config{BaseURL: "https://grok.com"}}
-	if !local.invalidateSignedStatsig(http.MethodPost, "https://grok.com/rest/test") {
-		t.Fatal("local Statsig must be marked stale after anti-bot rejection")
-	}
-	if !statsigPairNeedsRefresh() {
-		t.Fatal("expected local pair to be marked stale")
 	}
 }
