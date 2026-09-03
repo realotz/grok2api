@@ -344,10 +344,12 @@ func validateVideoRouteParameters(operation provider.VideoOperation, providerVal
 		return fmt.Errorf("%w: Build/Console 参考音频只支持 voice_id", ErrVideoParameterInvalid)
 	}
 	if providerValue == account.ProviderConsole && (trimmedModel == "grok-imagine-video" || trimmedModel == "grok-imagine-video-1.5") {
-		// 实测：8 张 reference_images 上游回 400
-		// "Too many reference images: 8. Maximum allowed is 7."（两个视频模型一致）。
-		if referenceCount > provider.ConsoleVideoMaxReferenceImages {
-			return fmt.Errorf("%w: Console reference_images 最多 %d 张，当前为 %d 张", ErrVideoParameterInvalid, provider.ConsoleVideoMaxReferenceImages, referenceCount)
+		maxReferenceImages := provider.ConsoleLegacyVideoMaxReferenceImages
+		if trimmedModel == "grok-imagine-video-1.5" {
+			maxReferenceImages = media.ReferenceImageLimit(trimmedModel)
+		}
+		if referenceCount > maxReferenceImages {
+			return fmt.Errorf("%w: Console reference_images 最多 %d 张，当前为 %d 张", ErrVideoParameterInvalid, maxReferenceImages, referenceCount)
 		}
 		// 实测：grok-imagine-video 的 reference-to-video 上游回 400
 		// "Duration 15s exceeds the maximum allowed for reference-to-video, which is 10s."；
@@ -360,8 +362,9 @@ func validateVideoRouteParameters(operation provider.VideoOperation, providerVal
 		if duration < 6 || duration > 15 {
 			return fmt.Errorf("%w: Web grok-imagine-video-1.5 duration 必须在 6 到 15 秒之间", ErrVideoOperationUnsupported)
 		}
-		if referenceCount > media.MaxInputImages {
-			return fmt.Errorf("%w: Web reference_images 最多 %d 张，当前为 %d 张", ErrVideoOperationUnsupported, media.MaxInputImages, referenceCount)
+		maxReferenceImages := media.ReferenceImageLimit(trimmedModel)
+		if referenceCount > maxReferenceImages {
+			return fmt.Errorf("%w: Web reference_images 最多 %d 张，当前为 %d 张", ErrVideoOperationUnsupported, maxReferenceImages, referenceCount)
 		}
 		resolution = strings.ToLower(strings.TrimSpace(resolution))
 		if resolution != "" && resolution != "480p" && resolution != "720p" && resolution != "1080p" {

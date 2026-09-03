@@ -598,7 +598,7 @@ func (d *Database) ensureMediaJobInputConstraint(ctx context.Context) error {
 	}
 	return d.ensureNamedConstraints(ctx, []consoleConstraint{
 		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_input_image_count"},
-	}, strconv.Itoa(media.MaxInputImages))
+	}, strconv.Itoa(media.MaxPersistedInputImages))
 }
 
 // ensureMediaJobInputMetadataPendingIndex accelerates the one-shot input_image_count
@@ -645,7 +645,7 @@ func (d *Database) migrateMediaJobInputMetadata(ctx context.Context) error {
 				ImageURLs []string `json:"image_urls"`
 			}
 			parseErr := json.Unmarshal([]byte(row.InputJSON), &input)
-			count := min(len(input.ImageURLs), media.MaxInputImages)
+			count := min(len(input.ImageURLs), media.MaxPersistedInputImages)
 			updates := map[string]any{"input_image_count": count}
 			// Historical code treated malformed or empty input as no references.
 			// Normalize it once so future startups do not rescan the same row.

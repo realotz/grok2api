@@ -230,12 +230,15 @@ func checkVideoRouteParameters(operation provider.VideoOperation, providerValue 
 }
 
 func TestVideoRouteParametersRejectConsoleReferenceLimits(t *testing.T) {
-	// 实测：8 张 reference_images 上游回 400 "Too many reference images: 8. Maximum allowed is 7."
-	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video-1.5", "720p", 8, 0, 6); !errors.Is(err, ErrVideoParameterInvalid) {
-		t.Fatalf("8 references error = %v", err)
+	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video-1.5", "720p", 15, 0, 6); !errors.Is(err, ErrVideoParameterInvalid) {
+		t.Fatalf("15 references error = %v", err)
 	}
-	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video-1.5", "720p", 7, 0, 6); err != nil {
-		t.Fatalf("7 references error = %v", err)
+	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video-1.5", "720p", 14, 0, 6); err != nil {
+		t.Fatalf("14 references error = %v", err)
+	}
+	// 旧模型仍保持 Console 的 7 张限制。
+	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video", "720p", 8, 0, 6); !errors.Is(err, ErrVideoParameterInvalid) {
+		t.Fatalf("legacy 8 references error = %v", err)
 	}
 	// 实测：grok-imagine-video 的 reference-to-video 回 400
 	// "Duration 15s exceeds the maximum allowed for reference-to-video, which is 10s."
@@ -252,8 +255,8 @@ func TestVideoRouteParametersRejectConsoleReferenceLimits(t *testing.T) {
 	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderConsole, "grok-imagine-video-1.5", "720p", 2, 0, 15); err != nil {
 		t.Fatalf("1.5 multi-reference 15s error = %v", err)
 	}
-	// Build 使用相同的 1.5 上游模型名，但支持通用上限 8；不能因同名套用 Console 的 7 张限制。
-	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderBuild, "grok-imagine-video-1.5", "720p", 8, 0, 15); err != nil {
+	// Build 使用相同的 1.5 上游模型名，也支持 14 张。
+	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderBuild, "grok-imagine-video-1.5", "720p", 14, 0, 15); err != nil {
 		t.Fatalf("Build 1.5 references error = %v", err)
 	}
 	// Web 同样与 Console 共享基础模型名，不受 Console 专属时长限制。
@@ -325,7 +328,7 @@ func equalUint64s(got, want []uint64) bool {
 
 func TestRoutesForVideoParametersKeepsCompatibleSameNameProviders(t *testing.T) {
 	routes := []model.Route{
-		{ID: 1, PublicID: "shared-video", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video-1.5"},
+		{ID: 1, PublicID: "shared-video", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video"},
 		{ID: 2, PublicID: "shared-video", Provider: account.ProviderBuild, UpstreamModel: "grok-imagine-video-1.5"},
 	}
 	compatible, err := routesForVideoParameters(routes, provider.VideoOperationGenerate, "720p", 8, nil, 15)
@@ -380,7 +383,7 @@ func TestCreateVideoAppliesRouteConstraintsAfterKeyEligibilityAndBeforeInputIO(t
 		mediaJobs:  jobs, mediaAssets: assets, mediaQueue: make(chan string, 1), mediaQueued: make(map[string]struct{}),
 		logger: slog.Default(),
 	}
-	references := make([]string, provider.ConsoleVideoMaxReferenceImages+1)
+	references := make([]string, media.MaxModelReferenceImages+1)
 	for index := range references {
 		references[index] = VideoInputFileReference(fmt.Sprintf("unused_%d", index))
 	}
@@ -419,7 +422,7 @@ func TestVideo1080pValidationUsesResolvedUpstreamModel(t *testing.T) {
 	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderWeb, "grok-imagine-video-1.5", "720p", 0, 0, 5); !errors.Is(err, ErrVideoOperationUnsupported) {
 		t.Fatalf("web 1.5 short duration error = %v", err)
 	}
-	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderWeb, "grok-imagine-video-1.5", "720p", 9, 0, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
+	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderWeb, "grok-imagine-video-1.5", "720p", 15, 0, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
 		t.Fatalf("web 1.5 reference limit error = %v", err)
 	}
 	if err := checkVideoRouteParameters(provider.VideoOperationGenerate, account.ProviderWeb, "grok-imagine-video-1.5", "1080p", 0, 1, 6); !errors.Is(err, ErrVideoOperationUnsupported) {

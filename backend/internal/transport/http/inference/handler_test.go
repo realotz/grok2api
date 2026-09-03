@@ -781,6 +781,35 @@ func TestImageEditAcceptsOfficialJSONShape(t *testing.T) {
 	}
 }
 
+func TestImageEditReferenceLimitDependsOnModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	NewHandler(nil, nil, 1<<20).Register(router.Group("/v1"))
+
+	request := func(model string, count int) *httptest.ResponseRecorder {
+		images := make([]string, count)
+		for index := range images {
+			images[index] = fmt.Sprintf(`{"url":"https://example.com/%d.png"}`, index)
+		}
+		body := fmt.Sprintf(`{"model":%q,"prompt":"edit","images":[%s]}`, model, strings.Join(images, ","))
+		req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+
+	if recorder := request("grok-imagine-image-2.0-web", 14); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("2.0-web 14 images status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := request("grok-imagine-image-2.0", 15); recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "1 到 14") {
+		t.Fatalf("2.0 15 images status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := request("grok-imagine-image-edit", 9); recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "1 到 8") {
+		t.Fatalf("legacy 9 images status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestImageLayersValidatesJSONShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -1856,6 +1885,28 @@ func TestReferenceToVideoRequestValidation(t *testing.T) {
 	router.ServeHTTP(mixedRec, mixed)
 	if mixedRec.Code != http.StatusBadRequest || !strings.Contains(mixedRec.Body.String(), "不能混用") {
 		t.Fatalf("mixed reference audio status=%d body=%s", mixedRec.Code, mixedRec.Body.String())
+	}
+
+	referenceRequest := func(model string, count int) *httptest.ResponseRecorder {
+		images := make([]string, count)
+		for index := range images {
+			images[index] = fmt.Sprintf(`{"url":"https://example.com/%d.png"}`, index)
+		}
+		body := fmt.Sprintf(`{"model":%q,"prompt":"animate","duration":6,"resolution":"720p","reference_images":[%s]}`, model, strings.Join(images, ","))
+		request := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		return recorder
+	}
+	if recorder := referenceRequest("grok-imagine-video-1.5", 14); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("1.5 14 references status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := referenceRequest("grok-imagine-video-1.5", 15); recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "不能超过 14 张") {
+		t.Fatalf("1.5 15 references status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := referenceRequest("grok-imagine-video", 9); recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "不能超过 8 张") {
+		t.Fatalf("legacy 9 references status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 func TestEditAndExtendVideoRequestValidation(t *testing.T) {

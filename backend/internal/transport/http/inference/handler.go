@@ -618,8 +618,9 @@ func (h *Handler) editImage(c *gin.Context) {
 	if request.Image != nil {
 		inputs = append([]imageEditJSONImage{*request.Image}, inputs...)
 	}
-	if len(inputs) == 0 || len(inputs) > 8 {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "image 或 images 数量必须在 1 到 8 之间")
+	maxImages := mediadomain.ReferenceImageLimit(model)
+	if len(inputs) == 0 || len(inputs) > maxImages {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("image 或 images 数量必须在 1 到 %d 之间", maxImages))
 		return
 	}
 	imageURLs := make([]string, 0, len(inputs))
@@ -945,8 +946,9 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "image 不能与 reference_images/reference_audios 同时使用")
 			return
 		}
-		if len(referenceURLs) > mediadomain.MaxInputImages {
-			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_images 不能超过 %d 张", mediadomain.MaxInputImages))
+		maxReferenceImages := mediadomain.ReferenceImageLimit(request.Model)
+		if len(referenceURLs) > maxReferenceImages {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_images 不能超过 %d 张", maxReferenceImages))
 			return
 		}
 		hasReferenceMode := len(referenceURLs) > 0 || len(referenceAudios) > 0

@@ -135,8 +135,16 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 	if request.Streaming || request.PartialImages != 0 {
 		return invalidConsoleMediaRequest("Grok Console 标准图片接口不支持 stream 或 partial_images"), nil
 	}
-	if len(request.ImageURLs) == 0 || len(request.ImageURLs) > consoleMaxEditImages {
-		return invalidConsoleMediaRequest("Console 图片编辑必须提供 1 到 3 张图片"), nil
+	maxEditImages := consoleMaxEditImages
+	limitModel := request.PublicModel
+	if strings.TrimSpace(limitModel) == "" {
+		limitModel = request.Model
+	}
+	if mediadomain.ReferenceImageLimit(limitModel) == mediadomain.MaxModelReferenceImages {
+		maxEditImages = mediadomain.MaxModelReferenceImages
+	}
+	if len(request.ImageURLs) == 0 || len(request.ImageURLs) > maxEditImages {
+		return invalidConsoleMediaRequest(fmt.Sprintf("Console 图片编辑必须提供 1 到 %d 张图片", maxEditImages)), nil
 	}
 	count := request.Count
 	if count <= 0 {
@@ -467,8 +475,12 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if firstFrames > consoleMaxVideoFirstFrames {
 		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张首帧图，当前为 %d 张", modelName, consoleMaxVideoFirstFrames, firstFrames)
 	}
-	if referenceImages > provider.ConsoleVideoMaxReferenceImages {
-		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张参考图，当前为 %d 张", modelName, provider.ConsoleVideoMaxReferenceImages, referenceImages)
+	maxReferenceImages := provider.ConsoleLegacyVideoMaxReferenceImages
+	if modelName == "grok-imagine-video-1.5" {
+		maxReferenceImages = mediadomain.MaxModelReferenceImages
+	}
+	if referenceImages > maxReferenceImages {
+		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张参考图，当前为 %d 张", modelName, maxReferenceImages, referenceImages)
 	}
 	if operation == provider.VideoOperationGenerate {
 		if request.Duration < 1 || request.Duration > 15 {

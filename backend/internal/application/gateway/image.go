@@ -114,7 +114,7 @@ func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result,
 			return nil, ErrNoAvailableAccount
 		}
 		return adapter.EditImage(executionCtx, provider.ImageEditRequest{
-			Credential: credential, Model: upstream, Prompt: input.Prompt,
+			Credential: credential, PublicModel: input.PublicModel, Model: upstream, Prompt: input.Prompt,
 			ImageURLs: imageURLs, Count: input.Count, Size: input.Size, AspectRatio: input.AspectRatio,
 			Resolution: input.Resolution, Quality: input.Quality, ResponseFormat: input.ResponseFormat,
 			Streaming: input.Streaming, PartialImages: input.PartialImages,

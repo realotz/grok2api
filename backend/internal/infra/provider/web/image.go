@@ -803,8 +803,13 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 	if strings.TrimSpace(request.Quality) != "" {
 		return invalidImageRequest("Grok Web 图片模型不支持 quality")
 	}
-	if len(request.ImageURLs) == 0 || len(request.ImageURLs) > 8 {
-		return jsonProviderResponse(http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "image 数量必须在 1 到 8 之间", "type": "invalid_request_error"}}), nil
+	limitModel := request.PublicModel
+	if strings.TrimSpace(limitModel) == "" {
+		limitModel = request.Model
+	}
+	maxImages := mediadomain.ReferenceImageLimit(limitModel)
+	if len(request.ImageURLs) == 0 || len(request.ImageURLs) > maxImages {
+		return jsonProviderResponse(http.StatusBadRequest, map[string]any{"error": map[string]any{"message": fmt.Sprintf("image 数量必须在 1 到 %d 之间", maxImages), "type": "invalid_request_error"}}), nil
 	}
 	count := request.Count
 	if count <= 0 {

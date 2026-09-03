@@ -56,7 +56,7 @@ func TestMediaJobModelTagsAllowAllVideoProvidersAndPrimaryScopes(t *testing.T) {
 		t.Fatal("InputImageCount field missing")
 	}
 	countTag := countField.Tag.Get("gorm")
-	maxImages := strconv.Itoa(mediadomain.MaxInputImages)
+	maxImages := strconv.Itoa(mediadomain.MaxPersistedInputImages)
 	if !strings.Contains(countTag, "chk_media_jobs_input_image_count") ||
 		!strings.Contains(countTag, "IS NULL OR input_image_count BETWEEN 0 AND "+maxImages) {
 		t.Fatalf("input_image_count tag = %q, want max %s", countTag, maxImages)

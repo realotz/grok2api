@@ -1,6 +1,9 @@
 package media
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Status string
 
@@ -15,8 +18,28 @@ const (
 // Keep the relational CHECK constraint and gateway encode guard aligned with this value.
 const MaxInputJSONBytes = 32 << 20
 
-// MaxInputImages is the maximum number of reference images accepted for a video job.
+// MaxInputImages 是旧图片和视频模型保留的参考图上限。
 const MaxInputImages = 8
+
+// MaxModelReferenceImages 是 1.5 视频和 2.0 图片模型的参考图上限。
+const MaxModelReferenceImages = 14
+
+// MaxPersistedInputImages 是视频任务的绝对存储上限，模型限制在入库前单独校验。
+const MaxPersistedInputImages = MaxModelReferenceImages
+
+// ReferenceImageLimit 根据公开或上游模型名返回参考图上限，其他模型保持旧限制。
+func ReferenceImageLimit(model string) int {
+	value := strings.ToLower(strings.TrimSpace(model))
+	if index := strings.LastIndex(value, "/"); index >= 0 {
+		value = strings.TrimSpace(value[index+1:])
+	}
+	switch value {
+	case "grok-imagine-video-1.5", "grok-imagine-image-2.0", "grok-imagine-image-2.0-web":
+		return MaxModelReferenceImages
+	default:
+		return MaxInputImages
+	}
+}
 
 // MaxInputAssetBytes limits each temporary image or video input to 20 MiB.
 const MaxInputAssetBytes = 20 << 20

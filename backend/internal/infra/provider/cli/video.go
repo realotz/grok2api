@@ -25,7 +25,7 @@ const (
 	xaiVideoModel   = "grok-imagine-video-1.5-preview"
 	// Align with the gateway ceiling and official xAI video inputs:
 	// image = first frame; reference_images = style/content references (may be length 1).
-	buildVideoMaxImages         = mediadomain.MaxInputImages
+	buildVideoMaxImages         = mediadomain.MaxModelReferenceImages
 	buildVideoPromptMaxBytes    = 4096
 	buildVideoPollEvery         = 2 * time.Second
 	buildVideoMaxBodySize       = 2 << 20

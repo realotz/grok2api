@@ -871,6 +871,57 @@ func TestImageEditRejectsUnsupportedCountAndStreamingOptions(t *testing.T) {
 	}
 }
 
+func TestImage20WebEditReferenceLimitUsesPublicModel(t *testing.T) {
+	adapter := &Adapter{}
+	images := make([]string, mediadomain.MaxModelReferenceImages+1)
+	for index := range images {
+		images[index] = "data:image/png;base64,AA=="
+	}
+
+	response, err := adapter.EditImage(context.Background(), provider.ImageEditRequest{
+		PublicModel: "grok-imagine-image-2.0-web",
+		Model:       "imagine-image-edit",
+		ImageURLs:   images[:14],
+		Count:       2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if !bytes.Contains(body, []byte("n=1")) || bytes.Contains(body, []byte("1 到 14")) {
+		t.Fatalf("14 images did not pass reference limit: %s", body)
+	}
+
+	response, err = adapter.EditImage(context.Background(), provider.ImageEditRequest{
+		PublicModel: "grok-imagine-image-2.0-web",
+		Model:       "imagine-image-edit",
+		ImageURLs:   images,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if !bytes.Contains(body, []byte("1 到 14")) {
+		t.Fatalf("15 images response = %s", body)
+	}
+
+	response, err = adapter.EditImage(context.Background(), provider.ImageEditRequest{
+		PublicModel: "grok-imagine-image-edit",
+		Model:       "imagine-image-edit",
+		ImageURLs:   images[:9],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if !bytes.Contains(body, []byte("1 到 8")) {
+		t.Fatalf("legacy 9 images response = %s", body)
+	}
+}
+
 func TestBuildImageEditPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
 	assets := []string{"metadata-1", "metadata-2"}
 	payload := buildImageEditPayload("改成兔子", assets, "1:1", nil)
