@@ -164,6 +164,10 @@ def grok2api_complete(
                 break
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")[:800]
+                if exc.code in (429, 500, 502, 503, 504) and attempt == 0:
+                    last_error = RuntimeError(f"grok2api {exc.code}: {detail}")
+                    print(f"hermes complete HTTP {exc.code} retry {attempt + 1}", file=sys.stderr, flush=True)
+                    continue
                 raise RuntimeError(f"grok2api {exc.code}: {detail}") from exc
             except TimeoutError as exc:
                 last_error = exc

@@ -27,6 +27,7 @@ HEX 算法是 `hot/hex.js` 里的 `computeHex(seed, paths)`。签名器常驻一
 4. `eval_hot_js` 用 Node vm.eval 跑候选源码。**只有结果等于官方 HEX 才能 `write_hot_js`。**
 5. `verify_signature`：热代码 HEX 和 70 字节壳都对才接受。**必须再抓一页新鲜对照**（`/` 与 `/imagine` 换页），不能拿 `write_hot_js` 用过的那次 seed 充数。新鲜页对不上就不能 exit。Hermes 最多 200 轮（`STATSIG_AGENT_MAX_TURNS`）。
 6. 一次 seed 反解会碰巧对上；两页碰巧对上但 seek 下标不唯一时 `recover_indices` 返回 `ambiguous`，换页再抓，不要 `fetch_chunk` 空转。
+7. 工具链（抓包、指纹、eval）坏了可以 `read_py` / `write_py` 改 `statsig_signer/*.py`、`tests/*.py`、`hot/prelude.js`。语法错或单测失败会回滚。不要改 Go，不要用 `write_py` 改 `hot/hex.js`。当前进程里已绑定的函数要等下次 watch tick。
 
 前端小改（curves / seed 下标）：`recover_indices` 通常一轮就能写回 `computeHex`。
 前端大改（取样方式、HEX 编码、chunk 换名）：agent 用 `find_signer_chunk` + `fetch_chunk` 对着混淆源码改 `computeHex`，eval 对上官方 HEX 才写入。如果不再是 SVG+toString(16)+70 字节壳，验不过就不会接受，不能假装修成功。

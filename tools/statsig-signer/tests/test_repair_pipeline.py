@@ -415,6 +415,143 @@ class RepairPipelineTest(unittest.TestCase):
             self.assertNotEqual(result.get("stopped"), "exit")
             self.assertEqual(result.get("content"), "fresh page mismatch")
 
+    def test_verify_falls_back_when_other_url_capture_fails(self) -> None:
+        fixture = fixture_from_pair_file(PAIR_PATH)
+        calls = {"n": 0, "urls": []}
+
+        def fake_capture(**kwargs: object) -> dict:
+            url = str(kwargs.get("url") or "https://grok.com/imagine")
+            calls["urls"].append(url)
+            if "imagine" not in url:
+                return {"ok": False, "browser": "local", "url": url}
+            copied = dict(fixture)
+            copied["ok"] = True
+            copied["browser"] = "local"
+            copied["url"] = url
+            return copied
+
+        def complete_factory(*_args: object, **_kwargs: object):
+            def complete(messages, tools):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {"id": "c1", "type": "function", "function": {"name": "capture_page", "arguments": '{"browser":"local"}'}}
+                        ],
+                    }
+                if calls["n"] == 2:
+                    return {
+                        "role": "assistant",
+                        "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "recover_indices", "arguments": "{}"}}],
+                    }
+                if calls["n"] == 3:
+                    recovered = json.loads(messages[-1]["content"])
+                    return {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "c3",
+                                "type": "function",
+                                "function": {"name": "write_hot_js", "arguments": json.dumps({"source": recovered["hex_js"]})},
+                            }
+                        ],
+                    }
+                if calls["n"] == 4:
+                    written = json.loads(messages[-1]["content"])
+                    self.assertTrue(written.get("ok"), written)
+                    return {
+                        "role": "assistant",
+                        "tool_calls": [{"id": "c4", "type": "function", "function": {"name": "verify_signature", "arguments": "{}"}}],
+                    }
+                return {"role": "assistant", "content": "accepted"}
+
+            return complete
+
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hot = tmp_path / "hot"
+            data = tmp_path / "data"
+            hot.mkdir()
+            shutil.copy(WORKER_JS, hot / "eval_worker.js")
+            (hot / "hex.js").write_text(CANONICAL_JS.read_text(encoding="utf-8"), encoding="utf-8")
+            store = Store(data)
+            runtime = HotRuntime(hot)
+            self.addCleanup(runtime.close)
+            os.environ["GROK2API_KEY"] = "test-key"
+            with patch("statsig_signer.agent.grok2api_complete", complete_factory):
+                result = update(
+                    store=store,
+                    runtime=runtime,
+                    defer_capture=True,
+                    capture_fn=fake_capture,
+                    use_hermes=True,
+                    force_hermes=True,
+                )
+            self.assertTrue(result.get("ok"), result)
+            self.assertTrue((result.get("accepted") or {}).get("ok"), result)
+            self.assertTrue(any("imagine" not in u for u in calls["urls"]))
+
+    def test_read_py_idle_is_cut_off(self) -> None:
+        fixture = fixture_from_pair_file(PAIR_PATH)
+
+        def fake_capture(**kwargs: object) -> dict:
+            copied = dict(fixture)
+            copied["ok"] = True
+            copied["browser"] = "local"
+            return copied
+
+        calls = {"n": 0}
+
+        def complete_factory(*_args: object, **_kwargs: object):
+            def complete(messages, tools):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {"id": "c1", "type": "function", "function": {"name": "capture_page", "arguments": '{"browser":"local"}'}}
+                        ],
+                    }
+                if calls["n"] == 2:
+                    return {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {"id": "r1", "type": "function", "function": {"name": "read_py", "arguments": '{"path":"statsig_signer/htmlutil.py"}'}},
+                            {"id": "r2", "type": "function", "function": {"name": "read_py", "arguments": '{"path":"statsig_signer/htmlutil.py"}'}},
+                            {"id": "r3", "type": "function", "function": {"name": "read_py", "arguments": '{"path":"statsig_signer/htmlutil.py"}'}},
+                        ],
+                    }
+                last = json.loads(messages[-1]["content"])
+                self.assertIn(last.get("next"), ("capture_page", "verify_signature"))
+                self.assertIn("空转", last.get("error") or "")
+                return {"role": "assistant", "content": "stopped idle"}
+
+            return complete
+
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hot = tmp_path / "hot"
+            data = tmp_path / "data"
+            hot.mkdir()
+            shutil.copy(WORKER_JS, hot / "eval_worker.js")
+            (hot / "hex.js").write_text(CANONICAL_JS.read_text(encoding="utf-8"), encoding="utf-8")
+            store = Store(data)
+            runtime = HotRuntime(hot)
+            self.addCleanup(runtime.close)
+            os.environ["GROK2API_KEY"] = "test-key"
+            with patch("statsig_signer.agent.grok2api_complete", complete_factory):
+                result = update(
+                    store=store,
+                    runtime=runtime,
+                    defer_capture=True,
+                    capture_fn=fake_capture,
+                    use_hermes=True,
+                    force_hermes=True,
+                )
+            self.assertEqual(result.get("content"), "stopped idle")
+            self.assertNotEqual(result.get("stopped"), "exit")
+
     def test_agent_max_turns_is_200(self) -> None:
         os.environ["GROK2API_KEY"] = "test-key"
         os.environ.pop("STATSIG_AGENT_MAX_TURNS", None)

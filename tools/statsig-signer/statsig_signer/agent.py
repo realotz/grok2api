@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timezone
@@ -18,12 +20,14 @@ from .store import Pair, Store
 
 SYSTEM = """你是 grok.com x-statsig-id 维修内核。
 算法是可执行 JS：签名器常驻 Node，用 vm.eval 跑 hot/hex.js 里的 computeHex(seed, paths)。
-不要改 Go。需要新鲜对照时自己调用 capture_page（本机浏览器或 x2api），钩 digest 和 animate(4096)。
+不要改 Go。HEX 算法只许 write_hot_js，不要用 write_py 改 hex.js。
+需要新鲜对照时自己 capture_page，钩 digest（官方 HEX）和 animate/getAnimations（seek）。
 70 字节壳仍由签名器 Python 套（epoch 1682924400，salt obfiowerehiring，末字节 0x03）。
-步骤：capture_page → recover_indices。返回 hex_js 就立刻 write_hot_js(source=hex_js 原文)，不要改、不要自己再 capture 第二页。
-write 失败若仍返回 hex_js，立刻再 write_hot_js。若 status=ambiguous 或 next=capture_page，换 / 与 /imagine 再 capture_page，然后 recover_indices。
-find_signer_chunk 为空或 fetch_chunk 404 时不要空转。两页碰巧对上但下标不唯一时不准写入。
-write 成功后必须 verify_signature：它会再 capture 一页新鲜对照，不能拿写入时那次 seed 充数。新鲜页对不上就不能 exit。
+步骤：capture_page → recover_indices。返回 hex_js 就立刻 write_hot_js(source=hex_js 原文)。
+write 失败若仍返回 hex_js，立刻再 write。ambiguous 就再 capture_page 后 recover。
+工具链坏了（抓包、eval、指纹、重试）可以 read_py / write_py 改 statsig_signer/*.py、tests/*.py、hot/prelude.js。语法错或单测失败会回滚。当前进程里已绑定的函数要等下次 watch tick 才加载。
+write 成功后 verify_signature（会再抓一页）。新鲜页对不上不能 exit。
+verify 抓包失败就再 verify 或 capture_page，禁止连续 read_py / fetch_chunk 空转。
 """
 
 
@@ -167,6 +171,25 @@ def _kernel(
         raise RuntimeError("Hermes 需要 GROK2API_KEY 指向 grok2api 客户端密钥")
     extra = dict(capture_kwargs or {})
     samples: list[dict[str, Any]] = []
+    idle = {"n": 0}
+
+    def _progress() -> None:
+        idle["n"] = 0
+
+    def _guard_idle(name: str, fn: Any) -> Any:
+        def wrapped(**kwargs: Any) -> Any:
+            idle["n"] += 1
+            if idle["n"] >= 3:
+                nxt = "verify_signature" if captured.get("seed") and captured.get("hex") else "capture_page"
+                return {
+                    "ok": False,
+                    "error": f"{name} 空转已打断",
+                    "next": nxt,
+                    "note": "不要再 read_py/fetch_chunk，去 capture_page 或 verify_signature。",
+                }
+            return fn(**kwargs)
+
+        return wrapped
 
     def _need_capture() -> dict[str, Any] | None:
         if captured.get("seed") and captured.get("hex") and captured.get("paths"):
@@ -208,6 +231,7 @@ def _kernel(
                 raise
         captured.clear()
         captured.update(result or {})
+        _progress()
         _remember(captured)
         public = _public_capture(captured)
         if captured.get("ok"):
@@ -271,6 +295,7 @@ def _kernel(
         missing = _need_capture()
         if missing:
             return missing
+        _progress()
         _remember(captured)
         if len(samples) >= 2:
             result = recover_formula_stable(samples, store.formula)
@@ -330,6 +355,7 @@ def _kernel(
         return {"url": url, "hits": hits, "snippet": snippet, "size": len(text)}
 
     def eval_hot_js(source: str) -> dict[str, Any]:
+        _progress()
         missing = _need_capture()
         if missing:
             return missing
@@ -338,22 +364,48 @@ def _kernel(
         return {"hex": hex_value, "official": captured["hex"], "match": hex_value == captured["hex"]}
 
     def write_hot_js(source: str) -> dict[str, Any]:
+        _progress()
         check = eval_hot_js(source)
         if check.get("error"):
             return check
         if not check["match"]:
             return {"ok": False, "error": "eval HEX 不等于官方 HEX，拒绝写入", **check}
+        _remember(captured)
+        if captured.get("browser") != "fixture" and len(samples) >= 2:
+            unique = recover_formula_stable(samples, store.formula)
+            if unique.formula:
+                matched_all = True
+                for item in samples:
+                    try:
+                        got = runtime.eval_js(source, item["seed_bytes"], list(item["paths"]))
+                    except Exception:
+                        matched_all = False
+                        break
+                    if got != item.get("hex"):
+                        matched_all = False
+                        break
+                if matched_all:
+                    store.save_formula(unique.formula)
+                    path = runtime.write_js(source)
+                    store.save_pair(_pair_from_capture(captured))
+                    return {"ok": True, "path": str(path), "hex": check["hex"], "samples": len(samples)}
         if captured.get("browser") != "fixture":
             first_url = str(captured.get("url") or extra.get("url") or "https://grok.com/imagine")
             second_url = "https://grok.com/" if "imagine" in first_url else "https://grok.com/imagine"
             print(f"write_hot_js second-page capture {second_url}", file=sys.stderr, flush=True)
-            second = capture_fn(
-                browser=str(captured.get("browser") or extra.get("browser") or "local"),
-                url=second_url,
-                **{k: v for k, v in extra.items() if k not in ("url", "headed", "browser")},
-            )
+            second: dict[str, Any] = {}
+            used_url = second_url
+            for attempt, used_url in enumerate((second_url, second_url, first_url, first_url)):
+                second = capture_fn(
+                    browser=str(captured.get("browser") or extra.get("browser") or "local"),
+                    url=used_url,
+                    **{k: v for k, v in extra.items() if k not in ("url", "headed", "browser")},
+                ) or {}
+                if second.get("seed") and second.get("hex") and second.get("paths"):
+                    break
+                print(f"write_hot_js second-page retry {attempt + 1} {used_url}", file=sys.stderr, flush=True)
             if not (second.get("seed") and second.get("hex") and second.get("paths")):
-                return {"ok": False, "error": "第二页抓包失败，拒绝写入单次 HEX"}
+                return {"ok": False, "error": "第二页抓包失败，拒绝写入单次 HEX", "next": "capture_page"}
             _remember(captured)
             _remember(second)
             try:
@@ -418,11 +470,17 @@ def _kernel(
         first_url = str(captured.get("url") or extra.get("url") or "https://grok.com/imagine")
         fresh_url = "https://grok.com/" if "imagine" in first_url else "https://grok.com/imagine"
         print(f"verify_signature fresh capture {fresh_url}", file=sys.stderr, flush=True)
-        fresh = capture_fn(
-            browser=str(captured.get("browser") or extra.get("browser") or "local"),
-            url=fresh_url,
-            **{k: v for k, v in extra.items() if k not in ("url", "headed", "browser")},
-        )
+        fresh: dict[str, Any] = {}
+        used_url = fresh_url
+        for attempt, used_url in enumerate((fresh_url, fresh_url, first_url, first_url)):
+            fresh = capture_fn(
+                browser=str(captured.get("browser") or extra.get("browser") or "local"),
+                url=used_url,
+                **{k: v for k, v in extra.items() if k not in ("url", "headed", "browser")},
+            ) or {}
+            if fresh.get("seed") and fresh.get("hex") and fresh.get("paths"):
+                break
+            print(f"verify_signature fresh retry {attempt + 1} {used_url}", file=sys.stderr, flush=True)
         if not (fresh.get("seed") and fresh.get("hex") and fresh.get("paths")):
             return {"ok": False, "exit": False, "error": "验签新鲜抓包失败", "next": "capture_page"}
         _remember(fresh)
@@ -457,6 +515,7 @@ def _kernel(
         return payload
 
     def verify_signature() -> dict[str, Any]:
+        _progress()
         missing = _need_capture()
         if missing:
             return missing
@@ -519,7 +578,7 @@ def _kernel(
             "fetch_chunk",
             "拉取 grok CDN chunk，抽取 obfiowerehiring/W[n]/animate 附近源码",
             {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
-            fetch_chunk,
+            _guard_idle("fetch_chunk", fetch_chunk),
         ),
         Tool("apply_pair", "热代码已匹配官方 HEX 时，只更新 seed/curves/官方 HEX", {"type": "object", "properties": {}}, apply_pair),
         Tool(
@@ -533,6 +592,22 @@ def _kernel(
             "验签通过后结束任务。未通过会被拒绝并继续。",
             {"type": "object", "properties": {"reason": {"type": "string"}}},
             exit_repair,
+        ),
+        Tool(
+            "read_py",
+            "读签名器仓库里的 Python/prelude。只限 statsig_signer/*.py、tests/*.py、hot/prelude.js。",
+            {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            _guard_idle("read_py", lambda path: read_signer_file(path)),
+        ),
+        Tool(
+            "write_py",
+            "改签名器 Python 或 prelude。不能改 Go、hex.js、data。写完跑单测，失败回滚。当前这次工具闭包不会热替换。",
+            {
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "source": {"type": "string"}},
+                "required": ["path", "source"],
+            },
+            _guard_idle("write_py", lambda path, source: write_signer_file(path, source)),
         ),
     ]
     max_turns = int(os.environ.get("STATSIG_AGENT_MAX_TURNS") or "200")
@@ -557,6 +632,89 @@ def _accept(runtime: HotRuntime, pair: Pair, formula: Formula) -> dict[str, Any]
 
 
 _COMPUTE_HEX = re.compile(r"function computeHex\(seed, paths\) \{.*?\n\}", re.S)
+_SIGNER_ROOT = Path(__file__).resolve().parents[1]
+_PRELUDE_PATH = _SIGNER_ROOT / "hot" / "prelude.js"
+
+
+def _safe_signer_path(rel: str) -> Path:
+    rel = (rel or "").replace("\\", "/").strip().lstrip("/")
+    if not rel or ".." in Path(rel).parts:
+        raise ValueError("非法路径")
+    allowed = (
+        (rel.startswith("statsig_signer/") and rel.endswith(".py"))
+        or (rel.startswith("tests/") and rel.endswith(".py"))
+        or rel == "hot/prelude.js"
+    )
+    if rel == "hot/hex.js" or rel.startswith("data/") or not allowed:
+        raise ValueError("只允许 statsig_signer/*.py、tests/*.py、hot/prelude.js")
+    path = (_SIGNER_ROOT / rel).resolve()
+    root = _SIGNER_ROOT.resolve()
+    if path != root and root not in path.parents:
+        raise ValueError("路径越界")
+    return path
+
+
+def read_signer_file(rel: str) -> dict[str, Any]:
+    try:
+        path = _safe_signer_path(rel)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not path.exists():
+        return {"ok": False, "error": "文件不存在", "path": rel}
+    text = path.read_text(encoding="utf-8")
+    return {"ok": True, "path": rel, "source": text, "bytes": len(text.encode("utf-8"))}
+
+
+def write_signer_file(rel: str, source: str, run_tests: bool = True) -> dict[str, Any]:
+    try:
+        path = _safe_signer_path(rel)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    raw = source if isinstance(source, str) else str(source)
+    if len(raw.encode("utf-8")) > 200_000:
+        return {"ok": False, "error": "文件太大"}
+    if path.suffix == ".py":
+        try:
+            ast.parse(raw)
+        except SyntaxError as exc:
+            return {"ok": False, "error": f"语法错误: {exc}"}
+    backup = path.read_text(encoding="utf-8") if path.exists() else None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(raw if raw.endswith("\n") else raw + "\n", encoding="utf-8")
+    if run_tests:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(_SIGNER_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-q"],
+                cwd=str(_SIGNER_ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+        except Exception as exc:
+            if backup is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(backup, encoding="utf-8")
+            return {"ok": False, "error": f"测试没跑成，已回滚: {exc}"}
+        if proc.returncode != 0:
+            if backup is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(backup, encoding="utf-8")
+            return {
+                "ok": False,
+                "error": "测试失败，已回滚",
+                "stderr": (proc.stderr or proc.stdout or "")[-1500:],
+            }
+    return {
+        "ok": True,
+        "path": rel,
+        "bytes": path.stat().st_size,
+        "note": "已写入。当前这次工具闭包不会热替换，下次 watch tick 会加载。",
+    }
 
 
 def _confirm_or_stabilize(
@@ -605,8 +763,6 @@ def _confirm_or_stabilize(
 
 
 def _hex_js_for_formula(formula: Formula, runtime: HotRuntime | None = None) -> str:
-    path = (runtime.js_path if runtime is not None else None) or (Path(__file__).resolve().parents[1] / "hot" / "hex.js")
-    source = path.read_text(encoding="utf-8") if path.exists() else (Path(__file__).resolve().parents[1] / "hot" / "hex.js").read_text(encoding="utf-8")
     seeks = list(formula.seek_indices) + [0, 0, 0]
     body = (
         "function computeHex(seed, paths) {\n"
@@ -621,9 +777,15 @@ def _hex_js_for_formula(formula: Formula, runtime: HotRuntime | None = None) -> 
         f"  return hexFromSegment(segments[segIdx], seek, {int(formula.duration)});\n"
         "}"
     )
-    if _COMPUTE_HEX.search(source):
-        return _COMPUTE_HEX.sub(body, source, count=1)
-    return source.rstrip() + "\n\n" + body + "\n"
+    prelude = ""
+    if _PRELUDE_PATH.exists():
+        prelude = _PRELUDE_PATH.read_text(encoding="utf-8")
+    else:
+        path = (runtime.js_path if runtime is not None else None) or (Path(__file__).resolve().parents[1] / "hot" / "hex.js")
+        source = path.read_text(encoding="utf-8") if path.exists() else ""
+        if "function pathSegments" in source:
+            prelude = _COMPUTE_HEX.sub("", source, count=1)
+    return (prelude.rstrip() + "\n\n" + body + "\n") if prelude.strip() else body + "\n"
 
 
 def _pair_from_capture(captured: dict[str, Any]) -> Pair:

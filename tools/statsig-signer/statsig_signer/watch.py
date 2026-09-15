@@ -179,7 +179,15 @@ def tick(
     if hex_match.get("ok") is False and not hex_match.get("skipped"):
         if "hex_mismatch" not in changes:
             changes.append("hex_mismatch")
-    changed = bool(changes) and changes != ["first_seen"]
+    pair = None
+    try:
+        pair = store.pair
+    except FileNotFoundError:
+        pair = None
+    if pair and current.get("curves_hash") and pair.curves_hash and current.get("curves_hash") != pair.curves_hash:
+        if "pair_curves" not in changes:
+            changes.append("pair_curves")
+    changed = bool([item for item in changes if item != "first_seen"])
     report = {
         "ok": True,
         "changed": changed,
@@ -196,13 +204,14 @@ def tick(
     if need_repair:
         from .agent import update
 
-        report["repair"] = update(store=store, browser=browser, defer_capture=True, **capture_kwargs)
+        try:
+            report["repair"] = update(store=store, browser=browser, defer_capture=True, **capture_kwargs)
+        except Exception as exc:
+            report["repair"] = {"ok": False, "error": str(exc)}
         current = dict(current)
-        current["repair_ok"] = bool(report["repair"].get("ok"))
+        current["repair_ok"] = bool((report.get("repair") or {}).get("ok"))
         report["fingerprint"] = current
-        if report["repair"].get("ok"):
-            save_fingerprint(store, current)
-        else:
+        if current["repair_ok"]:
             save_fingerprint(store, current)
         return report
     if not previous or not changed:
@@ -215,7 +224,16 @@ def watch_loop(interval: int = 60, repair: bool = False, deep_every: int = 0, br
     n = 0
     while True:
         deep = deep_every > 0 and n % deep_every == 0
-        report = tick(store=store, deep=deep, repair=repair, browser=browser)
-        print(json.dumps({k: report.get(k) for k in ("ok", "changed", "changes", "hex_match", "observed_at", "error") if k in report or report.get(k) is not None}, ensure_ascii=False, default=str), flush=True)
+        try:
+            report = tick(store=store, deep=deep, repair=repair, browser=browser)
+        except Exception as exc:
+            report = {"ok": False, "error": str(exc), "changed": False}
+        line = {k: report.get(k) for k in ("ok", "changed", "changes", "hex_match", "observed_at", "error") if k in report or report.get(k) is not None}
+        repair_result = report.get("repair")
+        if isinstance(repair_result, dict):
+            line["repair_ok"] = repair_result.get("ok")
+            if repair_result.get("error"):
+                line["repair_error"] = str(repair_result.get("error"))[:300]
+        print(json.dumps(line, ensure_ascii=False, default=str), flush=True)
         n += 1
         time.sleep(max(interval, 30))

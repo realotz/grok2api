@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from statsig_signer.watch import compare_fingerprints, fingerprint_from_html, should_backoff_repair
+from statsig_signer.watch import compare_fingerprints, fingerprint_from_html, should_backoff_repair, tick, watch_loop
 
 
 class WatchTest(unittest.TestCase):
@@ -57,3 +57,66 @@ class WatchTest(unittest.TestCase):
         self.assertFalse(should_backoff_repair({"repair_ok": False}, True))
         self.assertFalse(should_backoff_repair({"repair_ok": True}, False))
         self.assertTrue(should_backoff_repair({"repair_ok": False}, False))
+
+    def test_tick_does_not_save_fingerprint_when_repair_fails(self) -> None:
+        import json
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        from statsig_signer.store import Pair, Store
+
+        with TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            store = Store(data)
+            store.save_pair(
+                Pair(
+                    seed="x" * 64,
+                    hex="aa",
+                    paths=["M 10,30 C 1,2 3,4 5,6 h 1 s 1,2 3,4"] * 4,
+                    curves_hash="old-pair-curves",
+                )
+            )
+            stale = {
+                "sentry_release": "grok-web@old",
+                "curves_hash": "old-pair-curves",
+                "chunks_hash": "old-chunks",
+                "source": "html",
+            }
+            (data / "frontend_fingerprint.json").write_text(json.dumps(stale), encoding="utf-8")
+            live = {
+                "ok": True,
+                "fingerprint": {
+                    "sentry_release": "grok-web@new",
+                    "curves_hash": "new-html-curves",
+                    "chunks_hash": "new-chunks",
+                    "source": "html",
+                },
+                "hex_match": {"ok": None, "skipped": True},
+                "observed_at": "now",
+            }
+            with patch("statsig_signer.watch.probe", return_value=live), patch(
+                "statsig_signer.agent.update", return_value={"ok": False, "error": "failed"}
+            ):
+                report = tick(store=store, repair=True)
+            self.assertTrue(report.get("changed"), report)
+            self.assertIn("pair_curves", report.get("changes") or [])
+            self.assertFalse((report.get("repair") or {}).get("ok"))
+            saved = json.loads((data / "frontend_fingerprint.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved.get("curves_hash"), "old-pair-curves")
+
+    def test_watch_loop_keeps_repair_flag_after_quiet_tick(self) -> None:
+        from unittest.mock import patch
+
+        calls = []
+
+        def fake_tick(**kwargs: object) -> dict:
+            calls.append(kwargs.get("repair"))
+            if len(calls) >= 2:
+                raise KeyboardInterrupt()
+            return {"ok": True, "changed": False}
+
+        with patch("statsig_signer.watch.tick", fake_tick), patch("statsig_signer.watch.time.sleep"):
+            with self.assertRaises(KeyboardInterrupt):
+                watch_loop(interval=30, repair=True, deep_every=0)
+        self.assertEqual(calls, [True, True])
