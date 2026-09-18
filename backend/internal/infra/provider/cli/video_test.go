@@ -186,17 +186,27 @@ func TestBuildVideoCreatePayloadMapsMultipleReferences(t *testing.T) {
 	}
 }
 
-func TestBuildVideoCreatePayloadRejectsImageWithReferences(t *testing.T) {
-	_, err := videoCreatePayload(provider.VideoRequest{
+func TestBuildVideoCreatePayloadCombinesFramesAndReferences(t *testing.T) {
+	payload, err := videoCreatePayload(provider.VideoRequest{
 		Prompt:        "animate",
 		Duration:      6,
 		AspectRatio:   "16:9",
 		Resolution:    "720p",
 		ImageURL:      "https://cdn.example.com/first-frame.png",
+		LastFrameURL:  "https://cdn.example.com/last-frame.png",
 		ReferenceURLs: []string{"https://cdn.example.com/ref.png"},
 	}, "", buildVideoRequestProfile)
-	if err == nil {
-		t.Fatal("expected image+reference_images combination to fail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["image"].(map[string]any)["image_url"] != "https://cdn.example.com/first-frame.png" {
+		t.Fatalf("image = %#v", payload["image"])
+	}
+	if payload["last_frame"].(map[string]any)["image_url"] != "https://cdn.example.com/last-frame.png" {
+		t.Fatalf("last_frame = %#v", payload["last_frame"])
+	}
+	if refs := payload["reference_images"].([]map[string]any); len(refs) != 1 || refs[0]["image_url"] != "https://cdn.example.com/ref.png" {
+		t.Fatalf("reference_images = %#v", payload["reference_images"])
 	}
 }
 

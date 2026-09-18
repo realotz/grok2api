@@ -207,6 +207,52 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/images/layers": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Images"
+                ],
+                "summary": "识别图片分层",
+                "parameters": [
+                    {
+                        "description": "请求",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httpserver.SwaggerImageLayerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/v1/media/images/{asset_id}": {
             "get": {
                 "produces": [
@@ -784,6 +830,18 @@ const docTemplate = `{
                 }
             }
         },
+        "httpserver.SwaggerImageLayerRequest": {
+            "type": "object",
+            "properties": {
+                "image": {
+                    "$ref": "#/definitions/httpserver.SwaggerImageReference"
+                },
+                "model": {
+                    "type": "string",
+                    "example": "grok-imagine-image-2.0-web"
+                }
+            }
+        },
         "httpserver.SwaggerImageReference": {
             "type": "object",
             "properties": {
@@ -883,6 +941,9 @@ const docTemplate = `{
                     "example": 8
                 },
                 "image": {
+                    "$ref": "#/definitions/httpserver.SwaggerVideoMediaInput"
+                },
+                "last_frame": {
                     "$ref": "#/definitions/httpserver.SwaggerVideoMediaInput"
                 },
                 "model": {

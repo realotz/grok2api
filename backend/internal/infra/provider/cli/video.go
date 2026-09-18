@@ -158,8 +158,8 @@ func boundDiagnosticText(value string, limit int) string {
 // 显式模式优先；auto 下仅已确认 Super 且 bot_flag_source/bfs 为 1 或 2 默认使用 XAI。
 // 其他 auto Super 账号仅在当次 Build 创建返回 403 后探测 XAI。
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
-	if total := buildVideoImageCount(request); total > buildVideoMaxImages {
-		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Build grok-imagine-video-1.5 最多支持 %d 张输入图，当前为 %d 张", buildVideoMaxImages, total))
+	if total := buildVideoReferenceImageCount(request); total > buildVideoMaxImages {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Build grok-imagine-video-1.5 最多支持 %d 张参考图，当前为 %d 张", buildVideoMaxImages, total))
 	}
 	accessToken, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
@@ -303,8 +303,8 @@ func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile
 	if imageURL := strings.TrimSpace(request.ImageURL); imageURL != "" {
 		payload["image"] = map[string]any{profile.imageURLField: imageURL}
 	}
-	if strings.TrimSpace(request.ImageURL) != "" && (len(request.ReferenceURLs) > 0 || len(request.ReferenceAudios) > 0) {
-		return nil, fmt.Errorf("image 不能与 reference_images/reference_audios 同时使用")
+	if lastFrameURL := strings.TrimSpace(request.LastFrameURL); lastFrameURL != "" {
+		payload["last_frame"] = map[string]any{profile.imageURLField: lastFrameURL}
 	}
 	if len(request.ReferenceURLs) > 0 {
 		references := make([]map[string]any, 0, len(request.ReferenceURLs))
@@ -342,10 +342,10 @@ func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile
 		}
 	}
 	if _, hasPrompt := payload["prompt"]; !hasPrompt {
-		if _, hasImage := payload["image"]; !hasImage {
-			if !hasReferenceMode {
-				return nil, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
-			}
+		_, hasImage := payload["image"]
+		_, hasLastFrame := payload["last_frame"]
+		if !hasImage && !hasLastFrame && !hasReferenceMode {
+			return nil, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
 		}
 	}
 	if uploadURL = strings.TrimSpace(uploadURL); uploadURL != "" {
@@ -612,11 +612,8 @@ func numberAsInt(value any) (int, bool) {
 	}
 }
 
-func buildVideoImageCount(request provider.VideoRequest) int {
+func buildVideoReferenceImageCount(request provider.VideoRequest) int {
 	count := 0
-	if strings.TrimSpace(request.ImageURL) != "" {
-		count++
-	}
 	for _, raw := range request.ReferenceURLs {
 		if strings.TrimSpace(raw) != "" {
 			count++

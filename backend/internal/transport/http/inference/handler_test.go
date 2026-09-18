@@ -2009,7 +2009,7 @@ func TestReferenceToVideoRequestValidation(t *testing.T) {
 	combined.Header.Set("Content-Type", "application/json")
 	combinedRec := httptest.NewRecorder()
 	router.ServeHTTP(combinedRec, combined)
-	if combinedRec.Code != http.StatusBadRequest || !strings.Contains(combinedRec.Body.String(), "不能与") {
+	if combinedRec.Code != http.StatusUnauthorized || !strings.Contains(combinedRec.Body.String(), "invalid_api_key") {
 		t.Fatalf("combined image+refs status=%d body=%s", combinedRec.Code, combinedRec.Body.String())
 	}
 

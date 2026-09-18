@@ -345,6 +345,7 @@ func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRe
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Web grok-imagine-video-1.5 不支持视频编辑"))
 	}
 	imageAssetID := ""
+	lastFrameAssetID := ""
 	referenceAssetIDs := make([]string, 0, len(request.ReferenceURLs))
 	parentID := ""
 	prepareReference := func(rawReference string) (string, error) {
@@ -366,6 +367,12 @@ func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRe
 	}
 	if imageURL := strings.TrimSpace(request.ImageURL); imageURL != "" {
 		imageAssetID, err = prepareReference(imageURL)
+		if err != nil {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
+		}
+	}
+	if lastFrameURL := strings.TrimSpace(request.LastFrameURL); lastFrameURL != "" {
+		lastFrameAssetID, err = prepareReference(lastFrameURL)
 		if err != nil {
 			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
 		}
@@ -396,7 +403,7 @@ func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRe
 	ratio := resolveAspectRatio(request.AspectRatio)
 	resolution := resolveWebVideoV15Resolution(request.Credential.WebTier, request.Resolution)
 	prompt := webVideoPrompt(request.Prompt, imageAssetID, referenceAssetIDs, audioAssetIDs)
-	payload := videoV15CreatePayload(prompt, ratio, resolution, segments[0], imageAssetID, referenceAssetIDs, audioAssetIDs)
+	payload := videoV15CreatePayload(prompt, ratio, resolution, segments[0], imageAssetID, lastFrameAssetID, referenceAssetIDs, audioAssetIDs)
 	referer := cfg.BaseURL + "/imagine"
 	if parentID != "" {
 		referer = cfg.BaseURL + "/imagine/post/" + parentID
@@ -1162,17 +1169,32 @@ func videoCreatePayload(prompt, parentID, ratio, resolution string, seconds int,
 // <AUDIO_n> is reference_audios[n] after those clips are uploaded. The two sequences are independent and 0-based.
 func webVideoPrompt(prompt, imageAssetID string, referenceAssetIDs, audioAssetIDs []string) string {
 	imageIDs := append([]string{}, referenceAssetIDs...)
-	if imageAssetID != "" {
+	if len(imageIDs) == 0 && imageAssetID != "" {
 		imageIDs = []string{imageAssetID}
 	}
 	return mediadomain.RewriteOfficialPromptToWebUUIDs(prompt, imageIDs, audioAssetIDs)
 }
 
 // videoV15CreatePayload 按 Imagine Web 新协议区分文生、单图和多参考图视频。
-func videoV15CreatePayload(prompt, ratio, resolution string, seconds int, imageAssetID string, referenceAssetIDs, audioAssetIDs []string) map[string]any {
+func videoV15CreatePayload(prompt, ratio, resolution string, seconds int, imageAssetID, lastFrameAssetID string, referenceAssetIDs, audioAssetIDs []string) map[string]any {
 	parameters := map[string]any{"prompt": prompt, "aspectRatio": ratio, "duration": seconds, "resolutionName": resolution}
 	mediaGenInput := map[string]any{}
+	combinedReferenceMode := lastFrameAssetID != "" || (imageAssetID != "" && (len(referenceAssetIDs) > 0 || len(audioAssetIDs) > 0))
 	switch {
+	case combinedReferenceMode:
+		if len(referenceAssetIDs) > 0 {
+			parameters["inputAssets"] = referenceAssetIDs
+		}
+		if len(audioAssetIDs) > 0 {
+			parameters["audioAssets"] = audioAssetIDs
+		}
+		if imageAssetID != "" {
+			parameters["firstFrameAsset"] = imageAssetID
+		}
+		if lastFrameAssetID != "" {
+			parameters["lastFrameAsset"] = lastFrameAssetID
+		}
+		mediaGenInput["referenceToVideo"] = parameters
 	case imageAssetID != "":
 		parameters["inputAssets"] = []string{imageAssetID}
 		mediaGenInput["imageToVideo"] = parameters

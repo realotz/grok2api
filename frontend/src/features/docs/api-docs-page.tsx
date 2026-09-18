@@ -143,11 +143,12 @@ const endpoints: Record<string, EndpointDefinition> = {
       { name: "aspect_ratio", descriptionKey: "docs.reference.fieldAspectRatio" },
       { name: "resolution", descriptionKey: "docs.reference.fieldVideoResolution" },
       { name: "image", descriptionKey: "docs.reference.fieldVideoImage" },
+      { name: "last_frame", descriptionKey: "docs.reference.fieldVideoLastFrame" },
       { name: "reference_images", descriptionKey: "docs.reference.fieldReferenceImages" },
       { name: "reference_audios", descriptionKey: "docs.reference.fieldReferenceAudios" },
     ],
     noteKeys: ["docs.reference.noteVideoAsync", "docs.reference.noteVideoReference", "docs.reference.noteVideoStrict"],
-    request: (model) => ({ model, prompt: "The person from <IMAGE_0> speaks with <AUDIO_0>", duration: 8, aspect_ratio: "16:9", resolution: "720p", reference_images: [{ url: "https://example.com/person.png" }], reference_audios: [{ voice_id: "eve" }] }),
+    request: (model) => ({ model, prompt: "Keep the character from <IMAGE_0>", duration: 8, aspect_ratio: "16:9", resolution: "720p", image: { url: "https://example.com/first.png" }, last_frame: { url: "https://example.com/last.png" }, reference_images: [{ url: "https://example.com/person.png" }] }),
     response: { request_id: "video_example" },
   },
   "video/edits": {

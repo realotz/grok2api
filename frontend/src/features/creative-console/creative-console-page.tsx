@@ -1270,6 +1270,8 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   const [prompt, setPrompt] = useState("");
   const [imageURL, setImageURL] = useState("");
   const [imageFileID, setImageFileID] = useState("");
+  const [lastFrameURL, setLastFrameURL] = useState("");
+  const [lastFrameFileID, setLastFrameFileID] = useState("");
   const [referenceURL, setReferenceURL] = useState("");
   const [referenceFileID, setReferenceFileID] = useState("");
   const [referenceAudioURL, setReferenceAudioURL] = useState("");
@@ -1281,9 +1283,11 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   const [resolution, setResolution] = useState("720p");
   const [job, setJob] = useState<{ requestId: string; apiKey: string } | null>(null);
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastFrameFileInputRef = useRef<HTMLInputElement | null>(null);
   const referenceFileInputRef = useRef<HTMLInputElement | null>(null);
   const videoFileInputRef = useRef<HTMLInputElement | null>(null);
   const imageSelectionVersionRef = useRef(0);
+  const lastFrameSelectionVersionRef = useRef(0);
   const referenceSelectionVersionRef = useRef(0);
   const videoSelectionVersionRef = useRef(0);
 
@@ -1304,6 +1308,7 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   }, [activeModel, model, onModelChange]);
 
   const hasFirstFrame = Boolean(imageURL.trim() || imageFileID);
+  const hasLastFrame = Boolean(lastFrameURL.trim() || lastFrameFileID);
   const hasReferenceImage = Boolean(referenceURL.trim() || referenceFileID);
   const hasReferenceAudio = Boolean(referenceAudioURL.trim());
   const isReferenceMode = hasReferenceImage || hasReferenceAudio;
@@ -1316,14 +1321,11 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
       if (action === "generate") {
         let nextImageURL = imageURL.trim() || undefined;
         let nextImageFileID = imageFileID || undefined;
+        let nextLastFrameURL = lastFrameURL.trim() || undefined;
+        let nextLastFrameFileID = lastFrameFileID || undefined;
         let nextReferenceURL = referenceURL.trim() || undefined;
         let nextReferenceFileID = referenceFileID || undefined;
         let nextReferenceAudioURL = referenceAudioURL.trim() || undefined;
-        if (nextImageFileID || nextImageURL) {
-          nextReferenceURL = undefined;
-          nextReferenceFileID = undefined;
-          nextReferenceAudioURL = undefined;
-        }
         if (!nextImageFileID && nextImageURL && /^https?:\/\//i.test(nextImageURL)) {
           const staged = await importVideoInputFromURL(nextImageURL);
           nextImageURL = undefined;
@@ -1334,12 +1336,19 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
           nextReferenceURL = undefined;
           nextReferenceFileID = staged.fileId;
         }
+        if (!nextLastFrameFileID && nextLastFrameURL && /^https?:\/\//i.test(nextLastFrameURL)) {
+          const staged = await importVideoInputFromURL(nextLastFrameURL);
+          nextLastFrameURL = undefined;
+          nextLastFrameFileID = staged.fileId;
+        }
         return createVideo({
           apiKey,
           model: activeModel,
           prompt: prompt.trim(),
           imageURL: nextImageURL,
           imageFileID: nextImageFileID,
+          lastFrameURL: nextLastFrameURL,
+          lastFrameFileID: nextLastFrameFileID,
           referenceImages: nextReferenceFileID
             ? [{ fileId: nextReferenceFileID }]
             : nextReferenceURL
@@ -1371,7 +1380,7 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
 
   // 本地媒体进入有 TTL 的隐藏临时区；视频任务只持久化短 file_id，不写入图库或公开 URL。
   const uploadMutation = useMutation({
-    mutationFn: async ({ file, kind, selectionVersion }: { file: File; kind: "image" | "reference"; selectionVersion: number }) => {
+    mutationFn: async ({ file, kind, selectionVersion }: { file: File; kind: "image" | "last" | "reference"; selectionVersion: number }) => {
       if (file.type && !file.type.startsWith("image/")) throw new Error(t("creativeConsole.errors.invalidImage"));
       const input = await uploadMediaInput(file);
       if (input.kind !== "image") throw new Error(t("creativeConsole.errors.invalidImage"));
@@ -1382,16 +1391,17 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
         if (input.selectionVersion !== imageSelectionVersionRef.current) return;
         setImageFileID(input.fileId);
 		setImageURL("");
-		setReferenceURL("");
-		setReferenceFileID("");
-        setReferenceAudioURL("");
+        return;
+      }
+      if (input.kind === "last") {
+        if (input.selectionVersion !== lastFrameSelectionVersionRef.current) return;
+        setLastFrameFileID(input.fileId);
+        setLastFrameURL("");
         return;
       }
       if (input.selectionVersion !== referenceSelectionVersionRef.current) return;
       setReferenceFileID(input.fileId);
       setReferenceURL("");
-      setImageURL("");
-      setImageFileID("");
     },
   });
 
@@ -1421,7 +1431,7 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
     event.preventDefault();
     if (!apiKey || !activeModel || createMutation.isPending || uploadMutation.isPending || videoUploadMutation.isPending) return;
     if (action === "generate") {
-      if ((!prompt.trim() && !hasFirstFrame && !isReferenceMode) || !validDuration(duration)) return;
+      if ((!prompt.trim() && !hasFirstFrame && !hasLastFrame && !isReferenceMode) || !validDuration(duration)) return;
       if (isReferenceMode && !prompt.trim()) return;
     } else {
       if (!prompt.trim() || (!sourceVideoURL.trim() && !sourceVideoFileID)) return;
@@ -1452,7 +1462,7 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
       : t("creativeConsole.extendVideo");
   const canSubmit = Boolean(apiKey && activeModel && !createMutation.isPending && !uploadMutation.isPending && !videoUploadMutation.isPending
     && (action === "generate"
-      ? ((prompt.trim() || hasFirstFrame || isReferenceMode) && (!isReferenceMode || prompt.trim()) && validDuration(duration) && !(hasFirstFrame && isReferenceMode))
+      ? ((prompt.trim() || hasFirstFrame || hasLastFrame || isReferenceMode) && (!isReferenceMode || prompt.trim()) && validDuration(duration))
       : prompt.trim() && (sourceVideoURL.trim() || sourceVideoFileID) && (action !== "extend" || (Number(extendDuration) >= 2 && Number(extendDuration) <= 10))));
 
   return (
@@ -1505,14 +1515,14 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                 <>
                 <Popover>
                   <PopoverTrigger asChild>
-                    <Button type="button" variant="ghost" size="sm" className={cn("h-8 gap-1.5 px-2 font-normal", hasFirstFrame && "bg-secondary/70 text-foreground")} aria-label={t("creativeConsole.firstFrameImage")} disabled={isReferenceMode}>
+                    <Button type="button" variant="ghost" size="sm" className={cn("h-8 gap-1.5 px-2 font-normal", hasFirstFrame && "bg-secondary/70 text-foreground")} aria-label={t("creativeConsole.firstFrameImage")}>
                       <ImagePlus />{hasFirstFrame ? t("creativeConsole.firstFrameImageAdded") : t("creativeConsole.firstFrameImageShort")}
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent align="start" className="w-80 p-3">
                     <div className="mb-2 text-xs font-medium">{t("creativeConsole.firstFrameImage")}</div>
                     <div className="flex items-center gap-2">
-					  <Input id="video-image" type="url" value={imageURL} onChange={(event) => { imageSelectionVersionRef.current += 1; referenceSelectionVersionRef.current += 1; setImageURL(event.target.value); setImageFileID(""); setReferenceURL(""); setReferenceFileID(""); setReferenceAudioURL(""); }} placeholder={imageFileID ? t("creativeConsole.firstFrameImageAdded") : "https://..."} aria-label={t("creativeConsole.firstFrameImage")} />
+					  <Input id="video-image" type="url" value={imageURL} onChange={(event) => { imageSelectionVersionRef.current += 1; setImageURL(event.target.value); setImageFileID(""); }} placeholder={imageFileID ? t("creativeConsole.firstFrameImageAdded") : "https://..."} aria-label={t("creativeConsole.firstFrameImage")} />
                       {hasFirstFrame ? <Button type="button" variant="ghost" size="icon" className="shrink-0" aria-label={t("creativeConsole.clearFirstFrameImage")} onClick={() => { imageSelectionVersionRef.current += 1; setImageURL(""); setImageFileID(""); }}><X /></Button> : null}
                     </div>
                     <input
@@ -1525,12 +1535,8 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                         if (file) {
                           const selectionVersion = imageSelectionVersionRef.current + 1;
                           imageSelectionVersionRef.current = selectionVersion;
-                          referenceSelectionVersionRef.current += 1;
                           setImageURL("");
 						  setImageFileID("");
-						  setReferenceURL("");
-						  setReferenceFileID("");
-                          setReferenceAudioURL("");
                           uploadMutation.reset();
                           uploadMutation.mutate({ file, kind: "image", selectionVersion });
                         }
@@ -1546,14 +1552,50 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                 </Popover>
                 <Popover>
                   <PopoverTrigger asChild>
-                    <Button type="button" variant="ghost" size="sm" className={cn("h-8 gap-1.5 px-2 font-normal", hasReferenceImage && "bg-secondary/70 text-foreground")} aria-label={t("creativeConsole.referenceImage")} disabled={hasFirstFrame}>
+                    <Button type="button" variant="ghost" size="sm" className={cn("h-8 gap-1.5 px-2 font-normal", hasLastFrame && "bg-secondary/70 text-foreground")} aria-label={t("creativeConsole.lastFrameImage")}>
+                      <ImagePlus />{hasLastFrame ? t("creativeConsole.lastFrameImageAdded") : t("creativeConsole.lastFrameImageShort")}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-80 p-3">
+                    <div className="mb-2 text-xs font-medium">{t("creativeConsole.lastFrameImage")}</div>
+                    <div className="flex items-center gap-2">
+                      <Input id="video-last-frame" type="url" value={lastFrameURL} onChange={(event) => { lastFrameSelectionVersionRef.current += 1; setLastFrameURL(event.target.value); setLastFrameFileID(""); }} placeholder={lastFrameFileID ? t("creativeConsole.lastFrameImageAdded") : "https://..."} aria-label={t("creativeConsole.lastFrameImage")} />
+                      {hasLastFrame ? <Button type="button" variant="ghost" size="icon" className="shrink-0" aria-label={t("creativeConsole.clearLastFrameImage")} onClick={() => { lastFrameSelectionVersionRef.current += 1; setLastFrameURL(""); setLastFrameFileID(""); }}><X /></Button> : null}
+                    </div>
+                    <input
+                      ref={lastFrameFileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (file) {
+                          const selectionVersion = lastFrameSelectionVersionRef.current + 1;
+                          lastFrameSelectionVersionRef.current = selectionVersion;
+                          setLastFrameURL("");
+                          setLastFrameFileID("");
+                          uploadMutation.reset();
+                          uploadMutation.mutate({ file, kind: "last", selectionVersion });
+                        }
+                        event.target.value = "";
+                      }}
+                    />
+                    <Button type="button" variant="secondary" size="sm" className="mt-2 w-full" disabled={uploadMutation.isPending} onClick={() => lastFrameFileInputRef.current?.click()}>
+                      {uploadMutation.isPending ? <Loader2 className="animate-spin" /> : <Upload />}
+                      {t("creativeConsole.uploadImage")}
+                    </Button>
+                  </PopoverContent>
+                </Popover>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button type="button" variant="ghost" size="sm" className={cn("h-8 gap-1.5 px-2 font-normal", hasReferenceImage && "bg-secondary/70 text-foreground")} aria-label={t("creativeConsole.referenceImage")}>
                       <Images />{hasReferenceImage ? t("creativeConsole.referenceImageAdded") : t("creativeConsole.referenceImageShort")}
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent align="start" className="w-80 p-3">
                     <div className="mb-2 text-xs font-medium">{t("creativeConsole.referenceImage")}</div>
                     <div className="flex items-center gap-2">
-                      <Input id="video-reference" type="url" value={referenceURL} onChange={(event) => { referenceSelectionVersionRef.current += 1; imageSelectionVersionRef.current += 1; setReferenceURL(event.target.value); setReferenceFileID(""); setImageURL(""); setImageFileID(""); }} placeholder={referenceFileID ? t("creativeConsole.referenceImageAdded") : "https://..."} aria-label={t("creativeConsole.referenceImage")} />
+                      <Input id="video-reference" type="url" value={referenceURL} onChange={(event) => { referenceSelectionVersionRef.current += 1; setReferenceURL(event.target.value); setReferenceFileID(""); }} placeholder={referenceFileID ? t("creativeConsole.referenceImageAdded") : "https://..."} aria-label={t("creativeConsole.referenceImage")} />
                       {hasReferenceImage ? <Button type="button" variant="ghost" size="icon" className="shrink-0" aria-label={t("creativeConsole.clearReferenceImage")} onClick={() => { referenceSelectionVersionRef.current += 1; setReferenceURL(""); setReferenceFileID(""); }}><X /></Button> : null}
                     </div>
                     <input
@@ -1566,11 +1608,8 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                         if (file) {
                           const selectionVersion = referenceSelectionVersionRef.current + 1;
                           referenceSelectionVersionRef.current = selectionVersion;
-                          imageSelectionVersionRef.current += 1;
                           setReferenceURL("");
                           setReferenceFileID("");
-                          setImageURL("");
-                          setImageFileID("");
                           uploadMutation.reset();
                           uploadMutation.mutate({ file, kind: "reference", selectionVersion });
                         }
@@ -1605,9 +1644,6 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                         value={referenceAudioURL}
                         onChange={(event) => {
                           setReferenceAudioURL(event.target.value);
-                          imageSelectionVersionRef.current += 1;
-                          setImageURL("");
-                          setImageFileID("");
                         }}
                         placeholder={t("creativeConsole.referenceVoicePlaceholder")}
                         aria-label={t("creativeConsole.referenceVoice")}

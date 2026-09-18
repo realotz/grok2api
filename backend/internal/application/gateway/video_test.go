@@ -226,7 +226,7 @@ func TestVideoPricingLeavesUnmeasurableOperationsUnpriced(t *testing.T) {
 // 上游对 Console 视频的这两条限制原先只在 provider 层拦截，而生成接口是异步的，
 // 客户端会先拿到 request_id 再从轮询里读到失败任务。入队前校验让错误立刻可见。
 func checkVideoRouteParameters(operation provider.VideoOperation, providerValue account.Provider, upstreamModel, resolution string, referenceCount, referenceAudioCount, duration int) error {
-	return validateVideoRouteParameters(operation, providerValue, upstreamModel, resolution, referenceCount, referenceAudioCount, duration, videoReferenceAudioNone)
+	return validateVideoRouteParameters(operation, providerValue, upstreamModel, resolution, false, false, referenceCount, referenceAudioCount, duration, videoReferenceAudioNone)
 }
 
 func TestVideoRouteParametersRejectConsoleReferenceLimits(t *testing.T) {
@@ -331,14 +331,14 @@ func TestRoutesForVideoParametersKeepsCompatibleSameNameProviders(t *testing.T) 
 		{ID: 1, PublicID: "shared-video", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video"},
 		{ID: 2, PublicID: "shared-video", Provider: account.ProviderBuild, UpstreamModel: "grok-imagine-video-1.5"},
 	}
-	compatible, err := routesForVideoParameters(routes, provider.VideoOperationGenerate, "720p", 8, nil, 15)
+	compatible, err := routesForVideoParameters(routes, provider.VideoOperationGenerate, "720p", false, false, 8, nil, 15)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(compatible) != 1 || compatible[0].ID != 2 {
 		t.Fatalf("compatible routes = %#v", compatible)
 	}
-	if _, err := routesForVideoParameters(routes[:1], provider.VideoOperationGenerate, "720p", 8, nil, 15); !errors.Is(err, ErrVideoParameterInvalid) {
+	if _, err := routesForVideoParameters(routes[:1], provider.VideoOperationGenerate, "720p", false, false, 8, nil, 15); !errors.Is(err, ErrVideoParameterInvalid) {
 		t.Fatalf("Console-only invalid route error = %v", err)
 	}
 }
@@ -349,21 +349,21 @@ func TestRoutesForVideoParametersSplitsAudioByProvider(t *testing.T) {
 		{ID: 2, PublicID: "shared-video", Provider: account.ProviderBuild, UpstreamModel: "grok-imagine-video-1.5"},
 		{ID: 3, PublicID: "shared-video", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video-1.5"},
 	}
-	voice, err := routesForVideoParameters(routes, provider.VideoOperationGenerate, "720p", 0, []string{"eve"}, 6)
+	voice, err := routesForVideoParameters(routes, provider.VideoOperationGenerate, "720p", false, false, 0, []string{"eve"}, 6)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(voice) != 3 || voice[0].ID != 1 || voice[1].ID != 2 || voice[2].ID != 3 {
 		t.Fatalf("voice_id routes = %#v", voice)
 	}
-	urls, err := routesForVideoParameters(routes, provider.VideoOperationGenerate, "720p", 0, []string{"https://example.com/voice.mp3"}, 6)
+	urls, err := routesForVideoParameters(routes, provider.VideoOperationGenerate, "720p", false, false, 0, []string{"https://example.com/voice.mp3"}, 6)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(urls) != 1 || urls[0].ID != 1 {
 		t.Fatalf("url routes = %#v", urls)
 	}
-	if _, err := routesForVideoParameters(routes[1:2], provider.VideoOperationGenerate, "720p", 0, []string{"https://example.com/voice.mp3"}, 6); !errors.Is(err, ErrVideoParameterInvalid) {
+	if _, err := routesForVideoParameters(routes[1:2], provider.VideoOperationGenerate, "720p", false, false, 0, []string{"https://example.com/voice.mp3"}, 6); !errors.Is(err, ErrVideoParameterInvalid) {
 		t.Fatalf("Build url audio error = %v", err)
 	}
 }
@@ -453,25 +453,25 @@ func TestEncodeDecodeVideoInputPreservesImageAndReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	imageURL, refs := decodeVideoInputParts(encoded)
-	if imageURL != "https://example.com/first.png" || len(refs) != 1 || refs[0] != "https://example.com/ref.png" {
-		t.Fatalf("decoded split = %q %#v from %s", imageURL, refs, encoded)
+	imageURL, lastFrameURL, refs := decodeVideoInputParts(encoded)
+	if imageURL != "https://example.com/first.png" || lastFrameURL != "" || len(refs) != 1 || refs[0] != "https://example.com/ref.png" {
+		t.Fatalf("decoded split = %q %q %#v from %s", imageURL, lastFrameURL, refs, encoded)
 	}
 
 	encoded, err = encodeVideoInput("", []string{"https://example.com/ref-only.png"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	imageURL, refs = decodeVideoInputParts(encoded)
+	imageURL, lastFrameURL, refs = decodeVideoInputParts(encoded)
 	if imageURL != "" || len(refs) != 1 || refs[0] != "https://example.com/ref-only.png" {
 		t.Fatalf("single reference decoded = %q %#v from %s", imageURL, refs, encoded)
 	}
 
-	imageURL, refs = decodeVideoInputParts(`{"image_urls":["https://legacy/one.png"]}`)
+	imageURL, lastFrameURL, refs = decodeVideoInputParts(`{"image_urls":["https://legacy/one.png"]}`)
 	if imageURL != "https://legacy/one.png" || len(refs) != 0 {
 		t.Fatalf("legacy single = %q %#v", imageURL, refs)
 	}
-	imageURL, refs = decodeVideoInputParts(`{"image_urls":["https://legacy/a.png","https://legacy/b.png"]}`)
+	imageURL, lastFrameURL, refs = decodeVideoInputParts(`{"image_urls":["https://legacy/a.png","https://legacy/b.png"]}`)
 	if imageURL != "" || len(refs) != 2 || refs[0] != "https://legacy/a.png" || refs[1] != "https://legacy/b.png" {
 		t.Fatalf("legacy multi = %q %#v", imageURL, refs)
 	}
@@ -481,6 +481,7 @@ func TestEncodeDecodeVideoInputPreservesOperationAndReferenceAudio(t *testing.T)
 	encoded, err := encodeVideoInputFull(
 		provider.VideoOperationGenerate,
 		"",
+		"https://example.com/last.png",
 		[]string{"https://example.com/ref.png"},
 		[]string{"eve", " ara "},
 		"",
@@ -489,22 +490,22 @@ func TestEncodeDecodeVideoInputPreservesOperationAndReferenceAudio(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	imageURL, refs, audios, videoURL := decodeVideoInputDetailed(encoded)
-	if imageURL != "" || videoURL != "" || len(refs) != 1 || refs[0] != "https://example.com/ref.png" || len(audios) != 2 || audios[0] != "eve" || audios[1] != "ara" {
+	imageURL, lastFrameURL, refs, audios, videoURL := decodeVideoInputDetailed(encoded)
+	if imageURL != "" || lastFrameURL != "https://example.com/last.png" || videoURL != "" || len(refs) != 1 || refs[0] != "https://example.com/ref.png" || len(audios) != 2 || audios[0] != "eve" || audios[1] != "ara" {
 		t.Fatalf("decoded reference input = image %q refs %#v audios %#v video %q from %s", imageURL, refs, audios, videoURL, encoded)
 	}
 	if operation := decodeVideoOperation(encoded); operation != provider.VideoOperationGenerate {
 		t.Fatalf("generation operation = %q", operation)
 	}
 
-	encoded, err = encodeVideoInputFull(provider.VideoOperationExtend, "", nil, nil, media.InputReference("source-video"), 16.031666)
+	encoded, err = encodeVideoInputFull(provider.VideoOperationExtend, "", "", nil, nil, media.InputReference("source-video"), 16.031666)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if operation := decodeVideoOperation(encoded); operation != provider.VideoOperationExtend {
 		t.Fatalf("extension operation = %q from %s", operation, encoded)
 	}
-	_, _, _, videoURL = decodeVideoInputDetailed(encoded)
+	_, _, _, _, videoURL = decodeVideoInputDetailed(encoded)
 	if videoURL != media.InputReference("source-video") {
 		t.Fatalf("extension video = %q", videoURL)
 	}
@@ -527,7 +528,7 @@ func TestEncodeDecodeVideoInputPreservesOperationAndReferenceAudio(t *testing.T)
 }
 
 func TestWithVideoInputPinnedOnly(t *testing.T) {
-	encoded, err := encodeVideoInputFull(provider.VideoOperationGenerate, "", nil, nil, "", 0)
+	encoded, err := encodeVideoInputFull(provider.VideoOperationGenerate, "", "", nil, nil, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -703,7 +704,7 @@ func TestVideoInputMaterializationHasIndependentBulkhead(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := service.acquireVideoInputSlot(canceled, []string{reference}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("fifth local input acquire error=%v", err)
+		t.Fatalf("overflow local input acquire error=%v", err)
 	}
 	for _, release := range releases {
 		release()

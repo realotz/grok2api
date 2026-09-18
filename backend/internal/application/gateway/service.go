@@ -249,7 +249,7 @@ type buildForbiddenReauthPolicy struct {
 
 func (s *Service) ConfigureMedia(repository repository.MediaJobRepository, concurrency int) {
 	if concurrency <= 0 {
-		concurrency = 4
+		concurrency = 64
 	}
 	s.mediaJobs = repository
 	s.mediaWorker = concurrency

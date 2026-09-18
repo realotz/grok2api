@@ -63,7 +63,7 @@ type SwaggerImageEditRequest struct {
 }
 
 // SwaggerVideoGenerationRequest 表示视频生成请求。
-// image 与 reference_images 互斥；参考模式 resolution 最高 720p。
+// grok-imagine-video-1.5 可组合 image、last_frame 与 reference_images；参考模式 resolution 最高 720p。
 // reference_audios：voice_id 与 Build 一致（如 eve）；Web 还会接受 url 或 data。prompt 使用官方 <IMAGE_n>/<AUDIO_n> 标签（不区分大小写）。
 type SwaggerVideoGenerationRequest struct {
 	Model                   string                   `json:"model" example:"grok-imagine-video-1.5"`
@@ -72,6 +72,7 @@ type SwaggerVideoGenerationRequest struct {
 	AspectRatio             string                   `json:"aspect_ratio,omitempty" example:"16:9"`
 	Resolution              string                   `json:"resolution,omitempty" example:"720p"`
 	Image                   *SwaggerVideoMediaInput  `json:"image,omitempty"`
+	LastFrame               *SwaggerVideoMediaInput  `json:"last_frame,omitempty"`
 	ReferenceImages         []SwaggerVideoMediaInput `json:"reference_images,omitempty"`
 	ReferenceAudios         []SwaggerVideoAudioInput `json:"reference_audios,omitempty"`
 	Video                   *SwaggerVideoMediaInput  `json:"video,omitempty"`

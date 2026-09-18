@@ -1421,7 +1421,7 @@ func TestVideoCreatePayloadUsesNewMediaGenModes(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			payload := videoV15CreatePayload("prompt", "2:3", "720p", 6, test.image, test.references, test.audios)
+			payload := videoV15CreatePayload("prompt", "2:3", "720p", 6, test.image, "", test.references, test.audios)
 			mediaInput := payload["mediaGenInput"].(map[string]any)
 			if len(mediaInput) != 1 || mediaInput[test.mode] == nil {
 				t.Fatalf("mediaGenInput = %#v", mediaInput)
@@ -1437,6 +1437,11 @@ func TestVideoCreatePayloadUsesNewMediaGenModes(t *testing.T) {
 				t.Fatalf("payload = %#v", payload)
 			}
 		})
+	}
+	combined := videoV15CreatePayload("prompt", "16:9", "720p", 6, "first", "last", []string{"ref"}, nil)
+	parameters := combined["mediaGenInput"].(map[string]any)["referenceToVideo"].(map[string]any)
+	if parameters["firstFrameAsset"] != "first" || parameters["lastFrameAsset"] != "last" || !slices.Equal(parameters["inputAssets"].([]string), []string{"ref"}) {
+		t.Fatalf("combined referenceToVideo = %#v", parameters)
 	}
 }
 
@@ -2229,7 +2234,7 @@ func TestParseVideoStreamFixture(t *testing.T) {
 }
 
 func TestTextToVideoPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
-	payload := videoV15CreatePayload("雨后天晴！", "9:16", "480p", 6, "", nil, nil)
+	payload := videoV15CreatePayload("雨后天晴！", "9:16", "480p", 6, "", "", nil, nil)
 	if len(payload) != 8 || payload["modelName"] != "imagine-video-gen" ||
 		payload["message"] != "雨后天晴！ --mode=custom" ||
 		payload["enableImageStreaming"] != true || payload["enableSideBySide"] != true ||
@@ -2518,7 +2523,7 @@ func TestResolveWebVideoV15ResolutionMatchesOfficialFreeDefault(t *testing.T) {
 }
 
 func TestVideoV15CreatePayloadMatchesOfficialImagineRequest(t *testing.T) {
-	payload := videoV15CreatePayload("武松打虎", "2:3", "720p", 6, "", nil, nil)
+	payload := videoV15CreatePayload("武松打虎", "2:3", "720p", 6, "", "", nil, nil)
 	if payload["modelName"] != "imagine-video-gen" || payload["message"] != "武松打虎 --mode=custom" {
 		t.Fatalf("payload = %#v", payload)
 	}

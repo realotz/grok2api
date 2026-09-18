@@ -628,9 +628,10 @@ type VideoRequest struct {
 	Resolution  string
 	// ImageURL is the optional first-frame image (official "image" field).
 	ImageURL string
+	// LastFrameURL is the optional final-frame image (official "last_frame" field).
+	LastFrameURL string
 	// ReferenceURLs are style/content references (official "reference_images").
 	// A single reference must stay in reference_images and must not be coerced to image.
-	// Official docs forbid combining image with reference_images.
 	ReferenceURLs []string
 	// ReferenceAudios are Build-style voice_id values, or Web HTTPS/data URIs.
 	// Prompt tags stay official <AUDIO_n>. Web maps voice_id to Imagine asset UUIDs

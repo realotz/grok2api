@@ -474,9 +474,16 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if operation != provider.VideoOperationGenerate && modelName != "grok-imagine-video" {
 		return provider.VideoResult{}, fmt.Errorf("%s 仅支持 grok-imagine-video", operation)
 	}
+	hasFirstFrame := strings.TrimSpace(request.ImageURL) != ""
+	hasLastFrame := strings.TrimSpace(request.LastFrameURL) != ""
+	hasReferenceMode := len(request.ReferenceURLs) > 0 || len(request.ReferenceAudios) > 0
 	firstFrames, referenceImages := consoleVideoImageCounts(request)
-	if firstFrames > consoleMaxVideoFirstFrames {
-		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张首帧图，当前为 %d 张", modelName, consoleMaxVideoFirstFrames, firstFrames)
+	maxFrameImages := consoleMaxVideoFirstFrames
+	if modelName == "grok-imagine-video-1.5" {
+		maxFrameImages = 2
+	}
+	if firstFrames > maxFrameImages {
+		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张首尾帧图，当前为 %d 张", modelName, maxFrameImages, firstFrames)
 	}
 	maxReferenceImages := provider.ConsoleLegacyVideoMaxReferenceImages
 	if modelName == "grok-imagine-video-1.5" {
@@ -484,6 +491,14 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	}
 	if referenceImages > maxReferenceImages {
 		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张参考图，当前为 %d 张", modelName, maxReferenceImages, referenceImages)
+	}
+	if modelName != "grok-imagine-video-1.5" {
+		if hasLastFrame {
+			return provider.VideoResult{}, errors.New("last_frame 仅支持 grok-imagine-video-1.5")
+		}
+		if hasFirstFrame && hasReferenceMode {
+			return provider.VideoResult{}, errors.New("image 不能与 reference_images/reference_audios 同时使用")
+		}
 	}
 	if operation == provider.VideoOperationGenerate {
 		if request.Duration < 1 || request.Duration > 15 {
@@ -538,8 +553,11 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 			}
 			payload["image"] = map[string]any{"url": imageURL}
 		}
-		if strings.TrimSpace(request.ImageURL) != "" && (len(request.ReferenceURLs) > 0 || len(request.ReferenceAudios) > 0) {
-			return provider.VideoResult{}, errors.New("image 不能与 reference_images/reference_audios 同时使用")
+		if lastFrameURL := strings.TrimSpace(request.LastFrameURL); lastFrameURL != "" {
+			if !validConsoleMediaInputURL(lastFrameURL, "image") {
+				return provider.VideoResult{}, errors.New("视频尾帧必须是 HTTPS URL 或 image data URL")
+			}
+			payload["last_frame"] = map[string]any{"url": lastFrameURL}
 		}
 		if len(request.ReferenceURLs) > 0 {
 			references := make([]map[string]any, 0, len(request.ReferenceURLs))
@@ -567,7 +585,6 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 			}
 			payload["reference_audios"] = audios
 		}
-		hasReferenceMode := len(request.ReferenceURLs) > 0 || len(request.ReferenceAudios) > 0
 		if hasReferenceMode {
 			if strings.TrimSpace(request.Prompt) == "" {
 				return provider.VideoResult{}, errors.New("参考图/参考音频视频必须提供 prompt")
@@ -953,6 +970,9 @@ func trustedConsoleVideoHost(host string) bool {
 
 func consoleVideoImageCounts(request provider.VideoRequest) (firstFrames int, referenceImages int) {
 	if strings.TrimSpace(request.ImageURL) != "" {
+		firstFrames++
+	}
+	if strings.TrimSpace(request.LastFrameURL) != "" {
 		firstFrames++
 	}
 	for _, raw := range request.ReferenceURLs {

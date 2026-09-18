@@ -173,6 +173,8 @@ export async function createVideo(input: {
   prompt: string;
   imageURL?: string;
   imageFileID?: string;
+  lastFrameURL?: string;
+  lastFrameFileID?: string;
   referenceImages?: Array<{ url?: string; fileId?: string }>;
   referenceAudios?: Array<{ url?: string; data?: string; format?: string; voice_id?: string }>;
   duration: number;
@@ -189,6 +191,8 @@ export async function createVideo(input: {
   };
   if (input.imageFileID) body.image = { file_id: input.imageFileID };
   else if (input.imageURL) body.image = { url: input.imageURL };
+  if (input.lastFrameFileID) body.last_frame = { file_id: input.lastFrameFileID };
+  else if (input.lastFrameURL) body.last_frame = { url: input.lastFrameURL };
   if (input.referenceImages && input.referenceImages.length > 0) {
     body.reference_images = input.referenceImages.map((item) => {
       if (item.fileId) return { file_id: item.fileId };
