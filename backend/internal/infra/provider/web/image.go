@@ -927,6 +927,30 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 	}
 	urls := imageEditResultURLs(&parsed, capture.Bytes())
 	if len(urls) == 0 {
+		diagnostics := inspectLiteCapture(capture.Bytes())
+		_, hasKind := payload["kind"]
+		_, hasMetadata := payload["responseMetadata"]
+		a.log().Warn("image_edit_incomplete",
+			"account_id", request.Credential.ID,
+			"asset_count", len(assets),
+			"has_kind", hasKind,
+			"has_response_metadata", hasMetadata,
+			"region_edits", len(request.RegionEdits)+len(request.SelectionRegions),
+			"captured_bytes", len(capture.Bytes()),
+			"parsed_images", len(parsed.Images),
+			"moderated_images", len(parsed.moderatedImages),
+			"text_len", parsed.Text.Len(),
+			"frames", diagnostics.Frames,
+			"response_fields", diagnostics.ResponseFields,
+			"message_tags", diagnostics.MessageTags,
+			"image_chunks", diagnostics.ImageChunks,
+			"image_urls", diagnostics.ImageURLs,
+			"image_fields", diagnostics.ImageFields,
+			"max_progress", diagnostics.MaxProgress,
+			"soft_stop", diagnostics.SoftStop,
+			"upstream_error_code", diagnostics.ErrorCode,
+			"upstream_error", diagnostics.ErrorMessage,
+		)
 		return jsonProviderResponse(http.StatusBadGateway, map[string]any{"error": map[string]any{
 			"message": "上游未返回可用的编辑图片",
 			"type":    "server_error", "code": "image_edit_incomplete",
@@ -1000,15 +1024,13 @@ func buildImageEditPayload(options imageEditPayloadOptions) map[string]any {
 	payload := map[string]any{
 		"modelName": "imagine-image-edit", "message": prompt,
 		"enableImageStreaming": true, "enableSideBySide": true, "sendFinalMetadata": true,
-		"mediaGenInput": map[string]any{"imageToImage": imageToImage},
-	}
-	if len(edits) > 0 {
-		payload["responseMetadata"] = map[string]any{
+		"responseMetadata": map[string]any{
 			"modelConfigOverride": map[string]any{
 				"modelMap": map[string]any{"imageEditModel": "imagine"},
 			},
-		}
-		payload["kind"] = "CONVERSATION_KIND_IMAGINE"
+		},
+		"mediaGenInput": map[string]any{"imageToImage": imageToImage},
+		"kind":          "CONVERSATION_KIND_IMAGINE",
 	}
 	return payload
 }
