@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     upd.add_argument("--headed", action="store_true")
     upd.add_argument("--x2api-addr", default="")
     upd.add_argument("--no-hermes", action="store_true")
-    upd.add_argument("--force-hermes", action="store_true", help="跳过穷举，强制走 grok-4.6 Hermes eval")
+    upd.add_argument("--force-hermes", action="store_true", help="跳过穷举，强制走 grok-4.7 Hermes eval")
     upd.add_argument("--defer-capture", action="store_true", help="不预先抓包，让 agent 自己调用 capture_page")
     upd.add_argument("--fixture", default="", help="用已有 pair.json，不打开浏览器")
 

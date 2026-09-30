@@ -953,6 +953,7 @@ func (r *AuditRepository) SummarizeDegrade(ctx context.Context, input repository
 	return result, err
 }
 
+// degradeClassifiedQuery 仅统计 Grok 4.7 的质量异常，排除旧模型审计。
 func (r *AuditRepository) degradeClassifiedQuery(tx *gorm.DB, input repository.DegradeSummaryQuery) *gorm.DB {
 	castType := "REAL"
 	if r.db.dialect == "postgres" {
@@ -974,6 +975,7 @@ func (r *AuditRepository) degradeClassifiedQuery(tx *gorm.DB, input repository.D
 			audit.ErrorQualityDegraded,
 			audit.ErrorQualityDegraded, audit.DegradeClassThinking, input.FailClosed, input.MinGenerationMS, audit.DegradeClassBurst, input.HardTPS, audit.DegradeClassHard, audit.DegradeClassSoft).
 		Where("a.provider = ?", "grok_build").
+		Where("(a.model_upstream_model = ? OR a.model_upstream_model LIKE ?)", "grok-4.7", "grok-4.7-%").
 		Where("a.request_id NOT LIKE ?", "quality_%").
 		Where("(("+speedPredicate+") OR ("+thinkingPredicate+"))",
 			true, input.MinOutputTokens, input.SoftTPS,

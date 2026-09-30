@@ -192,18 +192,24 @@ type QuotaView struct {
 }
 
 type View struct {
-	Credential         accountdomain.Credential
-	Billing            *accountdomain.Billing
-	Quota              QuotaView
-	QuotaWindows       []accountdomain.QuotaWindow
-	BuildBotFlagged    bool
-	BuildBotFlagSource int
-	SSOBotFlagged      bool
-	SSOBotFlagSource   int
+	Credential          accountdomain.Credential
+	Billing             *accountdomain.Billing
+	Quota               QuotaView
+	QuotaWindows        []accountdomain.QuotaWindow
+	LeaseCooldownUntil  *time.Time
+	LeaseCooldownReason string
+	BuildBotFlagged     bool
+	BuildBotFlagSource  int
+	SSOBotFlagged       bool
+	SSOBotFlagSource    int
 	// EnabledChanged is request-scoped update metadata. It is not persisted or
 	// serialized directly; the HTTP layer uses it to avoid warning when a PATCH
 	// merely repeats the account's existing enabled value.
 	EnabledChanged bool
+}
+
+type activeEgressLeaseRepository interface {
+	ListActiveEgressLeaseBlocksByAccounts(context.Context, []uint64, time.Time) (map[uint64]accountdomain.EgressLeaseBlock, error)
 }
 
 type UpdateInput struct {
@@ -679,6 +685,13 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 	if err != nil {
 		return nil, 0, err
 	}
+	leaseBlocks := map[uint64]accountdomain.EgressLeaseBlock{}
+	if repository, ok := s.accounts.(activeEgressLeaseRepository); ok {
+		leaseBlocks, err = repository.ListActiveEgressLeaseBlocksByAccounts(ctx, accountIDs, s.now())
+		if err != nil {
+			return nil, 0, err
+		}
+	}
 	views := make([]View, 0, len(values))
 	for _, value := range values {
 		view := s.newAccountView(value)
@@ -691,6 +704,11 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		}
 		view.Quota = newQuotaView(view.Billing, observedTokens[value.ID], recovery, value.ObservedModel, value.BuildSuperEntitled && value.Provider == accountdomain.ProviderBuild)
 		view.QuotaWindows = quotaWindows[value.ID]
+		if block, ok := leaseBlocks[value.ID]; ok {
+			cooldownUntil := block.CooldownUntil
+			view.LeaseCooldownUntil = &cooldownUntil
+			view.LeaseCooldownReason = block.Reason
+		}
 		views = append(views, view)
 	}
 	return views, total, nil

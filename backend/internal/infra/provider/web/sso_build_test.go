@@ -69,11 +69,14 @@ func TestSSOBuildFlowMapsDeadSSOToUnauthorized(t *testing.T) {
 	}
 }
 
+// TestSSOBuildFlowUsesAuthEndpointsOnly 验证授权请求携带 consent 令牌及浏览器来源。
 func TestSSOBuildFlowUsesAuthEndpointsOnly(t *testing.T) {
 	client := &scriptedSSOClient{responses: []*http.Response{
 		{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(
 			`{"device_code":"dc","user_code":"uc","interval":1,"expires_in":1800}`))},
-		{StatusCode: http.StatusSeeOther, Header: http.Header{"Location": []string{"https://accounts.x.ai/oauth2/device/consent"}}, Body: io.NopCloser(strings.NewReader(""))},
+		{StatusCode: http.StatusSeeOther, Header: http.Header{"Location": []string{"https://accounts.x.ai/oauth2/device/consent?user_code=uc"}}, Body: io.NopCloser(strings.NewReader(""))},
+		{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(
+			`<html><form action="https://auth.x.ai/oauth2/device/approve" method="POST"><input type="hidden" name="consent_token" value="ct-123"/></form></html>`))},
 		{StatusCode: http.StatusSeeOther, Header: http.Header{"Location": []string{"https://accounts.x.ai/oauth2/device/done"}}, Body: io.NopCloser(strings.NewReader(""))},
 		{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(
 			`{"access_token":"access","refresh_token":"refresh","expires_in":3600}`))},
@@ -83,13 +86,35 @@ func TestSSOBuildFlowUsesAuthEndpointsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if seed.AccessToken != "access" || seed.RefreshToken != "refresh" || len(client.requests) != 4 {
+	if seed.AccessToken != "access" || seed.RefreshToken != "refresh" || len(client.requests) != 5 {
 		t.Fatalf("seed=%#v requests=%d", seed, len(client.requests))
 	}
 	for _, request := range client.requests {
-		if request.URL.Hostname() != "auth.x.ai" {
-			t.Fatalf("device flow visited unexpected host %q", request.URL.Hostname())
+		host := request.URL.Hostname()
+		if host != "auth.x.ai" && host != "accounts.x.ai" {
+			t.Fatalf("device flow visited unexpected host %q", host)
 		}
+	}
+	approve := client.requests[3]
+	if approve.URL.Hostname() != "auth.x.ai" || !strings.Contains(approve.URL.Path, "approve") {
+		t.Fatalf("request[3] = %s, want approve POST", approve.URL)
+	}
+	if approve.Header.Get("Origin") != "https://accounts.x.ai" {
+		t.Fatalf("approve missing Origin header: %v", approve.Header)
+	}
+	if approve.Header.Get("Referer") != "https://accounts.x.ai/oauth2/device/consent?user_code=uc" {
+		t.Fatalf("approve Referer = %q", approve.Header.Get("Referer"))
+	}
+	body, err := io.ReadAll(approve.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form, err := url.ParseQuery(string(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if form.Get("consent_token") != "ct-123" || form.Get("user_code") != "uc" {
+		t.Fatalf("approve form = %v", form)
 	}
 }
 
@@ -98,7 +123,7 @@ func TestSSOBuildFlowVerifyDoesNotFollowRedirect(t *testing.T) {
 		{StatusCode: http.StatusSeeOther, Header: http.Header{"Location": []string{"https://accounts.x.ai/oauth2/device/consent"}}, Body: io.NopCloser(strings.NewReader(""))},
 	}}
 	flow := &ssoBuildFlow{client: client, userAgent: "lease-agent", cookies: map[string]string{"sso": "live"}}
-	status, finalURL, _, err := flow.doWithFollow(context.Background(), http.MethodPost, ssoVerifyURL, url.Values{"user_code": {"uc"}}, false)
+	status, finalURL, _, err := flow.doWithFollow(context.Background(), http.MethodPost, ssoVerifyURL, url.Values{"user_code": {"uc"}}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,5 +169,19 @@ func TestSSOBuildConversionSanitizesTokenAndURLs(t *testing.T) {
 		if safeXAIURL(value) {
 			t.Fatalf("unsafe URL accepted: %s", value)
 		}
+	}
+}
+
+// TestScrapeConsentToken 验证授权令牌解析不依赖属性排列。
+func TestScrapeConsentToken(t *testing.T) {
+	page := []byte(`<input type="hidden" name="user_code" value="x"/><input type="hidden" name="consent_token" value="tok-abc-123"/>`)
+	if got := scrapeConsentToken(page); got != "tok-abc-123" {
+		t.Fatalf("scrapeConsentToken = %q", got)
+	}
+	if got := scrapeConsentToken([]byte(`<input value="tok-reordered" type="hidden" name="consent_token">`)); got != "tok-reordered" {
+		t.Fatalf("reordered consent input = %q", got)
+	}
+	if got := scrapeConsentToken([]byte(`<input name="other" value="x"/>`)); got != "" {
+		t.Fatalf("expected empty, got %q", got)
 	}
 }

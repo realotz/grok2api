@@ -2432,8 +2432,20 @@ function AccountStatus({ account }: { account: AccountDTO }) {
       </StatusTooltip>
     );
   }
-  if (account.cooldownUntil && new Date(account.cooldownUntil) > new Date()) {
-    return <Badge variant="secondary" className="bg-amber-500/10 text-amber-700 dark:text-amber-300">{t("accounts.statusCooldown")}</Badge>;
+  const cooldowns = [
+    account.cooldownUntil ? { until: account.cooldownUntil, reason: account.lastError } : undefined,
+    account.leaseCooldownUntil ? { until: account.leaseCooldownUntil, reason: account.leaseCooldownReason } : undefined,
+  ].filter((value): value is { until: string; reason: string | undefined } => Boolean(value && new Date(value.until) > new Date()));
+  if (cooldowns.length > 0) {
+    const cooldown = cooldowns.reduce((latest, value) => new Date(value.until) > new Date(latest.until) ? value : latest);
+    const detail = cooldown.reason
+      ? t("accounts.cooldownUntilWithReason", { time: formatDateTime(cooldown.until, i18n.language), reason: cooldown.reason })
+      : t("accounts.cooldownUntil", { time: formatDateTime(cooldown.until, i18n.language) });
+    return (
+      <StatusTooltip content={detail}>
+        <Badge variant="secondary" className="bg-amber-500/10 text-amber-700 dark:text-amber-300">{t("accounts.statusCooldown")}</Badge>
+      </StatusTooltip>
+    );
   }
   return <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">{t("accounts.statusActive")}</Badge>;
 }

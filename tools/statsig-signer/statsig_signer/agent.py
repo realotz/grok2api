@@ -166,7 +166,7 @@ def _kernel(
 ) -> HermesKernel:
     base = os.environ.get("GROK2API_BASE", "http://127.0.0.1:18000/v1")
     key = os.environ.get("GROK2API_KEY", "").strip()
-    model = os.environ.get("GROK2API_MODEL", "grok-4.6")
+    model = os.environ.get("GROK2API_MODEL", "grok-4.7")
     if not key:
         raise RuntimeError("Hermes 需要 GROK2API_KEY 指向 grok2api 客户端密钥")
     extra = dict(capture_kwargs or {})

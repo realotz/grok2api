@@ -149,6 +149,7 @@ class Config:
         return config
 
     def validate(self) -> None:
+        """校验服务连接、Grok 4.7 探针和质量守护策略。"""
         parsed = urllib.parse.urlparse(self.base_url)
         try:
             hostname = parsed.hostname
@@ -166,7 +167,9 @@ class Config:
             raise ValueError("GROK2API_BASE_URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
         if not self.internal_token:
             raise ValueError("quality guard bootstrap internal token is missing")
-        if not self.model or not self.prompt or not self.expected:
+        if not is_quality_guard_model(self.model):
+            raise ValueError("quality guard model must be grok-4.7")
+        if not self.prompt or not self.expected:
             raise ValueError("model, prompt, and expected marker must not be empty")
         if self.mode not in {"active", "passive", "hybrid"}:
             raise ValueError("qualityGuard.mode must be active, passive, or hybrid")
@@ -517,9 +520,18 @@ def resolve_probe_profile(path: Path, profile_id: str = "") -> tuple[str, dict[s
     return chosen, None
 
 
+def is_quality_guard_model(value: str) -> bool:
+    """仅接受 Grok 4.7 模型及其命名空间和后缀别名。"""
+    slug = value.strip().lower().rsplit("/", 1)[-1]
+    return slug == "grok-4.7" or slug.startswith("grok-4.7-")
+
+
 def classify_audit(value: dict[str, Any], config: Config) -> tuple[str, str, float, int]:
+    """仅对 Grok 4.7 的成功流式审计执行被动质量检测。"""
     if value.get("provider") != "grok_build" or not bool(value.get("streaming")):
         return "ignored", "not_build_stream", 0.0, 0
+    if not is_quality_guard_model(str(value.get("modelUpstreamModel") or "")):
+        return "ignored", "not_guard_model", 0.0, 0
     status = int(value.get("statusCode") or 0)
     if status < 200 or status >= 300 or value.get("errorCode"):
         return "ignored", "unsuccessful", 0.0, 0

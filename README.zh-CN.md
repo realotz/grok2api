@@ -360,8 +360,8 @@ Hysteria 与 TUIC 暂未支持。FlareSolverr 仅接受 HTTP/SOCKS 代理地址�
 ```yaml
 qualityGuard:
   enabled: true
-  model: "grok-4.6"
-  # 思考模型缺流式 reasoning 时先扣住响应，换号再打，不把降智正文发给用户。
+  model: "grok-4.7"
+  # Grok 4.7 缺流式 reasoning 时先扣住响应，换号再打，不把降智正文发给用户。
   # 最多观察 30 秒；stub 加上足够可见输出在超时后扣住（TUI 30s 后的短问候），
   # 空 stub 继续等。floor 已达标但 1 秒内吐短回复的也扣。
   requestRetry:
@@ -374,7 +374,7 @@ qualityGuard:
     idleAccountCooldown: 15m
 ```
 
-`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。`config.example.yaml` 里 `enabled` 仍为 false，打开后才拦截。开启后，可见输出达到 `minOutputTokens` 且全程无流式 reasoning 时**不发给用户**；只有可安全重放的无状态请求才会排除账号重试。TUI 续聊（`previous_response_id`）和 hosted tools 仍会进入 hold 检测，但质量拦截不会把账号绑定状态或有副作用的工具跨账号重放，最终按 `onExhausted` 返回 `503 quality_degraded` 或放出当前响应。上下文压缩、图片、视频和 ForcedEgress 探针不受影响。
+`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立，仅作用于 Grok 4.7，旧模型直接跳过质量守护。`config.example.yaml` 里 `enabled` 仍为 false，打开后才拦截。开启后，可见输出达到 `minOutputTokens` 且全程无流式 reasoning 时**不发给用户**；只有可安全重放的无状态请求才会排除账号重试。TUI 续聊（`previous_response_id`）和 hosted tools 仍会进入 hold 检测，但质量拦截不会把账号绑定状态或有副作用的工具跨账号重放，最终按 `onExhausted` 返回 `503 quality_degraded` 或放出当前响应。上下文压缩、图片、视频和 ForcedEgress 探针不受影响。
 
 ```bash
 docker compose --profile quality-guard up -d --build

@@ -14,7 +14,7 @@ import (
 func TestPrepareWritesPrivateScopedBootstrap(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bootstrap.json")
 	value := config.QualityGuardConfig{
-		Enabled: true, Model: "grok-4.5", NodeIDs: []uint64{2, 9}, Mode: "hybrid",
+		Enabled: true, Model: "grok-4.7", NodeIDs: []uint64{2, 9}, Mode: "hybrid",
 		ActiveInterval: config.Duration(30 * time.Minute), PassivePollInterval: config.Duration(5 * time.Second),
 		SoftTPS: 500, HardTPS: 1000, ConsecutiveSoft: 2, ConsecutiveErrors: 2,
 		QuarantineDuration: config.Duration(5 * time.Minute), NoAccountBackoff: config.Duration(5 * time.Minute),

@@ -511,11 +511,11 @@ func TestObserveQualityConvertedEncryptedThinking(t *testing.T) {
 	t.Parallel()
 	cipher := strings.Repeat("A", defaultMinEncryptedBytes*8)
 	source := sse(
-		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6"}}`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.7"}}`,
 		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
 		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"`+cipher+`"}}`,
 		`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("word ", 40)+`"}`,
-		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.6","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.7","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
 	)
 	tests := []struct {
 		name      string
@@ -551,11 +551,11 @@ func TestObserveQualityConvertedShortEncryptedStubDoesNotBypassFloor(t *testing.
 	t.Parallel()
 	const stub = "gAAAA-cipher"
 	source := sse(
-		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6"}}`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.7"}}`,
 		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
 		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"`+stub+`"}}`,
 		`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("word ", 40)+`"}`,
-		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.6","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.7","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
 	)
 	for _, test := range []struct {
 		name      string
@@ -785,11 +785,11 @@ func TestPeekQualityStreamCipherBurstWaitsAcrossEventSplits(t *testing.T) {
 	t.Parallel()
 	cipher := strings.Repeat("A", 400)
 	createdAndCipher := sse(
-		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6","usage":{"output_tokens":80,"output_tokens_details":{"reasoning_tokens":80}}}}`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.7","usage":{"output_tokens":80,"output_tokens_details":{"reasoning_tokens":80}}}}`,
 		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"`+cipher+`"}}`,
 	)
 	visible := sse(`data: {"type":"response.output_text.delta","delta":"你好"}`)
-	completed := sse(`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.6","usage":{"output_tokens":82,"output_tokens_details":{"reasoning_tokens":80}}}}`)
+	completed := sse(`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.7","usage":{"output_tokens":82,"output_tokens_details":{"reasoning_tokens":80}}}}`)
 	cfg := QualityRetryRuntime{MinOutputTokens: 8, HoldTimeout: 2 * time.Second}
 
 	coalesced, coalescedVerdict, _, _, err := peekQualityStream(
@@ -1316,13 +1316,21 @@ func TestQualityPeekAbortErrorPrefersIdleCause(t *testing.T) {
 	}
 }
 
+// TestShouldHoldQualityStreamGates 验证只有 Grok 4.7 请求进入质量拦截。
 func TestShouldHoldQualityStreamGates(t *testing.T) {
 	t.Parallel()
 	cfg := QualityRetryRuntime{Enabled: true, MaxAttempts: 2, MinOutputTokens: 32}
-	route := modeldomain.Route{Provider: accountdomain.ProviderBuild, UpstreamModel: "grok-4.6", PublicID: "grok-4.6"}
-	input := Input{Streaming: true, PublicModel: "grok-4.6"}
+	route := modeldomain.Route{Provider: accountdomain.ProviderBuild, UpstreamModel: "grok-4.7", PublicID: "grok-4.7"}
+	input := Input{Streaming: true, PublicModel: "grok-4.7"}
 	if !shouldHoldQualityStream(input, nil, route, audit.OperationChat, cfg) {
 		t.Fatal("expected hold on thinking build chat")
+	}
+	for _, oldModel := range []string{"grok-4.5", "grok-4.6"} {
+		oldRoute := route
+		oldRoute.UpstreamModel = oldModel
+		if shouldHoldQualityStream(input, nil, oldRoute, audit.OperationChat, cfg) {
+			t.Fatalf("Grok 4.7 public alias must not guard upstream %s", oldModel)
+		}
 	}
 	off := cfg
 	off.Enabled = false
@@ -1377,7 +1385,7 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 	}{
 		{name: "client tools schema", body: `{"tools":[{"type":"function","function":{"name":"charge"}}]}`},
 		{name: "legacy functions schema", body: `{"functions":[{"name":"charge"}]}`},
-		{name: "tui tools schema plus user input", body: `{"model":"grok-4.6","tools":[{"type":"function","name":"read_file"}],"input":[{"role":"user","content":"hello"}]}`},
+		{name: "tui tools schema plus user input", body: `{"model":"grok-4.7","tools":[{"type":"function","name":"read_file"}],"input":[{"role":"user","content":"hello"}]}`},
 		{name: "local shell declaration", body: `{"tools":[{"type":"local_shell"}]}`},
 		{name: "local environment shell declaration", body: `{"tools":[{"type":"shell","environment":{"type":"local"}}]}`},
 		{name: "apply patch declaration", body: `{"tools":[{"type":"apply_patch"}]}`},
@@ -1491,27 +1499,27 @@ func TestAttemptLoopQualityHoldPreservesReplaySafety(t *testing.T) {
 		{
 			name:        "previous response remains account bound",
 			previous:    true,
-			body:        `{"model":"grok-4.6","previous_response_id":"resp-root","input":"continue","stream":true}`,
+			body:        `{"model":"grok-4.7","previous_response_id":"resp-root","input":"continue","stream":true}`,
 			onExhausted: qualityRetryFailClosed,
 			wantError:   true,
 			wantMissing: true,
 		},
 		{
 			name:        "hosted tool fail closed executes once",
-			body:        `{"model":"grok-4.6","tools":[{"type":"web_search"}],"input":"search","stream":true}`,
+			body:        `{"model":"grok-4.7","tools":[{"type":"web_search"}],"input":"search","stream":true}`,
 			onExhausted: qualityRetryFailClosed,
 			wantError:   true,
 			wantMissing: true,
 		},
 		{
 			name:        "hosted tool fail open delivers same attempt",
-			body:        `{"model":"grok-4.6","tools":[{"type":"web_search"}],"input":"search","stream":true}`,
+			body:        `{"model":"grok-4.7","tools":[{"type":"web_search"}],"input":"search","stream":true}`,
 			onExhausted: qualityRetryFailOpen,
 			wantMissing: true,
 		},
 		{
 			name:        "hosted tool empty stream executes once",
-			body:        `{"model":"grok-4.6","tools":[{"type":"web_search"}],"input":"search","stream":true}`,
+			body:        `{"model":"grok-4.7","tools":[{"type":"web_search"}],"input":"search","stream":true}`,
 			onExhausted: qualityRetryFailClosed,
 			wantError:   true,
 			empty:       true,
@@ -1547,11 +1555,11 @@ func TestAttemptLoopQualityHoldPreservesReplaySafety(t *testing.T) {
 				}
 				credentials = append(credentials, credential)
 			}
-			if err := modelRepo.UpsertDiscovered(ctx, accountdomain.ProviderBuild, []string{"grok-4.6"}); err != nil {
+			if err := modelRepo.UpsertDiscovered(ctx, accountdomain.ProviderBuild, []string{"grok-4.7"}); err != nil {
 				t.Fatal(err)
 			}
 			for _, credential := range credentials {
-				if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-4.6"}, time.Now().UTC()); err != nil {
+				if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-4.7"}, time.Now().UTC()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1574,15 +1582,15 @@ func TestAttemptLoopQualityHoldPreservesReplaySafety(t *testing.T) {
 			}
 
 			noThinking := sse(
-				`data: {"type":"response.created","response":{"id":"resp-bad","model":"grok-4.6"}}`,
+				`data: {"type":"response.created","response":{"id":"resp-bad","model":"grok-4.7"}}`,
 				`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("bad ", 20)+`"}`,
-				`data: {"type":"response.completed","response":{"id":"resp-bad","model":"grok-4.6","usage":{"output_tokens":40,"output_tokens_details":{"reasoning_tokens":0}}}}`,
+				`data: {"type":"response.completed","response":{"id":"resp-bad","model":"grok-4.7","usage":{"output_tokens":40,"output_tokens_details":{"reasoning_tokens":0}}}}`,
 			)
 			thinking := sse(
-				`data: {"type":"response.created","response":{"id":"resp-good","model":"grok-4.6"}}`,
+				`data: {"type":"response.created","response":{"id":"resp-good","model":"grok-4.7"}}`,
 				`data: {"type":"response.reasoning_summary_text.delta","delta":"real reasoning"}`,
 				`data: {"type":"response.output_text.delta","delta":"good answer"}`,
-				`data: {"type":"response.completed","response":{"id":"resp-good","model":"grok-4.6","usage":{"output_tokens":40,"output_tokens_details":{"reasoning_tokens":20}}}}`,
+				`data: {"type":"response.completed","response":{"id":"resp-good","model":"grok-4.7","usage":{"output_tokens":40,"output_tokens_details":{"reasoning_tokens":20}}}}`,
 			)
 			firstBody := noThinking
 			if test.empty {
@@ -1603,7 +1611,7 @@ func TestAttemptLoopQualityHoldPreservesReplaySafety(t *testing.T) {
 			})
 
 			input := Input{
-				RequestID: "req-quality-safe", ClientKey: key, PublicModel: "grok-4.6",
+				RequestID: "req-quality-safe", ClientKey: key, PublicModel: "grok-4.7",
 				Streaming: true, Body: []byte(test.body),
 			}
 			if test.previous {
@@ -1665,11 +1673,11 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 		}
 		credentials = append(credentials, credential)
 	}
-	if err := modelRepo.UpsertDiscovered(ctx, accountdomain.ProviderBuild, []string{"grok-4.6"}); err != nil {
+	if err := modelRepo.UpsertDiscovered(ctx, accountdomain.ProviderBuild, []string{"grok-4.7"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, credential := range credentials {
-		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-4.6"}, time.Now().UTC()); err != nil {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-4.7"}, time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1705,8 +1713,8 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 	service.UpdateQualityRetry(QualityRetryRuntime{Enabled: true, MaxAttempts: 3, MinOutputTokens: 32, OnExhausted: qualityRetryFailOpen, HoldTimeout: time.Second})
 
 	result, err := service.CreateChatCompletion(ctx, Input{
-		RequestID: "req-quality-hold", ClientKey: clientKey, PublicModel: "grok-4.6", Streaming: true,
-		Body: []byte(`{"model":"grok-4.6","messages":[{"role":"user","content":"write a game"}],"stream":true}`),
+		RequestID: "req-quality-hold", ClientKey: clientKey, PublicModel: "grok-4.7", Streaming: true,
+		Body: []byte(`{"model":"grok-4.7","messages":[{"role":"user","content":"write a game"}],"stream":true}`),
 	})
 	if err != nil {
 		t.Fatalf("attempt loop should deliver after withhold retry, err=%v", err)
@@ -1793,10 +1801,10 @@ func TestAttemptLoopQualityHoldFailOpenKeepsSingleAccountBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := modelRepo.UpsertDiscovered(ctx, accountdomain.ProviderBuild, []string{"grok-4.6"}); err != nil {
+	if err := modelRepo.UpsertDiscovered(ctx, accountdomain.ProviderBuild, []string{"grok-4.7"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-4.6"}, time.Now().UTC()); err != nil {
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-4.7"}, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
@@ -1826,8 +1834,8 @@ func TestAttemptLoopQualityHoldFailOpenKeepsSingleAccountBody(t *testing.T) {
 	})
 
 	result, err := service.CreateChatCompletion(ctx, Input{
-		RequestID: "req-quality-single", ClientKey: clientKey, PublicModel: "grok-4.6", Streaming: true,
-		Body: []byte(`{"model":"grok-4.6","messages":[{"role":"user","content":"write a game"}],"stream":true}`),
+		RequestID: "req-quality-single", ClientKey: clientKey, PublicModel: "grok-4.7", Streaming: true,
+		Body: []byte(`{"model":"grok-4.7","messages":[{"role":"user","content":"write a game"}],"stream":true}`),
 	})
 	if err != nil {
 		t.Fatalf("fail-open should deliver the only account body, err=%v", err)
@@ -1883,11 +1891,11 @@ func TestAttemptLoopQualityFailOpenFallbackAndTotalAttemptCap(t *testing.T) {
 		}
 		credentials = append(credentials, credential)
 	}
-	if err := modelRepo.UpsertDiscovered(ctx, accountdomain.ProviderBuild, []string{"grok-4.6"}); err != nil {
+	if err := modelRepo.UpsertDiscovered(ctx, accountdomain.ProviderBuild, []string{"grok-4.7"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, credential := range credentials {
-		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-4.6"}, time.Now().UTC()); err != nil {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-4.7"}, time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1920,8 +1928,8 @@ func TestAttemptLoopQualityFailOpenFallbackAndTotalAttemptCap(t *testing.T) {
 	})
 
 	result, err := service.CreateChatCompletion(ctx, Input{
-		RequestID: "req-quality-fallback", ClientKey: clientKey, PublicModel: "grok-4.6", Streaming: true,
-		Body: []byte(`{"model":"grok-4.6","messages":[{"role":"user","content":"write a game"}],"stream":true}`),
+		RequestID: "req-quality-fallback", ClientKey: clientKey, PublicModel: "grok-4.7", Streaming: true,
+		Body: []byte(`{"model":"grok-4.7","messages":[{"role":"user","content":"write a game"}],"stream":true}`),
 	})
 	if err != nil {
 		t.Fatalf("fail-open should return the retained response after later failures: %v", err)

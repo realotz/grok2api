@@ -158,7 +158,7 @@ func TestProxyProfileListUsesBoundedPaginationAndSearch(t *testing.T) {
 
 func TestQualityGuardStatusReadsOnlyPublicState(t *testing.T) {
 	path := t.TempDir() + "/state.json"
-	state := `{"version":1,"started_at":10,"updated_at":20,"last_active_cycle_at":15,"last_passive_poll_at":19,"password":"must-not-leak","guard":{"mode":"hybrid","model":"grok-4.5","client_key_id":"6","node_ids":["8"],"active_interval_seconds":1800,"passive_poll_seconds":5,"soft_tps":500,"hard_tps":1000,"consecutive_soft":2,"consecutive_errors":2,"quarantine_seconds":300,"min_healthy_nodes":3,"max_output_tokens":384,"fail_closed":true,"min_generation_ms":1234,"prompt":"private-probe-prompt","expected":"private-marker"},"protected_node_ids":["9"],"nodes":{"8":{"observe_only":true,"observe_only_reason":"account_bound_proxy","active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":0,"disabled_by_guard":false,"last_reason":"","last_probe_at":15,"last_observed_at":19,"last_source":"passive","last_classification":"healthy","last_output_tps":42.5,"last_output_tokens":100,"last_first_token_ms":900,"last_duration_ms":4000}},"statistics":{"started_at":11,"active":{"total":7,"healthy":6,"soft":1,"hard":0,"errors":0,"output_tokens":1400},"passive":{"total":9,"healthy":8,"soft":0,"hard":1,"errors":0,"output_tokens":1800},"actions":{"quarantined":1,"restored":0,"suppressed":0}}}`
+	state := `{"version":1,"started_at":10,"updated_at":20,"last_active_cycle_at":15,"last_passive_poll_at":19,"password":"must-not-leak","guard":{"mode":"hybrid","model":"grok-4.7","client_key_id":"6","node_ids":["8"],"active_interval_seconds":1800,"passive_poll_seconds":5,"soft_tps":500,"hard_tps":1000,"consecutive_soft":2,"consecutive_errors":2,"quarantine_seconds":300,"min_healthy_nodes":3,"max_output_tokens":384,"fail_closed":true,"min_generation_ms":1234,"prompt":"private-probe-prompt","expected":"private-marker"},"protected_node_ids":["9"],"nodes":{"8":{"observe_only":true,"observe_only_reason":"account_bound_proxy","active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":0,"disabled_by_guard":false,"last_reason":"","last_probe_at":15,"last_observed_at":19,"last_source":"passive","last_classification":"healthy","last_output_tps":42.5,"last_output_tokens":100,"last_first_token_ms":900,"last_duration_ms":4000}},"statistics":{"started_at":11,"active":{"total":7,"healthy":6,"soft":1,"hard":0,"errors":0,"output_tokens":1400},"passive":{"total":9,"healthy":8,"soft":0,"hard":1,"errors":0,"output_tokens":1800},"actions":{"quarantined":1,"restored":0,"suppressed":0}}}`
 	if err := os.WriteFile(path, []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestQualityGuardStatusReadsOnlyPublicState(t *testing.T) {
 
 func TestQualityGuardStatusFiltersNodeDetailsAndKeepsGlobalSummary(t *testing.T) {
 	path := t.TempDir() + "/state.json"
-	state := `{"version":1,"started_at":10,"updated_at":20,"guard":{"mode":"hybrid","model":"grok-4.5","node_ids":["8","9"],"active_interval_seconds":1800,"passive_poll_seconds":5,"soft_tps":500,"hard_tps":1000,"consecutive_soft":2,"consecutive_errors":2,"quarantine_seconds":300,"min_healthy_nodes":1,"max_output_tokens":384},"nodes":{"8":{"active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":0,"disabled_by_guard":false,"last_reason":"","last_probe_at":15,"last_observed_at":19,"last_source":"passive","last_classification":"healthy","last_output_tps":42.5,"last_output_tokens":100,"last_first_token_ms":900,"last_duration_ms":4000},"9":{"quarantined_lease_count":2,"active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":30,"disabled_by_guard":true,"last_reason":"hard_tps","last_probe_at":16,"last_observed_at":20,"last_source":"active","last_classification":"hard","last_output_tps":5,"last_output_tokens":20,"last_first_token_ms":1200,"last_duration_ms":5000}}}`
+	state := `{"version":1,"started_at":10,"updated_at":20,"guard":{"mode":"hybrid","model":"grok-4.7","node_ids":["8","9"],"active_interval_seconds":1800,"passive_poll_seconds":5,"soft_tps":500,"hard_tps":1000,"consecutive_soft":2,"consecutive_errors":2,"quarantine_seconds":300,"min_healthy_nodes":1,"max_output_tokens":384},"nodes":{"8":{"active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":0,"disabled_by_guard":false,"last_reason":"","last_probe_at":15,"last_observed_at":19,"last_source":"passive","last_classification":"healthy","last_output_tps":42.5,"last_output_tokens":100,"last_first_token_ms":900,"last_duration_ms":4000},"9":{"quarantined_lease_count":2,"active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":30,"disabled_by_guard":true,"last_reason":"hard_tps","last_probe_at":16,"last_observed_at":20,"last_source":"active","last_classification":"hard","last_output_tps":5,"last_output_tokens":20,"last_first_token_ms":1200,"last_duration_ms":5000}}}`
 	if err := os.WriteFile(path, []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestQualityGuardProfilesCRUDAndStatusOmitsPrompt(t *testing.T) {
 	directory := t.TempDir()
 	statePath := directory + "/state.json"
 	configPath := directory + "/runtime-config.json"
-	if err := os.WriteFile(statePath, []byte(`{"version":1,"guard":{"mode":"hybrid","model":"grok-4.5","node_ids":["8"]},"nodes":{}}`), 0o600); err != nil {
+	if err := os.WriteFile(statePath, []byte(`{"version":1,"guard":{"mode":"hybrid","model":"grok-4.7","node_ids":["8"]},"nodes":{}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewHandler(nil, statePath, configPath)
@@ -462,7 +462,7 @@ func TestUpdateQualityGuardConfigWritesPrivateAtomicFile(t *testing.T) {
 	directory := t.TempDir()
 	statePath := directory + "/state.json"
 	configPath := directory + "/runtime-config.json"
-	state := `{"version":1,"guard":{"mode":"hybrid","model":"grok-4.5","client_key_id":"6","node_ids":["8","9","10","11","12"],"active_interval_seconds":1800,"passive_poll_seconds":5,"soft_tps":500,"hard_tps":1000,"consecutive_soft":2,"consecutive_errors":2,"quarantine_seconds":300,"min_healthy_nodes":3,"max_output_tokens":384,"prompt":"probe","expected":"QUALITY_OK"},"nodes":{}}`
+	state := `{"version":1,"guard":{"mode":"hybrid","model":"grok-4.7","client_key_id":"6","node_ids":["8","9","10","11","12"],"active_interval_seconds":1800,"passive_poll_seconds":5,"soft_tps":500,"hard_tps":1000,"consecutive_soft":2,"consecutive_errors":2,"quarantine_seconds":300,"min_healthy_nodes":3,"max_output_tokens":384,"prompt":"probe","expected":"QUALITY_OK"},"nodes":{}}`
 	if err := os.WriteFile(statePath, []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}

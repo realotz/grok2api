@@ -191,7 +191,7 @@ func TestDegradeAccountsListsHardHitsAndRejectsUnknownWindow(t *testing.T) {
 	first := int64(100)
 	accountID := uint64(11)
 	if err := repo.Create(ctx, auditdomain.Record{
-		RequestID: "degrade-hard", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", AccountID: &accountID, AccountName: "noisy",
+		RequestID: "degrade-hard", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7", AccountID: &accountID, AccountName: "noisy",
 		EgressNodeName: "edge-1", StatusCode: 200, Streaming: true, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 1100, CreatedAt: now.Add(-time.Minute),
 	}); err != nil {
 		t.Fatal(err)

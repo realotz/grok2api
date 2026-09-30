@@ -61,7 +61,7 @@ python3 -m statsig_signer update --browser local
 ```bash
 export GROK2API_BASE=http://127.0.0.1:18000/v1
 export GROK2API_KEY=...
-export GROK2API_MODEL=grok-4
+export GROK2API_MODEL=grok-4.7
 python3 -m statsig_signer update --browser local
 ```
 

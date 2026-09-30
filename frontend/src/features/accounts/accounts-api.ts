@@ -111,6 +111,8 @@ export type AccountDTO = {
   minimumRemaining: number;
   failureCount: number;
   cooldownUntil?: string;
+  leaseCooldownUntil?: string;
+  leaseCooldownReason?: string;
   lastError?: string;
   enabledDoesNotClearCooldown?: boolean;
   lastUsedAt?: string;
@@ -206,7 +208,7 @@ const accountValidator = hasShape({
   modelSyncFailed: isOptional(isBoolean), refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
   egressNodeId: isOptional(isString), egressAssignmentMode: isOptional(isOneOf("manual", "auto")),
   lastRefreshErrorStatus: isOptional(isNumber), lastRefreshErrorCode: isOptional(isString), lastRefreshErrorMessage: isOptional(isString), lastRefreshErrorResponse: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
-  failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
+  failureCount: isNumber, cooldownUntil: isOptional(isString), leaseCooldownUntil: isOptional(isString), leaseCooldownReason: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
   enabledDoesNotClearCooldown: isOptional(isBoolean),
   linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")), linkedAccounts: isOptional(isArrayOf(linkedAccountValidator)),
   createdAt: isString, billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),

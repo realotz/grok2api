@@ -293,12 +293,12 @@ func TestPreferVideo15Routes(t *testing.T) {
 		{ID: 3, Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-video-1.5"},
 		{ID: 4, Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-video"},
 	}
-	short := preferVideo15Routes(routes, 6)
+	short := preferVideo15Routes(routes)
 	if got := routeIDs(short); !equalUint64s(got, []uint64{3, 1, 2, 4}) {
 		t.Fatalf("6s routes = %#v", got)
 	}
-	long := preferVideo15Routes(routes, 8)
-	if got := routeIDs(long); !equalUint64s(got, []uint64{1, 2, 3, 4}) {
+	long := preferVideo15Routes(routes)
+	if got := routeIDs(long); !equalUint64s(got, []uint64{3, 1, 2, 4}) {
 		t.Fatalf(">6s routes = %#v", got)
 	}
 	if routes[0].ID != 1 {

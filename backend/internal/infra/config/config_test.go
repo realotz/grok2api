@@ -244,7 +244,7 @@ bootstrapAdmin:
 qualityGuard:
   enabled: true
   clientKeyID: 999
-  model: "grok-4.5"
+  model: "grok-4.7"
   nodeIDs: [2, 9]
   minimumHealthyNodes: 1
   activeInterval: 45m
@@ -303,6 +303,7 @@ func TestQualityGuardRequestRetryAccountCooldownBounds(t *testing.T) {
 	}
 }
 
+// TestEnabledQualityGuardUsesManagedIdentity 验证内置身份和仅限 Grok 4.7 的探针配置。
 func TestEnabledQualityGuardUsesManagedIdentity(t *testing.T) {
 	value := defaultConfig()
 	value.Secrets.JWTSecret = "12345678901234567890123456789012"
@@ -311,6 +312,12 @@ func TestEnabledQualityGuardUsesManagedIdentity(t *testing.T) {
 	value.QualityGuard.Enabled = true
 	if err := value.Validate(); err != nil {
 		t.Fatalf("enabled quality guard should not require a client key ID: %v", err)
+	}
+	for _, oldModel := range []string{"grok-4.5", "grok-4.6"} {
+		value.QualityGuard.Model = oldModel
+		if err := value.Validate(); err == nil {
+			t.Fatalf("quality guard accepted old model %s", oldModel)
+		}
 	}
 }
 

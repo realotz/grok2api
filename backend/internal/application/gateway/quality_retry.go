@@ -440,6 +440,7 @@ func CommitQualityHold(verdict QualityVerdict, qualityAttempt, maxAttempts int, 
 	}
 }
 
+// shouldHoldQualityStream 仅对 Grok 4.7 的推理请求启用质量拦截。
 func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwnership, route modeldomain.Route, operation audit.Operation, cfg QualityRetryRuntime) bool {
 	if !cfg.Enabled || !input.Streaming || input.ForcedEgressNodeID != 0 || input.skipQualityHold {
 		return false
@@ -457,6 +458,9 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 		return false
 	}
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
+		return false
+	}
+	if !modeldomain.IsGrok47LLM(route.UpstreamModel) {
 		return false
 	}
 	// TUI commonly declares tools and follow-ups carry previous_response_id.

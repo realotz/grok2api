@@ -1325,7 +1325,7 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
         let nextLastFrameFileID = lastFrameFileID || undefined;
         let nextReferenceURL = referenceURL.trim() || undefined;
         let nextReferenceFileID = referenceFileID || undefined;
-        let nextReferenceAudioURL = referenceAudioURL.trim() || undefined;
+        const nextReferenceAudioURL = referenceAudioURL.trim() || undefined;
         if (!nextImageFileID && nextImageURL && /^https?:\/\//i.test(nextImageURL)) {
           const staged = await importVideoInputFromURL(nextImageURL);
           nextImageURL = undefined;
@@ -1748,6 +1748,7 @@ function VideoResult({ requestId, status, loading, error, onRetry }: { requestId
 }
 
 
+// VoicePanel 按预览语言派生内置示例文本，保留用户编辑内容。
 function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePanelProps) {
   const { t } = useTranslation();
   const [subMode, setSubMode] = useState<"tts" | "stt">("tts");
@@ -1788,15 +1789,12 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
     ? voiceId
     : libraryVoices[0]?.voiceId ?? voiceId;
   const previewLang = previewLanguage(language);
-
-  useEffect(() => {
-    if (prompt === voiceLibraryTagsPhrase.zh || prompt === voiceLibraryTagsPhrase.en) {
-      setPrompt(voiceLibraryTagsPhrase[previewLang]);
-    }
-  }, [previewLang, prompt]);
+  const effectivePrompt = prompt === voiceLibraryTagsPhrase.zh || prompt === voiceLibraryTagsPhrase.en
+    ? voiceLibraryTagsPhrase[previewLang]
+    : prompt;
 
   const ttsMutation = useMutation({
-    mutationFn: () => synthesizeSpeech({ apiKey, model: activeModel || "grok-voice-latest", text: prompt.trim(), voiceId: activeVoiceId, language, speed: Number(speed) }),
+    mutationFn: () => synthesizeSpeech({ apiKey, model: activeModel || "grok-voice-latest", text: effectivePrompt.trim(), voiceId: activeVoiceId, language, speed: Number(speed) }),
     onSuccess: (result) => {
       stop();
       setTtsResult(result);
@@ -1821,7 +1819,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
     event.preventDefault();
     if (!apiKey || !activeModel) return;
     if (subMode === "tts") {
-      if (!prompt.trim() || ttsMutation.isPending) return;
+      if (!effectivePrompt.trim() || ttsMutation.isPending) return;
       ttsMutation.reset();
       ttsMutation.mutate();
       return;
@@ -1885,7 +1883,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
           <Button type="button" size="sm" variant={subMode === "stt" ? "secondary" : "ghost"} className="h-8 gap-1.5" onClick={() => { stop(); setSubMode("stt"); }}><Mic />{t("creativeConsole.transcribe")}</Button>
         </div>
         {subMode === "tts" ? (
-          <Textarea id="voice-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={t("creativeConsole.voicePlaceholder")} className="min-h-24 resize-none border-0 bg-transparent px-4 py-3 text-sm focus-visible:ring-0" />
+          <Textarea id="voice-prompt" value={effectivePrompt} onChange={(event) => setPrompt(event.target.value)} placeholder={t("creativeConsole.voicePlaceholder")} className="min-h-24 resize-none border-0 bg-transparent px-4 py-3 text-sm focus-visible:ring-0" />
         ) : (
           <div className="flex items-center gap-2 px-4 py-3">
             <input ref={fileInputRef} type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac" className="hidden" onChange={(event) => setAudioFile(event.target.files?.[0] ?? null)} />
@@ -1910,7 +1908,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
               />
             ) : null}
           </div>
-          <Button type="submit" size="icon" aria-label={subMode === "tts" ? t("creativeConsole.synthesize") : t("creativeConsole.transcribe")} disabled={!apiKey || !activeModel || busy || (subMode === "tts" ? !prompt.trim() : !audioFile)}>
+          <Button type="submit" size="icon" aria-label={subMode === "tts" ? t("creativeConsole.synthesize") : t("creativeConsole.transcribe")} disabled={!apiKey || !activeModel || busy || (subMode === "tts" ? !effectivePrompt.trim() : !audioFile)}>
             {busy ? <Loader2 className="animate-spin" /> : <ArrowUp />}
           </Button>
         </div>

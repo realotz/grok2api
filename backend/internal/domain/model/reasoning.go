@@ -84,6 +84,12 @@ func IsGrok45Or46LLM(value string) bool {
 	return slug == "grok-4.5" || slug == "grok-4.6" || strings.HasPrefix(slug, "grok-4.5-") || strings.HasPrefix(slug, "grok-4.6-")
 }
 
+// IsGrok47LLM 判断质量守护支持的 Grok 4.7 模型及其别名。
+func IsGrok47LLM(value string) bool {
+	slug := strings.ToLower(externalModelSlug(value))
+	return slug == "grok-4.7" || strings.HasPrefix(slug, "grok-4.7-")
+}
+
 // IsGrokComposerModel reports whether value belongs to the Composer family.
 // Composer uses an isolated upstream conversation and does not accept a
 // configurable reasoning effort, including when addressed through Build/.

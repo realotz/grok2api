@@ -2396,6 +2396,8 @@ Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Recor
 Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<string, string>, {
   clearCooldown: "解除冷却",
   cooldownCleared: "账号冷却已清除，可重新调度",
+  cooldownUntil: "冷却至 {{time}}",
+  cooldownUntilWithReason: "冷却至 {{time}} · {{reason}}",
   enabledDoesNotClearCooldown: "已开关账号，但冷却状态未变。请用「解除冷却」清除 cooldownUntil。",
   importAuth: "导入账号或 RT 文件", quickImportRT: "快速导入 RT",
   quickImportRTTitle: "快速导入 Grok Build Refresh Token", quickImportRTDescription: "支持粘贴多个 xAI Refresh Token，或上传每行一个 RT 的 TXT 文件。导入时会先换取 access token，后续自动续期会沿用对应的 OAuth client ID。",
@@ -2411,6 +2413,8 @@ Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<strin
 Object.assign(resources.en.translation.accounts as unknown as Record<string, string>, {
   clearCooldown: "Clear cooldown",
   cooldownCleared: "Account cooldown cleared; the account can be scheduled again",
+  cooldownUntil: "Cooling until {{time}}",
+  cooldownUntilWithReason: "Cooling until {{time}} · {{reason}}",
   enabledDoesNotClearCooldown: "Enabled state changed, but cooldown is unchanged. Use Clear cooldown to reset cooldownUntil.",
   importAuth: "Import accounts or RTs", quickImportRT: "Quick import RTs",
   quickImportRTTitle: "Quick import Grok Build refresh tokens", quickImportRTDescription: "Paste xAI refresh tokens or upload a TXT file with one RT per line. Import exchanges each RT for an access token, and later renewals retain its OAuth client ID.",

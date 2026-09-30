@@ -39,7 +39,7 @@ python3 -m statsig_signer serve --listen 127.0.0.1:8788
 export GROK_SSO=...   # 或 STATSIG_SECRETS
 export GROK2API_BASE=http://127.0.0.1:18000/v1
 export GROK2API_KEY=...
-export GROK2API_MODEL=grok-4.6
+export GROK2API_MODEL=grok-4.7
 python3 -m statsig_signer update --browser local
 python3 -m statsig_signer update --defer-capture   # 让 agent 自己 capture_page
 python3 -m statsig_signer watch --once             # HTML 指纹：sentry SHA / curves / chunks 哈希

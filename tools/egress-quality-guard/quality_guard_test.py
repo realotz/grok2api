@@ -21,7 +21,7 @@ SPEC.loader.exec_module(quality_guard)
 def config(**overrides):
     values = dict(
         base_url="http://grok2api:8000", internal_token="scoped-secret",
-        model="grok-4.5", node_ids=(), mode="hybrid", active_interval_seconds=1800,
+        model="grok-4.7", node_ids=(), mode="hybrid", active_interval_seconds=1800,
         passive_poll_seconds=5, passive_page_size=200, passive_max_pages=10, jitter_seconds=0,
         request_timeout_seconds=120, soft_tps=500.0, hard_tps=1000.0,
         consecutive_soft=2, consecutive_errors=2, quarantine_seconds=300,
@@ -59,7 +59,7 @@ class ClassificationTests(unittest.TestCase):
     def test_passive_speed_matches_panel_and_includes_reasoning_tokens(self):
         cfg = config()
         classification, reason, speed, output = quality_guard.classify_audit({
-            "provider": "grok_build", "streaming": True, "statusCode": 200,
+            "provider": "grok_build", "modelUpstreamModel": "grok-4.7", "streaming": True, "statusCode": 200,
             "firstTokenMs": 200, "durationMs": 1200,
             "outputTokens": 1050, "reasoningTokens": 950,
         }, cfg)
@@ -69,7 +69,7 @@ class ClassificationTests(unittest.TestCase):
     def test_passive_late_first_token_uses_full_duration(self):
         cfg = config()
         classification, reason, speed, output = quality_guard.classify_audit({
-            "provider": "grok_build", "streaming": True, "statusCode": 200,
+            "provider": "grok_build", "modelUpstreamModel": "grok-4.7", "streaming": True, "statusCode": 200,
             "firstTokenMs": 19763, "durationMs": 19827,
             "outputTokens": 1511, "reasoningTokens": 1471,
         }, cfg)
@@ -79,7 +79,7 @@ class ClassificationTests(unittest.TestCase):
     def test_passive_late_first_token_without_reasoning_remains_burst(self):
         cfg = config(fail_closed=True, min_generation_ms=1000)
         classification, reason, speed, output = quality_guard.classify_audit({
-            "provider": "grok_build", "streaming": True, "statusCode": 200,
+            "provider": "grok_build", "modelUpstreamModel": "grok-4.7", "streaming": True, "statusCode": 200,
             "firstTokenMs": 10000, "durationMs": 10100,
             "outputTokens": 2000, "reasoningTokens": 0,
         }, cfg)
@@ -89,7 +89,7 @@ class ClassificationTests(unittest.TestCase):
     def test_passive_audit_does_not_infer_thinking_requirement(self):
         cfg = config(fail_closed=True, min_generation_ms=1000)
         base = {
-            "provider": "grok_build", "streaming": True, "statusCode": 200,
+            "provider": "grok_build", "modelUpstreamModel": "grok-4.7", "streaming": True, "statusCode": 200,
             "firstTokenMs": 2000, "durationMs": 4000, "outputTokens": 200,
         }
         self.assertEqual(quality_guard.classify_audit({**base, "reasoningTokens": 0}, cfg)[:2], ("healthy", "within_threshold"))
@@ -148,11 +148,15 @@ class ClassificationTests(unittest.TestCase):
         )
 
     def test_passive_ignores_short_and_failed_requests(self):
+        """验证短请求、失败请求和旧模型不会参与被动质量检测。"""
         cfg = config()
-        short = {"provider": "grok_build", "streaming": True, "statusCode": 200, "firstTokenMs": 100, "durationMs": 110, "outputTokens": 20, "reasoningTokens": 0}
+        short = {"provider": "grok_build", "modelUpstreamModel": "grok-4.7", "streaming": True, "statusCode": 200, "firstTokenMs": 100, "durationMs": 110, "outputTokens": 20, "reasoningTokens": 0}
         failed = {**short, "statusCode": 502, "outputTokens": 100}
         self.assertEqual(quality_guard.classify_audit(short, cfg)[0], "ignored")
         self.assertEqual(quality_guard.classify_audit(failed, cfg)[0], "ignored")
+        for old_model in ("grok-4.5", "grok-4.6"):
+            old = {**short, "modelUpstreamModel": old_model, "outputTokens": 2000, "durationMs": 1100}
+            self.assertEqual(quality_guard.classify_audit(old, cfg)[:2], ("ignored", "not_guard_model"))
 
 
 class StateTests(unittest.TestCase):
@@ -218,7 +222,7 @@ class ConfigTests(unittest.TestCase):
                 "enabled": True,
                 "internal_token": "scoped-secret",
                 "config": {
-                    "model": "grok-4.5", "node_ids": ["2", "9"], "mode": "hybrid",
+                    "model": "grok-4.7", "node_ids": ["2", "9"], "mode": "hybrid",
                     "prompt": "probe", "expected": "QUALITY_OK",
                     "active_interval_seconds": 1800, "passive_poll_seconds": 5,
                     "soft_tps": 500, "hard_tps": 1000, "consecutive_soft": 2, "consecutive_errors": 2,
@@ -241,7 +245,7 @@ class ConfigTests(unittest.TestCase):
                 "enabled": True,
                 "internal_token": "scoped-secret",
                 "config": {
-                    "model": "grok-4.5", "node_ids": ["2"], "mode": "hybrid",
+                    "model": "grok-4.7", "node_ids": ["2"], "mode": "hybrid",
                     "prompt": "probe", "expected": "QUALITY_OK",
                     "active_interval_seconds": 1800, "passive_poll_seconds": 5,
                     "soft_tps": 500, "hard_tps": 1000, "consecutive_soft": 2, "consecutive_errors": 2,
@@ -1208,7 +1212,7 @@ class GuardTests(unittest.TestCase):
         output_tokens = int(output_tps * generation_ms / 1000)
         return {
             "id": audit_id, "requestId": f"request-{audit_id}", "qualityProbe": quality_probe,
-            "provider": "grok_build", "streaming": True,
+            "provider": "grok_build", "modelUpstreamModel": "grok-4.7", "streaming": True,
             "statusCode": 200, "firstTokenMs": 200, "durationMs": 200 + generation_ms,
             "outputTokens": output_tokens, "reasoningTokens": min(100, max(0, output_tokens - 1)),
             "accountId": "101", "egressNodeId": node_id, "errorCode": None,

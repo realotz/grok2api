@@ -54,9 +54,10 @@ const (
 	accountFreeBillingSignal                  = `(` + accountFreePlanSignal + ` OR ` + accountInferredFreeBillingSignal + `)`
 	accountFreeSignalPredicate                = `(provider_accounts.provider = 'grok_build' AND (LOWER(TRIM(provider_accounts.observed_model)) LIKE '%-build-free' OR EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = provider_accounts.id AND ` + accountFreeBillingSignal + `)))`
 	accountRecoveryPredicate                  = `EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status IN ('exhausted', 'probing'))`
+	accountEgressLeaseCoolingPredicate        = `(provider_accounts.provider = 'grok_build' AND EXISTS (SELECT 1 FROM account_egress_lease_blocks lease JOIN egress_nodes node ON node.id = lease.node_id WHERE lease.account_id = provider_accounts.id AND lease.cooldown_until > CURRENT_TIMESTAMP AND node.enabled = TRUE AND node.scope = 'grok_build' AND (provider_accounts.egress_node_id IS NULL OR provider_accounts.egress_node_id = lease.node_id)))`
 	providerQuotaExhaustedPredicate           = `((provider_accounts.provider = 'grok_web' AND ((EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.mode = 'weekly') AND NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.mode = 'weekly' AND quota.remaining > 0)) OR (NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.mode = 'weekly') AND EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id) AND NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.remaining > 0)))) OR (provider_accounts.provider = 'grok_console' AND EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.mode = 'console') AND NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.mode = 'console' AND quota.remaining > 0)))`
 	accountTypeSortExpression                 = `CASE WHEN provider_accounts.provider = 'grok_web' THEN COALESCE((SELECT profile.tier FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id), 'auto') WHEN ` + accountBuildSuperPredicate + ` THEN 'paid' WHEN ` + accountFreeSignalPredicate + ` THEN 'free' ELSE 'unknown' END`
-	accountStatusSortExpression               = `CASE WHEN provider_accounts.enabled = FALSE THEN 4 WHEN provider_accounts.auth_status = 'reauthRequired' THEN 5 WHEN EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'probing') THEN 3 WHEN EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'exhausted') OR ` + providerQuotaExhaustedPredicate + ` THEN 2 WHEN provider_accounts.cooldown_until > CURRENT_TIMESTAMP THEN 1 ELSE 0 END`
+	accountStatusSortExpression               = `CASE WHEN provider_accounts.enabled = FALSE THEN 4 WHEN provider_accounts.auth_status = 'reauthRequired' THEN 5 WHEN EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'probing') THEN 3 WHEN EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'exhausted') OR ` + providerQuotaExhaustedPredicate + ` THEN 2 WHEN provider_accounts.cooldown_until > CURRENT_TIMESTAMP OR ` + accountEgressLeaseCoolingPredicate + ` THEN 1 ELSE 0 END`
 	accountUnclassifiedRefreshReauthPredicate = `NOT EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND credential.refresh_permanent = FALSE AND credential.refresh_unclassified_auth_failures > 0)`
 	missingConsoleAccountPredicate            = `NOT EXISTS (SELECT 1 FROM provider_accounts AS console_account WHERE console_account.provider = ? AND console_account.source_key = ('console-' || provider_accounts.source_key))`
 )
@@ -391,8 +392,8 @@ func (r *AccountRepository) Summarize(ctx context.Context, now time.Time) ([]rep
 	selectFields := `
 		provider,
 		COUNT(*) AS total,
-		SUM(CASE WHEN enabled = ? AND auth_status = ? AND NOT ` + accountRecoveryPredicate + ` AND NOT ` + providerQuotaExhaustedPredicate + ` AND (cooldown_until IS NULL OR cooldown_until <= ?) THEN 1 ELSE 0 END) AS available,
-		SUM(CASE WHEN enabled = ? AND auth_status = ? AND NOT ` + accountRecoveryPredicate + ` AND NOT ` + providerQuotaExhaustedPredicate + ` AND cooldown_until > ? THEN 1 ELSE 0 END) AS cooldown,
+		SUM(CASE WHEN enabled = ? AND auth_status = ? AND NOT ` + accountRecoveryPredicate + ` AND NOT ` + providerQuotaExhaustedPredicate + ` AND (cooldown_until IS NULL OR cooldown_until <= ?) AND NOT ` + accountEgressLeaseCoolingPredicate + ` THEN 1 ELSE 0 END) AS available,
+		SUM(CASE WHEN enabled = ? AND auth_status = ? AND NOT ` + accountRecoveryPredicate + ` AND NOT ` + providerQuotaExhaustedPredicate + ` AND (cooldown_until > ? OR ` + accountEgressLeaseCoolingPredicate + `) THEN 1 ELSE 0 END) AS cooldown,
 		SUM(CASE WHEN enabled = ? AND auth_status = ? AND (EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'exhausted') OR ` + providerQuotaExhaustedPredicate + `) THEN 1 ELSE 0 END) AS waiting_reset,
 		SUM(CASE WHEN enabled = ? AND auth_status = ? AND EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'probing') THEN 1 ELSE 0 END) AS probing,
 		SUM(CASE WHEN enabled = ? THEN 1 ELSE 0 END) AS disabled,
@@ -2051,13 +2052,13 @@ func rejectAccountsWithMediaJobs(db *gorm.DB, ids []uint64) error {
 func applyAccountStatusFilter(query *gorm.DB, status string, now time.Time) *gorm.DB {
 	switch status {
 	case "active":
-		return query.Where("enabled = ? AND auth_status = ? AND NOT "+accountRecoveryPredicate+" AND NOT "+providerQuotaExhaustedPredicate+" AND (cooldown_until IS NULL OR cooldown_until <= ?)", true, account.AuthStatusActive, now)
+		return query.Where("enabled = ? AND auth_status = ? AND NOT "+accountRecoveryPredicate+" AND NOT "+providerQuotaExhaustedPredicate+" AND (cooldown_until IS NULL OR cooldown_until <= ?) AND NOT "+accountEgressLeaseCoolingPredicate, true, account.AuthStatusActive, now)
 	case "disabled":
 		return query.Where("enabled = ?", false)
 	case "reauthRequired":
 		return query.Where("enabled = ? AND auth_status = ?", true, account.AuthStatusReauthRequired)
 	case "cooldown":
-		return query.Where("enabled = ? AND auth_status = ? AND NOT "+accountRecoveryPredicate+" AND cooldown_until > ?", true, account.AuthStatusActive, now)
+		return query.Where("enabled = ? AND auth_status = ? AND NOT "+accountRecoveryPredicate+" AND (cooldown_until > ? OR "+accountEgressLeaseCoolingPredicate+")", true, account.AuthStatusActive, now)
 	case "waitingReset":
 		return query.Where("enabled = ? AND auth_status = ? AND (EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'exhausted') OR "+providerQuotaExhaustedPredicate+")", true, account.AuthStatusActive)
 	case "probing":
@@ -2403,6 +2404,34 @@ func egressLeaseBlockFromModel(row accountEgressLeaseBlockModel) account.EgressL
 		AccountID: row.AccountID, NodeID: row.NodeID, Reason: row.Reason, Version: row.Version,
 		CooldownUntil: row.CooldownUntil.UTC(), UpdatedAt: row.UpdatedAt.UTC(),
 	}
+}
+
+// ListActiveEgressLeaseBlocksByAccounts 返回管理页当前账号中最晚结束的有效出口租约冷却。
+func (r *AccountRepository) ListActiveEgressLeaseBlocksByAccounts(ctx context.Context, accountIDs []uint64, now time.Time) (map[uint64]account.EgressLeaseBlock, error) {
+	result := make(map[uint64]account.EgressLeaseBlock)
+	if len(accountIDs) == 0 {
+		return result, nil
+	}
+	var rows []accountEgressLeaseBlockModel
+	err := r.db.db.WithContext(ctx).
+		Table("account_egress_lease_blocks AS block").Select("block.*").
+		Joins("JOIN provider_accounts AS account ON account.id = block.account_id").
+		Joins("JOIN egress_nodes AS node ON node.id = block.node_id").
+		Where("block.account_id IN ? AND block.cooldown_until > ?", accountIDs, now.UTC()).
+		Where("account.provider = ? AND account.enabled = ? AND account.auth_status = ?", account.ProviderBuild, true, account.AuthStatusActive).
+		Where("node.enabled = ? AND node.scope = ?", true, "grok_build").
+		Where("account.egress_node_id IS NULL OR account.egress_node_id = block.node_id").
+		Order("block.account_id ASC, block.cooldown_until DESC, block.node_id ASC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if _, exists := result[row.AccountID]; !exists {
+			result[row.AccountID] = egressLeaseBlockFromModel(row)
+		}
+	}
+	return result, nil
 }
 
 // ListEgressLeaseBlocks returns the durable guard-owned lease state, including

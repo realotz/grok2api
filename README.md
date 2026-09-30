@@ -392,8 +392,8 @@ identity automatically:
 ```yaml
 qualityGuard:
   enabled: true
-  model: "grok-4.6"
-  # Withhold thinking-model streams that have no streamed reasoning.
+  model: "grok-4.7"
+  # Withhold Grok 4.7 streams that have no streamed reasoning.
   # Observe for up to 30s. A stub plus enough visible output at the deadline
   # is withheld; empty stub-only streams keep waiting. Floor-met dumps that
   # flush a short greeting in under 1s are also withheld.
@@ -407,7 +407,7 @@ qualityGuard:
     idleAccountCooldown: 15m
 ```
 
-`requestRetry` runs on the gateway request path and is independent of the sidecar. `config.example.yaml` keeps `enabled: false`; set it true to intercept. When enabled, a thinking-model stream with enough visible output and no streamed reasoning is **not delivered**; replay-safe stateless requests may try another account. TUI follow-ups (`previous_response_id`) and hosted-tool turns are still held for classification, but a quality withhold never replays account-bound state or side-effecting tools across accounts; `onExhausted` returns `503 quality_degraded` or releases that held body. Context compaction, image, video, and ForcedEgress probe requests are unchanged.
+`requestRetry` runs on the gateway request path and is independent of the sidecar. It applies only to Grok 4.7; older models bypass quality guarding. `config.example.yaml` keeps `enabled: false`; set it true to intercept. When enabled, a Grok 4.7 stream with enough visible output and no streamed reasoning is **not delivered**; replay-safe stateless requests may try another account. TUI follow-ups (`previous_response_id`) and hosted-tool turns are still held for classification, but a quality withhold never replays account-bound state or side-effecting tools across accounts; `onExhausted` returns `503 quality_degraded` or releases that held body. Context compaction, image, video, and ForcedEgress probe requests are unchanged.
 
 ```bash
 docker compose --profile quality-guard up -d --build

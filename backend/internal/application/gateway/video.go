@@ -150,7 +150,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, err
 	}
-	routes = preferVideo15Routes(routes, input.Duration)
+	routes = preferVideo15Routes(routes)
 	allRefs := videoInputReferences(input.ImageURL, input.LastFrameURL, input.ReferenceURLs)
 	if err := s.validateVideoInputReferences(ctx, allRefs, "image"); err != nil {
 		return media.Job{}, err
@@ -248,14 +248,9 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	return job, nil
 }
 
-// preferVideo15Routes 6 秒及以下继续优先 Web 1.5；超过 6 秒优先 Build 1.5，
-// Web Super 只在 Build 没有可调度账号时回退。
-func preferVideo15Routes(routes []model.Route, duration int) []model.Route {
-	preferred := account.ProviderWeb
-	if duration > 6 {
-		preferred = account.ProviderBuild
-	}
-	return preferProviderVideo15Routes(routes, preferred)
+// preferVideo15Routes 统一优先 Web 1.5；Web 无可调度路由时再按原顺序回退 Build/Console。
+func preferVideo15Routes(routes []model.Route) []model.Route {
+	return preferProviderVideo15Routes(routes, account.ProviderWeb)
 }
 
 func videoAccountShouldSpread(credential account.Credential, billing *account.Billing) bool {

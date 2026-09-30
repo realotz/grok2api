@@ -89,12 +89,14 @@ Webhook，确认出口发生变化，再执行一次真实模型质量检测；�
 
 ## 配置与成本
 
+质量守护仅针对 `grok-4.7`：主动探测、被动审计、降智统计和请求级质量拦截均不再处理旧模型。
+
 所有用户配置统一放在主 `config.yaml`。主程序会自动创建并稳定复用一个隐藏、仅限 Build 的系统身份，用于探测授权、计费和审计归属；管理员无需创建、复制、选择或填写任何 Client Key：
 
 ```yaml
 qualityGuard:
   enabled: true
-  model: "grok-4.6"
+  model: "grok-4.7"
   mode: hybrid
   activeInterval: 30m
   passivePollInterval: 5s

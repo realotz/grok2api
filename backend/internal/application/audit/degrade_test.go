@@ -14,6 +14,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 )
 
+// TestDegradeSummaryClassifiesStreamingAnomalies 验证统计只包含 Grok 4.7 的异常。
 func TestDegradeSummaryClassifiesStreamingAnomalies(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "degrade.db"))
@@ -29,9 +30,11 @@ func TestDegradeSummaryClassifiesStreamingAnomalies(t *testing.T) {
 	first := int64(100)
 	accountID := uint64(7)
 	records := []auditdomain.Record{
-		{RequestID: "hard-1", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", AccountID: &accountID, AccountName: "hot", EgressNodeName: "node-a", StatusCode: 200, Streaming: true, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 1100, CreatedAt: now.Add(-time.Hour)},
-		{RequestID: "quality_skip_me", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", AccountID: &accountID, StatusCode: 200, Streaming: true, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 1100, CreatedAt: now.Add(-time.Hour)},
-		{RequestID: "non-stream", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", AccountID: &accountID, StatusCode: 200, Streaming: false, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 1100, CreatedAt: now.Add(-time.Hour)},
+		{RequestID: "old-speed", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.5", AccountID: &accountID, StatusCode: 200, Streaming: true, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 1100, CreatedAt: now.Add(-time.Hour)},
+		{RequestID: "old-thinking", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.6", AccountID: &accountID, StatusCode: 200, Streaming: true, ErrorCode: auditdomain.ErrorQualityDegraded, CreatedAt: now.Add(-time.Hour)},
+		{RequestID: "hard-1", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7", AccountID: &accountID, AccountName: "hot", EgressNodeName: "node-a", StatusCode: 200, Streaming: true, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 1100, CreatedAt: now.Add(-time.Hour)},
+		{RequestID: "quality_skip_me", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7", AccountID: &accountID, StatusCode: 200, Streaming: true, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 1100, CreatedAt: now.Add(-time.Hour)},
+		{RequestID: "non-stream", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7", AccountID: &accountID, StatusCode: 200, Streaming: false, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 1100, CreatedAt: now.Add(-time.Hour)},
 	}
 	if err := repo.CreateBatch(ctx, records); err != nil {
 		t.Fatal(err)
@@ -69,13 +72,13 @@ func TestDegradeSummaryDoesNotDropOlderAnomalyAfterTwentyThousandNewerRows(t *te
 	accountID := uint64(7)
 	records := make([]auditdomain.Record, 0, 20_001)
 	records = append(records, auditdomain.Record{
-		RequestID: "older-real-anomaly", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build",
+		RequestID: "older-real-anomaly", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7",
 		AccountID: &accountID, StatusCode: 200, Streaming: true, OutputTokens: 2_000,
 		FirstTokenMS: &first, DurationMS: 1_100, CreatedAt: now.Add(-2 * time.Hour),
 	})
 	for index := 0; index < 20_000; index++ {
 		records = append(records, auditdomain.Record{
-			RequestID: fmt.Sprintf("newer-healthy-%05d", index), ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build",
+			RequestID: fmt.Sprintf("newer-healthy-%05d", index), ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7",
 			AccountID: &accountID, StatusCode: 200, Streaming: true, OutputTokens: 100,
 			FirstTokenMS: &first, DurationMS: 1_100, CreatedAt: now.Add(-time.Minute - time.Duration(index)*time.Millisecond),
 		})
@@ -109,7 +112,7 @@ func TestDegradeSummaryMatchesFailClosedShortWindowPolicy(t *testing.T) {
 	first := int64(50)
 	accountID := uint64(9)
 	if err := repo.Create(ctx, auditdomain.Record{
-		RequestID: "short-window", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build",
+		RequestID: "short-window", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7",
 		AccountID: &accountID, StatusCode: 200, Streaming: true, OutputTokens: 200,
 		FirstTokenMS: &first, DurationMS: 250, CreatedAt: now.Add(-time.Minute),
 	}); err != nil {
@@ -145,8 +148,8 @@ func TestDegradeSummaryUsesReasoningEvidenceForLateFlushFallback(t *testing.T) {
 	first := int64(10000)
 	accountID := uint64(9)
 	records := []auditdomain.Record{
-		{RequestID: "reasoning-late-flush", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", AccountID: &accountID, StatusCode: 200, Streaming: true, OutputTokens: 2000, ReasoningTokens: 1900, FirstTokenMS: &first, DurationMS: 10100, CreatedAt: now.Add(-2 * time.Minute)},
-		{RequestID: "visible-output-burst", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", AccountID: &accountID, StatusCode: 200, Streaming: true, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 10100, CreatedAt: now.Add(-time.Minute)},
+		{RequestID: "reasoning-late-flush", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7", AccountID: &accountID, StatusCode: 200, Streaming: true, OutputTokens: 2000, ReasoningTokens: 1900, FirstTokenMS: &first, DurationMS: 10100, CreatedAt: now.Add(-2 * time.Minute)},
+		{RequestID: "visible-output-burst", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7", AccountID: &accountID, StatusCode: 200, Streaming: true, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 10100, CreatedAt: now.Add(-time.Minute)},
 	}
 	if err := repo.CreateBatch(ctx, records); err != nil {
 		t.Fatal(err)
@@ -178,7 +181,7 @@ func TestDegradeSummaryPaginatesAccountsInRepository(t *testing.T) {
 	for id := uint64(1); id <= 3; id++ {
 		accountID := id
 		if err := repo.Create(ctx, auditdomain.Record{
-			RequestID: fmt.Sprintf("page-account-%d", id), ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build",
+			RequestID: fmt.Sprintf("page-account-%d", id), ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7",
 			AccountID: &accountID, StatusCode: 200, Streaming: true, OutputTokens: 2_000,
 			FirstTokenMS: &first, DurationMS: 1_100, CreatedAt: now.Add(-time.Duration(id) * time.Minute),
 		}); err != nil {
@@ -217,7 +220,7 @@ func TestDegradeSummarySearchesEveryAccountIdentityField(t *testing.T) {
 	now := time.Now().UTC()
 	first := int64(100)
 	if err := relational.NewAuditRepository(database).Create(ctx, auditdomain.Record{
-		RequestID: "search-by-name", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build",
+		RequestID: "search-by-name", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7",
 		AccountID: &accountValue.ID, AccountName: "stale audit name", StatusCode: 200, Streaming: true,
 		OutputTokens: 2_000, FirstTokenMS: &first, DurationMS: 1_100, CreatedAt: now.Add(-time.Minute),
 	}); err != nil {
@@ -267,7 +270,7 @@ func TestDegradeSummaryReportsActiveLeaseQuarantineForEnabledAccount(t *testing.
 	}
 	first := int64(100)
 	if err := relational.NewAuditRepository(database).Create(ctx, auditdomain.Record{
-		RequestID: "lease-anomaly", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build",
+		RequestID: "lease-anomaly", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7",
 		AccountID: &credential.ID, AccountName: credential.Name, EgressNodeName: node.Name,
 		StatusCode: 200, Streaming: true, OutputTokens: 2_000, FirstTokenMS: &first, DurationMS: 1_100, CreatedAt: now.Add(-time.Minute),
 	}); err != nil {
@@ -300,10 +303,10 @@ func TestDegradeSummaryIncludesQualityDegradedThinkingRetries(t *testing.T) {
 	speedID := uint64(11)
 	thinkingID := uint64(22)
 	records := []auditdomain.Record{
-		{RequestID: "speed-hard", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", AccountID: &speedID, AccountName: "fast", EgressNodeName: "edge-1", StatusCode: 200, Streaming: true, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 1100, CreatedAt: now.Add(-2 * time.Minute)},
-		{RequestID: "think-retry-1", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", AccountID: &thinkingID, AccountName: "no-think", EgressNodeName: "edge-2", StatusCode: 200, Streaming: true, ErrorCode: auditdomain.ErrorQualityDegraded, OutputTokens: 48, CreatedAt: now.Add(-time.Minute)},
-		{RequestID: "think-retry-2", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", AccountID: &thinkingID, AccountName: "no-think", EgressNodeName: "edge-2", StatusCode: 200, Streaming: true, ErrorCode: auditdomain.ErrorQualityDegraded, OutputTokens: 0, CreatedAt: now.Add(-30 * time.Second)},
-		{RequestID: "think-final-503", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", AccountID: &thinkingID, AccountName: "no-think", StatusCode: 503, Streaming: true, ErrorCode: auditdomain.ErrorQualityDegraded, CreatedAt: now.Add(-20 * time.Second)},
+		{RequestID: "speed-hard", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7", AccountID: &speedID, AccountName: "fast", EgressNodeName: "edge-1", StatusCode: 200, Streaming: true, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 1100, CreatedAt: now.Add(-2 * time.Minute)},
+		{RequestID: "think-retry-1", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7", AccountID: &thinkingID, AccountName: "no-think", EgressNodeName: "edge-2", StatusCode: 200, Streaming: true, ErrorCode: auditdomain.ErrorQualityDegraded, OutputTokens: 48, CreatedAt: now.Add(-time.Minute)},
+		{RequestID: "think-retry-2", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7", AccountID: &thinkingID, AccountName: "no-think", EgressNodeName: "edge-2", StatusCode: 200, Streaming: true, ErrorCode: auditdomain.ErrorQualityDegraded, OutputTokens: 0, CreatedAt: now.Add(-30 * time.Second)},
+		{RequestID: "think-final-503", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", ModelUpstreamModel: "grok-4.7", AccountID: &thinkingID, AccountName: "no-think", StatusCode: 503, Streaming: true, ErrorCode: auditdomain.ErrorQualityDegraded, CreatedAt: now.Add(-20 * time.Second)},
 	}
 	if err := repo.CreateBatch(ctx, records); err != nil {
 		t.Fatal(err)

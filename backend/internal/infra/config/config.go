@@ -15,6 +15,7 @@ import (
 	"time"
 
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	"github.com/chenyme/grok2api/backend/internal/pkg/signerurl"
 	"gopkg.in/yaml.v3"
@@ -774,6 +775,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// validateQualityGuardConfig 校验仅使用 Grok 4.7 的质量守护配置。
 func validateQualityGuardConfig(value QualityGuardConfig) error {
 	if err := validateQualityGuardRequestRetry(value.RequestRetry); err != nil {
 		return err
@@ -784,8 +786,8 @@ func validateQualityGuardConfig(value QualityGuardConfig) error {
 	if !validUniquePositiveIDs(value.NodeIDs) || !validUniquePositiveIDs(value.RotatableNodeIDs) {
 		return errors.New("qualityGuard.nodeIDs 和 rotatableNodeIDs 必须是唯一的正整数")
 	}
-	if strings.TrimSpace(value.Model) == "" {
-		return errors.New("qualityGuard.model 不能为空")
+	if !modeldomain.IsGrok47LLM(value.Model) {
+		return errors.New("qualityGuard.model 仅支持 grok-4.7")
 	}
 	if value.Mode != "active" && value.Mode != "passive" && value.Mode != "hybrid" {
 		return errors.New("qualityGuard.mode 必须是 active、passive 或 hybrid")
@@ -985,7 +987,7 @@ func defaultConfig() Config {
 			LedgerUnhealthyGrace: Duration(10 * time.Second), LedgerQueueHighWatermarkPct: 90,
 		},
 		QualityGuard: QualityGuardConfig{
-			Model: "grok-4.6", Mode: "hybrid",
+			Model: "grok-4.7", Mode: "hybrid",
 			ActiveInterval: Duration(30 * time.Minute), PassivePollInterval: Duration(5 * time.Second),
 			SoftTPS: 500, HardTPS: 1000, ConsecutiveSoft: 2, ConsecutiveErrors: 2,
 			QuarantineDuration: Duration(5 * time.Minute), NoAccountBackoff: Duration(5 * time.Minute),
