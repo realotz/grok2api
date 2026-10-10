@@ -106,7 +106,7 @@ func inferenceBodyOperation(path string) string {
 		return "stt"
 	case "/v1/realtime":
 		return "realtime_websocket"
-	case "/v1/videos/generations":
+	case "/v1/videos", "/v1/videos/generations":
 		return "video_generation"
 	case "/v1/videos/edits":
 		return "video_edit"

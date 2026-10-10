@@ -57,6 +57,7 @@ type SwaggerImageEditRequest struct {
 	Size           string                `json:"size,omitempty" example:"1024x1024"`
 	AspectRatio    string                `json:"aspect_ratio,omitempty" example:"1:1"`
 	Resolution     string                `json:"resolution,omitempty" example:"1k"`
+	Quality        string                `json:"quality,omitempty" example:"medium"`
 	ResponseFormat string                `json:"response_format,omitempty" example:"url"`
 	Stream         bool                  `json:"stream,omitempty" example:"false"`
 	PartialImages  int                   `json:"partial_images,omitempty" example:"0"`
@@ -69,6 +70,9 @@ type SwaggerVideoGenerationRequest struct {
 	Model                   string                   `json:"model" example:"grok-imagine-video-1.5"`
 	Prompt                  string                   `json:"prompt" example:"A cinematic tracking shot in the rain"`
 	Duration                int                      `json:"duration" example:"8"`
+	Seconds                 string                   `json:"seconds,omitempty" example:"8"`
+	Size                    string                   `json:"size,omitempty" example:"1280x720"`
+	InputReference          *SwaggerVideoMediaInput  `json:"input_reference,omitempty"`
 	AspectRatio             string                   `json:"aspect_ratio,omitempty" example:"16:9"`
 	Resolution              string                   `json:"resolution,omitempty" example:"720p"`
 	Image                   *SwaggerVideoMediaInput  `json:"image,omitempty"`
@@ -207,9 +211,10 @@ func swaggerGenerateImage() {}
 
 // swaggerEditImage godoc
 // @Summary 编辑图片
+// @Description 支持原 JSON image/images URL 对象（包括 data URL），或 multipart 的 image/image[] 文件。multipart 标量 n、stream、partial_images 等进入同一业务校验；selection_regions/multi_region_edits 使用 JSON 表单值。每文件最多 20 MiB，multipart 总计最多 32 MiB、64 段，且不超过服务端请求体限制。n 仅支持 1，quality 仅支持 low/medium。mask、background、input_fidelity、output_format、output_compression、user 不支持并明确报错。
 // @Tags Images
 // @Security BearerAuth
-// @Accept json
+// @Accept json,mpfd
 // @Produce json
 // @Param request body SwaggerImageEditRequest true "请求"
 // @Success 200 {object} map[string]any
@@ -247,13 +252,15 @@ func swaggerGetImage() {}
 
 // swaggerGenerateVideo godoc
 // @Summary 创建异步视频任务
+// @Description JSON 和 multipart 共用校验。seconds（整数字符串或整数）映射 duration；size 支持 1280x720、720x1280、1920x1080、1080x1920，映射 resolution/aspect_ratio，冲突时报错。multipart input_reference 仅支持图片文件，JSON 使用与 image 相同的 url/file_id 对象；与 image 不能同时提供。每文件最多 20 MiB，multipart 总计最多 32 MiB、64 段，且不超过服务端请求体限制。保留原 reference_images/last_frame/reference_audios 字段；结构化表单值使用 JSON。POST /v1/videos 返回标准 video 对象，扩展创建路径返回 request_id。GET 返回标准 queued/in_progress/completed/failed 状态与任务真实元数据，完成时保留 video.url 和 content_url。无视频 list/delete/cancel 接口。
 // @Tags Videos
 // @Security BearerAuth
-// @Accept json
+// @Accept json,mpfd
 // @Produce json
 // @Param request body SwaggerVideoGenerationRequest true "请求"
-// @Success 200 {object} map[string]string
+// @Success 200 {object} map[string]any
 // @Failure 400 {object} map[string]any
+// @Router /v1/videos [post]
 // @Router /v1/videos/generations [post]
 func swaggerGenerateVideo() {}
 

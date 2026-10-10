@@ -44,7 +44,7 @@ func newBuildClientWithOptions(proxyURL string, responseHeaderTimeout time.Durat
 		ExpectContinueTimeout: time.Second,
 	}
 	if environmentProxy {
-		transport.Proxy = http.ProxyFromEnvironment
+		transport.Proxy = EnvironmentProxy
 	}
 	if strings.TrimSpace(proxyURL) != "" {
 		parsed, err := url.Parse(proxyURL)
@@ -69,6 +69,23 @@ func newBuildClientWithOptions(proxyURL string, responseHeaderTimeout time.Durat
 		default:
 			return nil, fmt.Errorf("Grok Build 不支持代理协议 %q", parsed.Scheme)
 		}
+	}
+	proxyForRequest := transport.Proxy
+	if proxyForRequest != nil {
+		transport.Proxy = func(request *http.Request) (*url.URL, error) {
+			if DirectXAIHost(request.URL.Hostname()) {
+				return nil, nil
+			}
+			return proxyForRequest(request)
+		}
+	}
+	proxyDial := transport.DialContext
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(address)
+		if err == nil && DirectXAIHost(host) {
+			return direct.DialContext(ctx, network, address)
+		}
+		return proxyDial(ctx, network, address)
 	}
 	if _, err := buildtransport.ConfigureHTTP2Health(transport); err != nil {
 		return nil, fmt.Errorf("配置 Grok Build HTTP/2 健康探测: %w", err)

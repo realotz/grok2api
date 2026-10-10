@@ -92,6 +92,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/images/generations", h.generateImage)
 	router.POST("/images/edits", h.editImage)
 	router.POST("/images/layers", h.detectImageLayers)
+	router.POST("/videos", h.generateVideo)
 	router.POST("/videos/generations", h.generateVideo)
 	router.POST("/videos/edits", h.editVideo)
 	router.POST("/videos/extensions", h.extendVideo)
@@ -165,21 +166,27 @@ type imageEditJSONRegionEdit struct {
 }
 
 type imageEditJSONRequest struct {
-	Model            string                         `json:"model"`
-	Prompt           string                         `json:"prompt"`
-	Image            *imageEditJSONImage            `json:"image"`
-	Images           []imageEditJSONImage           `json:"images"`
-	Count            *int                           `json:"n"`
-	Size             string                         `json:"size"`
-	AspectRatio      string                         `json:"aspect_ratio"`
-	Resolution       string                         `json:"resolution"`
-	Quality          string                         `json:"quality"`
-	ResponseFormat   string                         `json:"response_format"`
-	StorageOptions   json.RawMessage                `json:"storage_options"`
-	Stream           bool                           `json:"stream"`
-	PartialImages    *int                           `json:"partial_images"`
-	SelectionRegions []imageEditJSONSelectionRegion `json:"selection_regions"`
-	MultiRegionEdits []imageEditJSONRegionEdit      `json:"multi_region_edits"`
+	Model             string                         `json:"model"`
+	Prompt            string                         `json:"prompt"`
+	Image             *imageEditJSONImage            `json:"image"`
+	Images            []imageEditJSONImage           `json:"images"`
+	Count             *int                           `json:"n"`
+	Size              string                         `json:"size"`
+	AspectRatio       string                         `json:"aspect_ratio"`
+	Resolution        string                         `json:"resolution"`
+	Quality           string                         `json:"quality"`
+	ResponseFormat    string                         `json:"response_format"`
+	StorageOptions    json.RawMessage                `json:"storage_options"`
+	Stream            bool                           `json:"stream"`
+	PartialImages     *int                           `json:"partial_images"`
+	SelectionRegions  []imageEditJSONSelectionRegion `json:"selection_regions"`
+	MultiRegionEdits  []imageEditJSONRegionEdit      `json:"multi_region_edits"`
+	Mask              json.RawMessage                `json:"mask"`
+	Background        json.RawMessage                `json:"background"`
+	InputFidelity     json.RawMessage                `json:"input_fidelity"`
+	OutputFormat      json.RawMessage                `json:"output_format"`
+	OutputCompression json.RawMessage                `json:"output_compression"`
+	User              json.RawMessage                `json:"user"`
 }
 
 type videoGenerationImage struct {
@@ -199,6 +206,9 @@ type videoGenerationRequest struct {
 	Prompt                  string                 `json:"prompt"`
 	User                    *string                `json:"user"`
 	Duration                json.RawMessage        `json:"duration"`
+	Seconds                 json.RawMessage        `json:"seconds"`
+	Size                    string                 `json:"size"`
+	InputReference          *videoGenerationImage  `json:"input_reference"`
 	AspectRatio             string                 `json:"aspect_ratio"`
 	Resolution              string                 `json:"resolution"`
 	Image                   *videoGenerationImage  `json:"image"`
@@ -596,20 +606,14 @@ func writeMediaBody(c *gin.Context, source io.Reader, contentType string, status
 	}
 }
 
+// editImage 将 JSON 和 multipart 输入交给同一套图片编辑业务校验。
 func (h *Handler) editImage(c *gin.Context) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, h.maxBodyBytes)
-	if !isJSONRequest(c) {
-		writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", "图片编辑仅支持 application/json")
-		return
-	}
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		writeOpenAIError(c, http.StatusRequestEntityTooLarge, "request_too_large", "请求体超过限制")
-		return
-	}
 	var request imageEditJSONRequest
-	if err := decodeSingleJSON(bytes.NewReader(body), &request, false); err != nil {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片编辑 JSON 请求无效")
+	if !h.decodeOpenAIMediaRequest(c, &request, false) {
+		return
+	}
+	if err := validateImageEditOptions(request); err != nil {
+		writeOpenAIError(c, http.StatusBadRequest, "unsupported_parameter", err.Error())
 		return
 	}
 	if value := bytes.TrimSpace(request.StorageOptions); len(value) > 0 && !bytes.Equal(value, []byte("null")) {
@@ -877,15 +881,14 @@ const (
 	gatewayVideoOperationExtend   = "extend"
 )
 
+// handleVideoCreate 归一标准视频字段后复用生成、编辑和延长的原有校验与任务入口。
 func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, h.maxBodyBytes)
-	if !isJSONRequest(c) {
-		writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", label+"仅支持 application/json")
+	var request videoGenerationRequest
+	if !h.decodeOpenAIMediaRequest(c, &request, true) {
 		return
 	}
-	var request videoGenerationRequest
-	if err := decodeSingleJSON(c.Request.Body, &request, true); err != nil {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", label+" JSON 请求无效: "+err.Error())
+	if err := normalizeOpenAIVideoRequest(&request, operation); err != nil {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", err.Error())
 		return
 	}
 	if hasJSONValue(request.Output) {
@@ -1116,6 +1119,10 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 	})
 	if err != nil {
 		writeGatewayError(c, err)
+		return
+	}
+	if strings.TrimSuffix(c.Request.URL.Path, "/") == "/v1/videos" {
+		c.JSON(http.StatusOK, videoGenerationResponse(job, h.videoPlaybackURL(job)))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"request_id": job.ID})
@@ -1357,7 +1364,27 @@ func appendImageEditURL(imageURLs []string, indexOf map[string]int, image imageE
 	return append(imageURLs, value), index, ""
 }
 
+// videoGenerationResponse 从同一任务生成标准视频对象，并保留已有播放信息。
 func videoGenerationResponse(job mediadomain.Job, contentURLs ...string) gin.H {
+	response := gin.H{
+		"id": job.ID, "object": "video", "model": job.Model, "status": job.Status,
+		"prompt": job.Prompt, "progress": min(99, max(0, job.Progress)),
+	}
+	if !job.CreatedAt.IsZero() {
+		response["created_at"] = job.CreatedAt.Unix()
+	}
+	if !job.UpdatedAt.IsZero() {
+		response["updated_at"] = job.UpdatedAt.Unix()
+	}
+	if job.CompletedAt != nil {
+		response["completed_at"] = job.CompletedAt.Unix()
+	}
+	if job.Seconds > 0 {
+		response["seconds"] = strconv.Itoa(job.Seconds)
+	}
+	if size := videoJobPixelSize(job); size != "" {
+		response["size"] = size
+	}
 	switch job.Status {
 	case mediadomain.StatusCompleted:
 		videoURL := job.UpstreamURL
@@ -1372,18 +1399,13 @@ func videoGenerationResponse(job mediadomain.Job, contentURLs ...string) gin.H {
 		if operation == mediadomain.VideoOperationGenerate && job.Seconds > 0 {
 			video["duration"] = job.Seconds
 		}
-		return gin.H{
-			"status": "done", "model": job.Model, "progress": 100,
-			"video": video,
-		}
+		response["progress"] = 100
+		response["video"] = video
+		response["content_url"] = videoURL
 	case mediadomain.StatusFailed:
-		return gin.H{
-			"status": "failed",
-			"error":  gin.H{"code": officialVideoErrorCode(job.ErrorCode), "message": job.ErrorMessage},
-		}
-	default:
-		return gin.H{"status": "pending", "model": job.Model, "progress": min(99, max(0, job.Progress))}
+		response["error"] = gin.H{"code": officialVideoErrorCode(job.ErrorCode), "message": job.ErrorMessage}
 	}
+	return response
 }
 
 func officialVideoErrorCode(value string) string {

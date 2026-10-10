@@ -203,7 +203,7 @@ func (t *buildDirectTransport) UpdateResponseHeaderTimeout(responseHeaderTimeout
 
 func newBuildHTTPTransport(responseHeaderTimeout time.Duration) *http.Transport {
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true,
+		Proxy: infraegress.EnvironmentProxy, ForceAttemptHTTP2: true,
 		MaxIdleConns: 256, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 256,
 		IdleConnTimeout: buildtransport.IdleConnTimeout, TLSHandshakeTimeout: 10 * time.Second,
 		ResponseHeaderTimeout: normalizeBuildResponseHeaderTimeout(responseHeaderTimeout),

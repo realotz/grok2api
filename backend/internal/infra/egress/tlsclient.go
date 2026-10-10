@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -19,7 +20,30 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/pkg/tunnelproxy"
 )
 
-type browserClient struct{ inner tlsclient.HttpClient }
+type browserClient struct {
+	inner     tlsclient.HttpClient
+	proxyURL  string
+	userAgent string
+	directMu  sync.Mutex
+	direct    *browserClient
+}
+
+// forHost 为 x.ai 复用同指纹的直连客户端，不修改共享代理客户端。
+func (c *browserClient) forHost(host string) (*browserClient, error) {
+	if c.proxyURL == "" || !DirectXAIHost(host) {
+		return c, nil
+	}
+	c.directMu.Lock()
+	defer c.directMu.Unlock()
+	if c.direct == nil {
+		client, err := newBrowserClient("", c.userAgent)
+		if err != nil {
+			return nil, err
+		}
+		c.direct = client
+	}
+	return c.direct, nil
+}
 
 var chromeMajorPattern = regexp.MustCompile(`(?i)Chrome/(\d+)`)
 
@@ -37,11 +61,19 @@ func (l *Lease) dialWebSocket(ctx context.Context, endpoint string, headers fhtt
 	if l == nil || l.browser == nil {
 		return nil, nil, errors.New("当前出口客户端不支持浏览器 WebSocket")
 	}
+	target, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, nil, err
+	}
+	browser, err := l.browser.forHost(target.Hostname())
+	if err != nil {
+		return nil, nil, err
+	}
 	for attempt := 0; ; attempt++ {
 		dialer := &websocket.Dialer{
 			HandshakeTimeout:  handshakeTimeout,
-			NetDialTLSContext: l.browser.inner.GetTLSDialer(),
-			NetDialContext:    l.browser.inner.GetDialer().DialContext,
+			NetDialTLSContext: browser.inner.GetTLSDialer(),
+			NetDialContext:    browser.inner.GetDialer().DialContext,
 		}
 		connection, response, err := dialer.DialContext(ctx, endpoint, headers)
 		if err == nil || !l.proxyPool || attempt >= proxyPoolRetryLimit || !safeProxyConnectionFailure(err, fhttpResponseAsHTTP(response)) {
@@ -92,7 +124,7 @@ func newBrowserClient(proxyURL, userAgent string) (*browserClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &browserClient{inner: client}, nil
+	return &browserClient{inner: client, proxyURL: proxyURL, userAgent: userAgent}, nil
 }
 
 func browserProfile(userAgent string) profiles.ClientProfile {
@@ -122,11 +154,15 @@ func browserProfile(userAgent string) profiles.ClientProfile {
 }
 
 func (c *browserClient) Do(request *http.Request) (*http.Response, error) {
+	client, err := c.forHost(request.URL.Hostname())
+	if err != nil {
+		return nil, err
+	}
 	frequest, err := toFHTTPRequest(request)
 	if err != nil {
 		return nil, err
 	}
-	fresponse, err := c.inner.Do(frequest)
+	fresponse, err := client.inner.Do(frequest)
 	if err != nil {
 		return nil, err
 	}
@@ -154,6 +190,11 @@ func fromFHTTPResponse(fresponse *fhttp.Response) *http.Response {
 func (c *browserClient) CloseIdleConnections() {
 	if c != nil && c.inner != nil {
 		c.inner.CloseIdleConnections()
+		c.directMu.Lock()
+		defer c.directMu.Unlock()
+		if c.direct != nil {
+			c.direct.CloseIdleConnections()
+		}
 	}
 }
 

@@ -48,6 +48,9 @@ func (l *Lease) DoPinnedHTTPS(request *http.Request, serverName string) (*http.R
 
 func newPinnedHTTPSClient(proxyURL, serverName string, tlsConfig *tls.Config) (*http.Client, error) {
 	serverName = strings.TrimSuffix(strings.TrimSpace(serverName), ".")
+	if DirectXAIHost(serverName) {
+		proxyURL = ""
+	}
 	if serverName == "" {
 		return nil, errors.New("TLS ServerName 不能为空")
 	}
