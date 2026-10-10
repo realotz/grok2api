@@ -45,3 +45,24 @@ sudo 仅允许这个固定脚本，脚本只接受 `deploy ghcr.io/realotz/grok2
 健康检查成功后将 digest 原子写入本服务 `.env`。
 
 K3s 独立手动更新；Oracle workflow 不连接 K3s，不执行集群发布命令。
+
+## 首发源码证据
+
+2026-10-10 核对 `/opt/grok2api-go/build-fingerprint.json`：
+
+- 线上源码基底：`2b824139e58e0c5da3fbe3332e1f3da028d5d653`。
+- 线上构建输入 SHA256：
+  `d8a0180253bc76fbaedb9f8203f729ff137ad5551fc861d0fd28065f501d9511`。
+- 源码保留提交：`06a24a5749b80f9c09cf5d42fa6983e943b3c66f`。
+- 已提交的 458 个生产构建文件逐文件 SHA256 与线上记录一致。
+  未纳入发布的三项是 Statsig 调试 JSON 和两个 macOS `.DS_Store` 文件。
+- x.ai 直连、Build 1.0.50 和标准媒体请求兼容源码保持线上内容；
+  数据库 schema、媒体路由风控和 signer 服务没有此次实现变更。
+- 线上 Compose 镜像字段接入前后，规范化配置完全一致。
+- 业务配置 SHA256：
+  `f88bb637dc6fade046084f05a04e8075bcb9ab774f5f4a92af6ca4c4e991d9e1`。
+
+PostgreSQL 只读 schema 查询确认 `grok2api_go` 的 public schema 有 32 张表；
+`account_credentials`、`client_keys`、`runtime_settings` 共 49 个字段。
+该证据不包含发布后 API 验收；发布后须另行核对容器 digest、healthz、
+`/v1/models` 和轻量 Grok 4.7 文本请求。
