@@ -61,7 +61,14 @@ jobs:
           SOURCE_REVISION: ${{ github.sha }}
         run: |
           set -euo pipefail
-          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
+          umask 077
+          DOCKER_CONFIG=$(mktemp -d)
+          export DOCKER_CONFIG
+          trap 'rm -rf -- "$DOCKER_CONFIG"' EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin >/dev/null
           image="ghcr.io/realotz/grok2api:sha-$SOURCE_REVISION"
           docker push "$image"
           digest=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')
@@ -85,7 +92,7 @@ jobs:
           install -d -m 700 "$HOME/.ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/oracle-grok2api"
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          trap 'rm -f "$HOME/.ssh/oracle-grok2api"; docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          trap 'rm -f "$HOME/.ssh/oracle-grok2api"' EXIT
           printf '%s\n%s\n' "$REGISTRY_USER" "$REGISTRY_TOKEN" |
             ssh -T -i "$HOME/.ssh/oracle-grok2api" -p "${ORACLE_PORT:-22}" \
               -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \

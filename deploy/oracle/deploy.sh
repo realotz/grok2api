@@ -25,6 +25,9 @@ IFS= read -r registry_token
 DOCKER_CONFIG=$(mktemp -d /opt/grok2api-go/.registry.XXXXXX)
 export DOCKER_CONFIG
 trap 'rm -rf -- "$DOCKER_CONFIG"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 printf '%s' "$registry_token" | docker login ghcr.io -u "$registry_user" --password-stdin >/dev/null
 unset registry_token
 docker pull --platform linux/arm64 "$image"
