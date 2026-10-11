@@ -1122,7 +1122,7 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		return
 	}
 	if strings.TrimSuffix(c.Request.URL.Path, "/") == "/v1/videos" {
-		c.JSON(http.StatusOK, videoGenerationResponse(job, h.videoPlaybackURL(job)))
+		h.writeVideoResponse(c, job)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"request_id": job.ID})
@@ -1165,6 +1165,7 @@ func referenceAudioMIME(format string) string {
 	}
 }
 
+// getVideo 读取已鉴权任务，并以最终资产元数据返回完成视频的时长。
 func (h *Handler) getVideo(c *gin.Context) {
 	clientKey, _, ok := requestIdentity(c)
 	if !ok {
@@ -1175,7 +1176,23 @@ func (h *Handler) getVideo(c *gin.Context) {
 		writeGatewayError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, videoGenerationResponse(job, h.videoPlaybackURL(job)))
+	h.writeVideoResponse(c, job)
+}
+
+// writeVideoResponse 为编辑和延长成品填写实际总时长，保留任务中的请求与计费秒数。
+func (h *Handler) writeVideoResponse(c *gin.Context, job mediadomain.Job) {
+	response := videoGenerationResponse(job, h.videoPlaybackURL(job))
+	if job.Status == mediadomain.StatusCompleted &&
+		(job.Operation == mediadomain.VideoOperationEdit || job.Operation == mediadomain.VideoOperationExtend) {
+		seconds, err := h.gateway.VideoDurationSeconds(c.Request.Context(), job)
+		if err != nil {
+			writeOpenAIError(c, http.StatusBadGateway, "video_metadata_unavailable", "无法读取最终视频的时长元数据")
+			return
+		}
+		response["seconds"] = strconv.Itoa(seconds)
+		response["video"].(gin.H)["duration"] = seconds
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (h *Handler) publicURL(path string) string {
@@ -1379,7 +1396,8 @@ func videoGenerationResponse(job mediadomain.Job, contentURLs ...string) gin.H {
 	if job.CompletedAt != nil {
 		response["completed_at"] = job.CompletedAt.Unix()
 	}
-	if job.Seconds > 0 {
+	if job.Seconds > 0 && (job.Status != mediadomain.StatusCompleted ||
+		(job.Operation != mediadomain.VideoOperationEdit && job.Operation != mediadomain.VideoOperationExtend)) {
 		response["seconds"] = strconv.Itoa(job.Seconds)
 	}
 	if size := videoJobPixelSize(job); size != "" {

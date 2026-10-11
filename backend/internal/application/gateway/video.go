@@ -23,6 +23,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
+	"github.com/chenyme/grok2api/backend/internal/pkg/mediafile"
 	"github.com/chenyme/grok2api/backend/internal/pkg/requestmeta"
 )
 
@@ -455,6 +456,23 @@ func (s *Service) GetVideo(ctx context.Context, id string, key clientkey.Key) (m
 	}
 	_ = body.Close()
 	return job, nil
+}
+
+// VideoDurationSeconds 从已鉴权任务的本地最终资产读取总时长，不改任务计费秒数或下载上游媒体。
+func (s *Service) VideoDurationSeconds(ctx context.Context, job media.Job) (int, error) {
+	if job.Status != media.StatusCompleted || job.ResultAssetID == "" || s.mediaAssets == nil {
+		return 0, fmt.Errorf("本地视频时长元数据不可用")
+	}
+	asset, body, err := s.mediaAssets.OpenVideo(ctx, job.ResultAssetID)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = body.Close() }()
+	reader, ok := body.(io.ReaderAt)
+	if !ok {
+		return 0, fmt.Errorf("本地视频不支持读取时长元数据")
+	}
+	return mediafile.MP4DurationSeconds(reader, asset.SizeBytes)
 }
 
 func (s *Service) OpenVideoContent(ctx context.Context, id string, key clientkey.Key) (io.ReadCloser, string, int64, error) {

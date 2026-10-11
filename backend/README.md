@@ -59,6 +59,25 @@ PostgreSQL DSN 也可通过非空的 `GROK2API_DATABASE_URL` 注入；它的优�
 
 修改公开接口注释后，在仓库根目录执行 `make swagger` 更新 `backend/docs/docs.go`、`swagger.json` 与 `swagger.yaml`。生产配置应保持 `server.swaggerEnabled: false`。
 
+## 视频完成对象时长
+
+OpenAI [Video 对象](https://developers.openai.com/api/reference/resources/videos/)的
+`seconds` 是字符串，表示生成视频的时长；延长视频返回拼接后的总时长。
+
+完成的编辑或延长任务通过 `GET /v1/videos/{id}` 返回：
+
+- `seconds`：本地最终 MP4 的总时长，四舍五入为整数秒并编码为字符串。
+- `video.duration`：相同的整数秒时长。
+- 持久任务的 `Seconds`：原请求时长；延长操作表示追加片段时长，额度与审计继续使用此值。
+
+例如源视频为 `6.041667` 秒、延长后最终视频为 `11` 秒时，完成对象返回
+`seconds: "11"` 和 `video.duration: 11`，任务中的请求秒数仍可为 `6`。
+延长起点由上游协议决定，总时长直接取最终资产，不通过源时长与请求时长相加推算。
+
+时长读取仅访问已归档的本地 MP4 `moov/mvhd` 元数据，不下载上游媒体或修改任务记录。
+最终资产缺失、时长未确定或元数据不可解析时，返回
+`502 video_metadata_unavailable`。
+
 ## 代码结构
 
 ```text
