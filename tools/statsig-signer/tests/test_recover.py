@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import unittest
 from pathlib import Path
 
-from statsig_signer.algorithm import Formula, compute_hex, decode_seed
+from statsig_signer.algorithm import Formula, aligned_seek, compute_hex, decode_seed
 from statsig_signer.recover import recover_formula, recover_formula_stable
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,24 @@ PAIR = json.loads((ROOT / "data" / "pair.json").read_text(encoding="utf-8"))
 
 
 class RecoverTest(unittest.TestCase):
+    def test_all_equivalent_path_candidates_are_retained(self) -> None:
+        """HEX 等价曲线必须保留全部正确候选，不能只采用第一条路径。"""
+        paths = [PAIR["paths"][0]] * 4
+        truth = Formula(path_index=5, seg_index=33, seek_indices=(1, 14, 37))
+        samples = []
+        for index in range(8):
+            seed = hashlib.sha512(str(index).encode()).digest()[:48]
+            samples.append({
+                "seed_bytes": seed,
+                "paths": paths,
+                "hex": compute_hex(seed, paths, truth),
+                "seek": aligned_seek(seed, truth),
+            })
+        result = recover_formula_stable(samples, truth)
+        self.assertEqual(result.status, "ambiguous", result)
+        self.assertIsNone(result.formula)
+        self.assertGreaterEqual(result.candidate_count, 48)
+
     def test_current_formula_matches_live_pair(self) -> None:
         seed = decode_seed(PAIR["seed"])
         result = recover_formula(seed, PAIR["paths"], PAIR["hex"], Formula(), seek_hint=240)

@@ -320,13 +320,23 @@ Authorization: Bearer g2a_xxx_xxx
 | `POST` | `/v1/chat/completions` | Chat Completions JSON/SSE |
 | `POST` | `/v1/messages` | Anthropic Messages JSON/SSE |
 | `POST` | `/v1/images/generations`、`/v1/images/edits` | 生成或编辑图片 |
-| `POST`、`GET` | `/v1/videos/*` | 创建和查询视频任务 |
+| `POST` | `/v1/videos`、`/v1/videos/generations` | 创建视频任务 |
+| `POST` | `/v1/videos/edits`、`/v1/videos/extensions` | 编辑和延长视频 |
+| `GET` | `/v1/videos/{id}`、`/v1/videos/{id}/content` | 查询任务和读取视频内容 |
 | `POST` | `/v1/tts`、`/v1/audio/speech`、`/v1/audio/tasks` | 语音合成 |
 | `POST` | `/v1/stt`、`/v1/audio/transcriptions` | 音频转录 |
 | `GET` | `/v1/stt`、`/v1/realtime` | 代理语音 WebSocket 会话 |
 | `GET` | `/v1/media/images/{asset_id}`、`/v1/media/videos/{asset_id}` | 读取归档媒体 |
 
 stored response 和 compact 取决于最终 Provider。登录管理端后可在 `/docs` 查看当前模型与调用示例；仅在 `server.swaggerEnabled: true` 时提供 Swagger。
+
+`/v1/images/edits` 接受原有 JSON `image`/`images` URL 对象（包括 base64 data URL），或 `multipart/form-data` 的 `image`/`image[]` 图片文件。multipart 的 `model`、`prompt`、`n`、`size`、`quality`、`stream`、`partial_images` 等标量复用 JSON 业务校验；`selection_regions`、`multi_region_edits` 等结构化表单值使用 JSON。`n` 仍仅支持 1，`quality` 仅支持 `low`/`medium`。像素 `mask` 不受支持，两种格式均明确返回 `unsupported_parameter`；多边形选区继续可用。`background`、`input_fidelity`、`output_format`、`output_compression` 和图片编辑的 `user` 同样不受支持。
+
+`POST /v1/videos` 与 `/v1/videos/generations` 均接受 JSON 或 multipart，共用模型、路由和输入校验。标准 `seconds`（1–15 的整数或整数字符串）映射 `duration`；`size` 精确映射：`1280x720`/`720x1280` 对应 720p 横屏/竖屏，`1920x1080`/`1080x1920` 对应 1080p 横屏/竖屏。其他尺寸（包括 `1792x1024`/`1024x1792`）以及与 `duration`、`resolution`、`aspect_ratio` 冲突的参数明确报错。multipart 的 `input_reference` 接受作为首帧的图片文件，不支持视频；JSON 使用现有 `{"url":"..."}` 或 `{"file_id":"..."}` 媒体输入对象，且不能同时提供 `image`。保留 `last_frame`、`reference_images` 和 `reference_audios`，结构化 multipart 值使用 JSON。视频编辑和延长保持原有源 `video` 协议，不接受仅用于生成的标准别名。
+
+媒体 multipart 总请求上限 32 MiB、最多 64 段、每文件最多 20 MiB，同时遵守服务端更低的请求体上限。JPEG、PNG、静态 WebP、GIF 文件须声明匹配的 MIME 或 `application/octet-stream`，在任务创建及上游上传前先校验尺寸预算，再完整解码。单边最多 8192，解码像素最多 16,777,216；GIF 最多 128 帧且累计像素遵守同一预算。WebP 使用官方 `golang.org/x/image/webp` decoder，动画 WebP 和损坏图片被拒绝；原有 JSON data URL 路径不变。不按文件名识别图片。非法数值、重复标量和不支持的 multipart 选项明确报错。
+
+`POST /v1/videos` 返回包含 `id`、`object: "video"`、`model`、`status` 的 OpenAI 风格视频对象。原有 `/v1/videos/generations`、`/edits`、`/extensions` 创建入口保持 `{"request_id":"..."}` 契约。共用的 `GET /v1/videos/{id}` 返回 `queued`、`in_progress`、`completed` 或 `failed`，附带任务真实时间戳、进度、已知时长的 `seconds` 字符串，以及保存的比例和分辨率能精确表示时的像素 `size`。完成任务保留 `video.url` 并提供 `content_url`，鉴权视频内容入口为 `/v1/videos/{id}/content`。媒体能力仅限上述明确支持的选项，不是完整的 OpenAI 媒体兼容；未提供视频 list、delete 或 cancel 接口。
 
 `/v1/audio/transcriptions` 支持 `json`（默认）、`verbose_json` 和 `text`。视频编辑按实际路由校验 Console `grok-imagine-video`。视频延长还支持 Web `grok-imagine-video-1.5`：请求需用 `video_extension_start_time` 提供源视频的绝对结束时间，网关会先把源视频上传到选中的 Web 账号，再新建延长会话；Web 的 `duration` 表示本次新增片段时长，范围 6 到 10 秒。对外模型名仍可自定义。金额计费以网关能够可靠测量的官方计价单位为准：TTS 按输入字符数预留并结算，REST 与流式 STT 按成功响应返回的实际音频时长结算。STT 时长只能在请求完成后获得，因此并发中的请求可能使有限额 Key 短暂超过金额上限。Realtime、视频编辑与延长，以及未收录官方定价的自定义路由当前记录为“未计费”，保持可调用且不消耗金额额度。
 

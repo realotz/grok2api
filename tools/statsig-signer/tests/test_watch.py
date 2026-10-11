@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from statsig_signer.watch import compare_fingerprints, fingerprint_from_html, should_backoff_repair, tick, watch_loop
+from statsig_signer.watch import compare_fingerprints, fingerprint_from_html, tick, watch_loop
 
 
 class WatchTest(unittest.TestCase):
@@ -52,11 +52,22 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(compare_fingerprints(html_fp, capture_fp), [])
         self.assertEqual(compare_fingerprints(capture_fp, html_fp), [])
 
-    def test_repair_backs_off_after_failed_unchanged_tick(self) -> None:
-        self.assertFalse(should_backoff_repair(None, True))
-        self.assertFalse(should_backoff_repair({"repair_ok": False}, True))
-        self.assertFalse(should_backoff_repair({"repair_ok": True}, False))
-        self.assertTrue(should_backoff_repair({"repair_ok": False}, False))
+    def test_default_watch_periodically_verifies_hex(self) -> None:
+        """轻量轮询之间仍需主动验签，不依赖业务先失败。"""
+        from unittest.mock import patch
+
+        calls = []
+
+        def fake_tick(**kwargs: object) -> dict:
+            calls.append(kwargs["deep"])
+            if len(calls) == 6:
+                raise KeyboardInterrupt()
+            return {"ok": True, "changed": False}
+
+        with patch("statsig_signer.watch.tick", fake_tick), patch("statsig_signer.watch.time.sleep"):
+            with self.assertRaises(KeyboardInterrupt):
+                watch_loop(repair=True)
+        self.assertEqual(calls, [True, False, False, False, False, True])
 
     def test_tick_does_not_save_fingerprint_when_repair_fails(self) -> None:
         import json

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .algorithm import Formula, build_statsig, compute_hex, curves_hash, decode_seed, inspect_statsig_id
-from .capture import capture
+from .capture import capture, capture_batch
 from .hermes import HermesKernel, Tool, grok2api_complete
 from .recover import recover_formula, recover_formula_stable
 from .runtime import HotRuntime, default_runtime
@@ -42,6 +42,7 @@ def update(
     capture_fn: Any = None,
     **capture_kwargs: Any,
 ) -> dict[str, Any]:
+    """先批量核验完整下标候选；只有算法结构变化才交给 Hermes。"""
     store = store or Store()
     runtime = runtime or default_runtime()
     do_capture = capture_fn or capture
@@ -52,6 +53,29 @@ def update(
         if not captured.get("ok") and not (captured.get("seed") and captured.get("hex") and captured.get("paths")):
             return {"ok": False, "stage": "capture", "capture": _public_capture(captured)}
         captured["ok"] = True
+    if fixture is None and not defer_capture and not force_hermes:
+        print("statsig batch recovery: collecting 8 fresh official samples", file=sys.stderr, flush=True)
+        fresh = (
+            capture_batch(browser=browser, count=8, **capture_kwargs)
+            if capture_fn is None
+            else [do_capture(browser=browser, **capture_kwargs) for _ in range(8)]
+        )
+        batch_samples = [captured, *fresh]
+        batch_result = _apply_batch(store, runtime, batch_samples)
+        if batch_result.get("status") != "needs_agent" or not use_hermes:
+            return batch_result
+        kernel = _kernel(store, captured, runtime, do_capture, capture_kwargs, batch_samples)
+        prompt = json.dumps(
+            {
+                "task": "全部下标候选已用一批官方样本核验，仍无法反解。检查官方签名模块的算法结构，不要逐个猜下标。",
+                "reason": batch_result.get("error"),
+                "sample_count": len(batch_samples),
+                "capture": _public_capture(captured),
+                "current_formula": store.formula.to_dict(),
+            },
+            ensure_ascii=False,
+        )
+        return _finish_hermes(store, captured, runtime, kernel.run(SYSTEM, prompt))
     if not (captured.get("seed") and captured.get("hex") and captured.get("paths")):
         kernel = _kernel(store, captured, runtime, do_capture, capture_kwargs)
         prompt = json.dumps(
@@ -120,6 +144,69 @@ def update(
     return _finish_hermes(store, captured, runtime, result)
 
 
+def _apply_batch(store: Store, runtime: HotRuntime, captured: list[dict[str, Any]]) -> dict[str, Any]:
+    """完整候选集同时匹配训练样本，最后一个独立样本通过后才写入。"""
+    if len(captured) < 3:
+        return {"ok": False, "stage": "batch", "status": "failed", "error": "批量修复至少需要两组训练样本和一组独立验签样本"}
+    for index, item in enumerate(captured):
+        if not (item.get("ok") and item.get("seed") and item.get("hex") and len(item.get("paths") or []) == 4):
+            return {"ok": False, "stage": "batch", "status": "failed", "error": f"批量抓包第 {index + 1} 页不完整，未修改签名数据"}
+    releases = {item.get("sentry_release") for item in captured if item.get("sentry_release")}
+    if len(releases) > 1:
+        return {"ok": False, "stage": "batch", "status": "failed", "error": "批量采样期间前端版本发生变化，未混用版本"}
+    if len({curves_hash(item["paths"]) for item in captured}) > 1:
+        return {"ok": False, "stage": "batch", "status": "failed", "error": "批量采样期间 curves 发生变化，未混用曲线"}
+    seeds = [decode_seed(item["seed"]) for item in captured]
+    if len(set(seeds[:-1])) < 2 or seeds[-1] in seeds[:-1]:
+        return {"ok": False, "stage": "batch", "status": "failed", "error": "训练样本或独立验签样本的 seed 重复，拒绝写入"}
+    samples = [
+        {
+            "seed_bytes": decode_seed(item["seed"]),
+            "paths": item["paths"],
+            "hex": item["hex"],
+            "seek": _seek_hint(item),
+        }
+        for item in captured[:-1]
+    ]
+    recovered = recover_formula_stable(samples, store.formula)
+    report: dict[str, Any] = {
+        "ok": False,
+        "stage": "batch",
+        "status": recovered.status,
+        "sample_count": len(samples),
+        "candidate_count": recovered.candidate_count,
+    }
+    if recovered.formula is None:
+        report["error"] = recovered.reason
+        return report
+    source = _hex_js_for_formula(recovered.formula, runtime)
+    for index, item in enumerate(captured):
+        got = runtime.eval_js(source, decode_seed(item["seed"]), item["paths"])
+        if got != item["hex"]:
+            report.update(status="needs_agent", error=f"批量样本第 {index + 1} 页与官方 HEX 不一致，拒绝写入")
+            return report
+    verified = _pair_from_capture(captured[-1])
+    signature = build_statsig(
+        verified.seed_bytes(), verified.hex, "POST", "/rest/app-chat/conversations/new",
+        int(datetime.now(timezone.utc).timestamp()), recovered.formula,
+    )
+    info = inspect_statsig_id(signature, recovered.formula)
+    if decode_seed(info["seed"]) != verified.seed_bytes() or info["mark"] != 3:
+        report.update(status="needs_agent", error="独立样本的签名壳验签失败，拒绝写入")
+        return report
+    runtime.write_js(source)
+    store.save_formula(recovered.formula)
+    store.save_pair(verified)
+    report.update(
+        ok=True,
+        formula=recovered.formula.to_dict(),
+        accepted={"ok": True, "hex": verified.hex, "fresh_verified": True},
+        pair={"curves_hash": verified.curves_hash, "updated_at": verified.updated_at},
+    )
+    print(json.dumps({"batch_repair_ok": True, "sample_count": len(samples), "candidate_count": 1, "fresh_verified": True}), file=sys.stderr, flush=True)
+    return report
+
+
 def fixture_from_pair_file(path: Path) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     paths = list(data.get("paths") or [])
@@ -163,7 +250,9 @@ def _kernel(
     runtime: HotRuntime,
     capture_fn: Any,
     capture_kwargs: dict[str, Any] | None,
+    initial_samples: list[dict[str, Any]] | None = None,
 ) -> HermesKernel:
+    """复用已有官方样本，为无法穷举恢复的算法提供维修工具。"""
     base = os.environ.get("GROK2API_BASE", "http://127.0.0.1:18000/v1")
     key = os.environ.get("GROK2API_KEY", "").strip()
     model = os.environ.get("GROK2API_MODEL", "grok-4.7")
@@ -610,6 +699,8 @@ def _kernel(
             _guard_idle("write_py", lambda path, source: write_signer_file(path, source)),
         ),
     ]
+    for sample in initial_samples or []:
+        _remember(sample)
     max_turns = int(os.environ.get("STATSIG_AGENT_MAX_TURNS") or "200")
     return HermesKernel(grok2api_complete(base, key, model, timeout=180), tools, max_turns=max_turns)
 
@@ -715,51 +806,6 @@ def write_signer_file(rel: str, source: str, run_tests: bool = True) -> dict[str
         "bytes": path.stat().st_size,
         "note": "已写入。当前这次工具闭包不会热替换，下次 watch tick 会加载。",
     }
-
-
-def _confirm_or_stabilize(
-    do_capture: Any,
-    browser: str,
-    capture_kwargs: dict[str, Any],
-    first: dict[str, Any],
-    current: Formula,
-    recovered: Any,
-) -> Any:
-    first_url = str(first.get("url") or capture_kwargs.get("url") or "https://grok.com/imagine")
-    second_url = "https://grok.com/" if "imagine" in first_url else "https://grok.com/imagine"
-    kwargs = dict(capture_kwargs or {})
-    kwargs["url"] = second_url
-    second = do_capture(browser=browser, **kwargs)
-    if not (second.get("seed") and second.get("hex") and second.get("paths")):
-        recovered.status = "needs_agent"
-        recovered.reason = "第二页抓包失败，拒绝写入单次反解下标"
-        recovered.formula = None
-        return recovered
-    try:
-        second_hex = compute_hex(decode_seed(second["seed"]), list(second["paths"]), recovered.formula)
-    except Exception:
-        second_hex = ""
-    if second_hex == second.get("hex"):
-        recovered.reason = "第二页官方 HEX 也匹配，接受公式"
-        return recovered
-    stable = recover_formula_stable(
-        [
-            {
-                "seed_bytes": decode_seed(first["seed"]),
-                "paths": first.get("paths"),
-                "hex": first.get("hex"),
-                "seek": _seek_hint(first),
-            },
-            {
-                "seed_bytes": decode_seed(second["seed"]),
-                "paths": second.get("paths"),
-                "hex": second.get("hex"),
-                "seek": _seek_hint(second),
-            },
-        ],
-        current,
-    )
-    return stable
 
 
 def _hex_js_for_formula(formula: Formula, runtime: HotRuntime | None = None) -> str:

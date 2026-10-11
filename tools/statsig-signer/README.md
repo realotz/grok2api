@@ -43,7 +43,7 @@ python3 -m statsig_signer sign \
 
 ## 发版更新
 
-默认本机 Playwright。可选 `--browser x2api` 走 x2api Browser Worker gRPC。
+默认本机 Playwright。可选 `--browser x2api` 走 x2api Browser Worker gRPC。正常更新复用一个浏览器，以两个独立页面的并发批量采样；只加载脚本、样式和接口，阻止无关图片、视频与字体，不提前逐个下载签名 chunk。
 
 ```bash
 export GROK_SSO=...          # 或 STATSIG_SECRETS=/tmp/g2a-local-test/browser.secrets.json
@@ -53,10 +53,10 @@ python3 -m statsig_signer update --browser local
 
 `update` 顺序：
 
-1. 抓同一页 seed / 官方 HEX / curves
-2. 当前公式能对上官方 HEX → 只写 `pair.json`
-3. 穷举下标能对上 → 写 `formula.json` + `pair.json`
-4. 对不上 → **Hermes 最小内核**（grok2api `/v1/chat/completions` 工具循环）读 chunk、试公式，只有 HEX 匹配才 apply
+1. 采集 8 组同页 seed / 官方 HEX / curves，完整枚举并批量筛选全部下标候选，不只选第一个匹配。
+2. 下标唯一后，用第 9 组独立 seed 检查候选 JS 和 70 字节签名壳；通过才写热代码、公式和 pair。
+3. 抓包不完整、版本在采样中变化、下标仍有歧义或独立验签不匹配，都明确报错，不写猜测结果。
+4. 全部下标候选均不匹配时，才走 **Hermes 最小内核**检查官方模块的算法结构，复用已有样本。
 
 ```bash
 export GROK2API_BASE=http://127.0.0.1:18000/v1
@@ -87,7 +87,7 @@ grok.com HTML 里已经有发版标记，不必每轮开浏览器：
 python3 -m statsig_signer watch --interval 60 --repair
 ```
 
-默认 60 秒 GET `/imagine`。sentry / curves / chunks 任一变化才跑 Hermes。不要用最后 12 个 chunk 名，也不要把 HTML 脚本列表和 Playwright 抓到的 signer URL 交叉比较。`--deep-every 0` 表示识别只靠 HTML；HEX 对错由 repair 自己抓包验证。
+默认每轮完成后等待 60 秒：普通轮次只请求 `/imagine` HTML 检查指纹，每五轮用独立页面主动对照官方 HEX。指纹变化立即启动批量修复，不必等下一次深度验签；HTML 无变化但官方 HEX 不匹配也会修复，并立即记录 `statsig_repair_started`。`--deep-every 0` 仅检查 HTML 指纹，不是默认值；需要每轮主动验签可设为 1。不要用最后 12 个 chunk 名，也不要把 HTML 脚本列表和 Playwright 抓到的 signer URL 交叉比较。
 
 ## 测试
 

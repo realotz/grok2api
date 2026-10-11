@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -51,10 +52,6 @@ def fingerprint_from_capture(captured: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def should_backoff_repair(previous: dict[str, Any] | None, changed: bool) -> bool:
-    return bool(previous) and not changed and previous.get("repair_ok") is False
-
-
 def compare_fingerprints(previous: dict[str, Any] | None, current: dict[str, Any]) -> list[str]:
     """Compare deploy markers that exist in HTML. Ignore last-12 filenames and signer_urls.
 
@@ -81,6 +78,8 @@ def probe_html() -> tuple[dict[str, Any] | None, str]:
         PROBE_URL,
         headers={
             "Accept": "text/html,application/xhtml+xml",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
         },
     )
@@ -168,6 +167,7 @@ def tick(
     browser: str = "local",
     **capture_kwargs: Any,
 ) -> dict[str, Any]:
+    """指纹或官方 HEX 发生变化即修复，失败不能屏蔽下一轮官方验签。"""
     store = store or Store()
     previous = load_previous(store)
     probed = probe(deep=deep, browser=browser, **capture_kwargs)
@@ -198,14 +198,12 @@ def tick(
         "observed_at": probed["observed_at"],
     }
     need_repair = repair and (changed or hex_match.get("ok") is False)
-    if need_repair and should_backoff_repair(previous, changed):
-        report["repair"] = {"ok": False, "skipped": "backoff"}
-        return report
     if need_repair:
         from .agent import update
 
+        print(json.dumps({"event": "statsig_repair_started", "changes": changes, "observed_at": probed["observed_at"]}), file=sys.stderr, flush=True)
         try:
-            report["repair"] = update(store=store, browser=browser, defer_capture=True, **capture_kwargs)
+            report["repair"] = update(store=store, browser=browser, **capture_kwargs)
         except Exception as exc:
             report["repair"] = {"ok": False, "error": str(exc)}
         current = dict(current)
@@ -219,7 +217,8 @@ def tick(
     return report
 
 
-def watch_loop(interval: int = 60, repair: bool = False, deep_every: int = 0, browser: str = "local") -> None:
+def watch_loop(interval: int = 60, repair: bool = False, deep_every: int = 5, browser: str = "local") -> None:
+    """轻量指纹每轮检查，每五轮主动验签；任一不匹配都直接修复。"""
     store = Store()
     n = 0
     while True:

@@ -21,6 +21,8 @@ HEX 算法是 `hot/hex.js` 里的 `computeHex(seed, paths)`。签名器常驻一
 
 不是改 `statsig_hex.go`。也不是只改 JSON 数字。
 
+常见的 seed 下标变化先走确定性批量修复：一次采集 8 组官方样本，完整筛选全部候选，再用第 9 组独立 seed 验证后一次写入。只有全部下标候选无法解释官方 HEX 时才进入下面的 Hermes 流程。批量样本应来自独立浏览器上下文，不要求跳到不产生签名的根页面；独立验签 seed 不得参与候选筛选或与训练 seed 重复。
+
 1. Agent 自己 `capture_page`（`local` 或 `x2api`）钩 digest / `animate(4096)`，抓同一页 seed、官方 HEX、4 条 curves。
 2. `recover_indices` 穷举下标。对得上就把返回的 `hex_js` `write_hot_js`。
 3. 下标穷举失败：`fetch_chunk` 看混淆 JS，改 `computeHex` 源码。
@@ -64,7 +66,7 @@ python3 -m statsig_signer update --fixture data/pair.json --force-hermes
 
 ## 前端监测
 
-`watch` 默认每 60 秒 GET `https://grok.com/imagine`（无 ETag，必须拉全文）。对照 `sentry-release` git SHA、HTML 里的 curves 哈希、全部 chunk 文件名哈希。这三项在 `/` 和 `/imagine` 上 sentry/curves 一致；chunk 集合按页会差 1 个，所以探针固定 `/imagine`。不要用最后 12 个文件名，也不要拿 HTML 脚本列表去对 Playwright 的 signer URL。`--repair` 只在指纹变化时跑 agent；agent 自己抓包验 HEX。`--deep` 仍可强制浏览器对官方 HEX。
+`watch` 默认以 60 秒间隔做轻量 HTML 指纹检查，每五轮用独立 `/imagine` 页面主动对照官方 HEX。指纹变化立即启动批量修复，不等第五轮；官方 HEX 不匹配也会修复，开始时立即记录日志，不依赖业务 403 通知。浏览器采样屏蔽无关图片、视频与字体，保留脚本、样式及接口。`--deep-every 0` 仅检查 HTML 指纹，不是默认值；1 表示每轮主动验签。探针固定 `/imagine`；不要用最后 12 个文件名，也不要拿 HTML 脚本列表去对 Playwright 的 signer URL。
 
 ## 当前 computeHex（2026-09-09）
 

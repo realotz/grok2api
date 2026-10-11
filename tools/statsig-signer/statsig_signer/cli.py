@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     watch_cmd.add_argument("--deep", action="store_true", help="这一轮用浏览器抓包对照官方 HEX")
     watch_cmd.add_argument("--repair", action="store_true", help="发现变化时自动抓包修复热代码")
     watch_cmd.add_argument("--browser", choices=("local", "x2api"), default="local")
-    watch_cmd.add_argument("--deep-every", type=int, default=0, help="每 N 轮浏览器深探 HEX，0 表示只靠 HTML 指纹（sentry/curves/chunks）")
+    watch_cmd.add_argument("--deep-every", type=int, default=5, help="每 N 轮主动验签，默认每五轮；0 仅检查 HTML 指纹")
 
     args = parser.parse_args(argv)
     store = Store()

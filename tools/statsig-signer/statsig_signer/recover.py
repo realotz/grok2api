@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from itertools import product
-from typing import Any, Sequence
+from itertools import combinations_with_replacement, product
+from typing import Any, Iterator, Sequence
 
 from .algorithm import Formula, aligned_seek, compute_hex, go_round, hex_from_segment, path_segments
 
@@ -16,6 +16,7 @@ class RecoverResult:
     hex: str = ""
     reason: str = ""
     candidates: list[dict[str, Any]] = field(default_factory=list)
+    candidate_count: int = 0
 
 
 def recover_formula(
@@ -67,7 +68,7 @@ def recover_formula_stable(
     samples: Sequence[dict[str, Any]],
     current: Formula | None = None,
 ) -> RecoverResult:
-    """Invert path/seg/seek indices that match every sample. One seed is not enough."""
+    """完整枚举并批量筛选所有 path、seg、seek 下标组合；单个 seed 不足以定解。"""
     current = current or Formula()
     parsed: list[tuple[bytes, list[str], str, float | None]] = []
     for item in samples:
@@ -79,64 +80,83 @@ def recover_formula_stable(
         if len(paths) < 4 or not official:
             continue
         parsed.append((seed, paths, official, item.get("seek")))
+    if parsed:
+        latest_paths = parsed[-1][1]
+        parsed = [item for item in parsed if item[1] == latest_paths]
     if len(parsed) < 2:
         return RecoverResult(status="needs_agent", reason="稳定反解至少需要两次不同 seed 的官方 HEX")
-    directs = []
+    directs: list[set[tuple[int, int, float]]] = []
     for seed, paths, official, seek in parsed:
-        hit = _search_direct(seed, paths, official, seek)
-        if not hit:
+        hits = {(hit["path"], hit["seg"], hit["seek"]) for hit in _direct_matches(paths, official, seek)}
+        if not hits:
             return RecoverResult(status="needs_agent", reason="有抓包穷举不到 path/seg/seek")
-        directs.append(hit)
+        directs.append(hits)
     n = len(parsed[0][0])
+    path_values = [{hit[0] for hit in hits} for hits in directs]
+    seg_values = [{hit[1] for hit in hits} for hits in directs]
+    seek_values = [{hit[2] for hit in hits} for hits in directs]
     path_idx = [
         i
         for i in range(n)
-        if all(int(parsed[k][0][i]) % current.path_mod == directs[k]["path"] for k in range(len(parsed)))
+        if all(int(parsed[k][0][i]) % current.path_mod in path_values[k] for k in range(len(parsed)))
     ]
     seg_idx = [
         i
         for i in range(n)
-        if all(int(parsed[k][0][i]) % current.seg_mod == directs[k]["seg"] for k in range(len(parsed)))
+        if all(int(parsed[k][0][i]) % current.seg_mod in seg_values[k] for k in range(len(parsed)))
     ]
     if not path_idx or not seg_idx:
         return RecoverResult(status="needs_agent", reason="两次抓包对不上同一套 path/seg 下标")
     seek_mod = current.seek_mod
     align = current.seek_align or 1
-    seek_groups: dict[tuple[int, ...], tuple[int, int, int]] = {}
+    seek_groups: dict[tuple[int, int, int], list[float]] = {}
     current_seeks = tuple(int(v) for v in current.seek_indices)
-    for a, b, c in product(range(n), repeat=3):
-        ok = True
+    for a, b, c in combinations_with_replacement(range(n), 3):
+        values = []
         for k, (seed, _, _, _) in enumerate(parsed):
             product_v = (int(seed[a]) % seek_mod) * (int(seed[b]) % seek_mod) * (int(seed[c]) % seek_mod)
-            if go_round(product_v / align) * align != float(directs[k]["seek"]):
-                ok = False
+            value = go_round(product_v / align) * align
+            if value not in seek_values[k]:
                 break
-        if ok:
-            key = tuple(sorted((a, b, c)))
-            if key not in seek_groups or (a, b, c) == current_seeks:
-                seek_groups[key] = (a, b, c)
+            values.append(value)
+        else:
+            key = current_seeks if tuple(sorted(current_seeks)) == (a, b, c) else (a, b, c)
+            seek_groups[key] = values
     if not seek_groups:
         return RecoverResult(status="needs_agent", reason="两次抓包对不上同一套 seek 下标")
-    candidates = [
-        {"path_index": path_idx, "seg_index": seg_idx, "seek_indices": list(item)}
-        for item in seek_groups.values()
-    ]
-    if len(path_idx) != 1 or len(seg_idx) != 1 or len(seek_groups) != 1:
+    candidates: list[dict[str, Any]] = []
+    for path_index, seg_index, seeks in product(path_idx, seg_idx, seek_groups):
+        if all(
+            (
+                seed[path_index] % current.path_mod,
+                seed[seg_index] % current.seg_mod,
+                seek_groups[seeks][k],
+            ) in directs[k]
+            for k, (seed, _, _, _) in enumerate(parsed)
+        ):
+            candidates.append({"path_index": path_index, "seg_index": seg_index, "seek_indices": list(seeks)})
+    if not candidates:
+        return RecoverResult(status="needs_agent", reason="全部下标候选均被官方样本排除")
+    if len(candidates) != 1:
+        path_count = len({item["path_index"] for item in candidates})
+        seg_count = len({item["seg_index"] for item in candidates})
+        seek_count = len({tuple(item["seek_indices"]) for item in candidates})
         return RecoverResult(
             status="ambiguous",
             reason=(
-                f"{len(parsed)} 次抓包后仍有 {len(path_idx)} 个 path、{len(seg_idx)} 个 seg、"
-                f"{len(seek_groups)} 组 seek 下标，再 capture_page"
+                f"{len(parsed)} 次抓包后仍有 {path_count} 个 path、{seg_count} 个 seg、"
+                f"{seek_count} 组 seek 下标，再 capture_page"
             ),
             candidates=candidates[:12],
+            candidate_count=len(candidates),
         )
-    seek_hit = next(iter(seek_groups.values()))
+    candidate = candidates[0]
     formula = Formula(
-        path_index=path_idx[0],
+        path_index=candidate["path_index"],
         path_mod=current.path_mod,
-        seg_index=seg_idx[0],
+        seg_index=candidate["seg_index"],
         seg_mod=current.seg_mod,
-        seek_indices=seek_hit,
+        seek_indices=tuple(candidate["seek_indices"]),
         seek_mod=current.seek_mod,
         seek_align=current.seek_align,
         duration=current.duration,
@@ -153,7 +173,7 @@ def recover_formula_stable(
         if status == "matched"
         else "多次抓包交叉后下标唯一，与官方 HEX 一致"
     )
-    return RecoverResult(status=status, formula=formula, hex=parsed[0][2], reason=reason, candidates=candidates)
+    return RecoverResult(status=status, formula=formula, hex=parsed[0][2], reason=reason, candidates=candidates, candidate_count=1)
 
 
 def _search_direct(
@@ -162,6 +182,15 @@ def _search_direct(
     official_hex: str,
     seek_hint: float | None,
 ) -> dict[str, Any] | None:
+    return next(_direct_matches(paths, official_hex, seek_hint), None)
+
+
+def _direct_matches(
+    paths: Sequence[str],
+    official_hex: str,
+    seek_hint: float | None,
+) -> Iterator[dict[str, Any]]:
+    """保留全部 HEX 等价的 path/seg/seek 命中，不用第一个命中排除其他正确候选。"""
     seeks: list[float]
     if seek_hint is not None:
         seeks = [float(seek_hint)]
@@ -177,8 +206,7 @@ def _search_direct(
                 except ValueError:
                     continue
                 if hex_value == official_hex:
-                    return {"path": path_i, "seg": seg_i, "seek": seek}
-    return None
+                    yield {"path": path_i, "seg": seg_i, "seek": seek}
 
 
 def _formula_matches_direct(seed: bytes, formula: Formula, direct: dict[str, Any]) -> bool:

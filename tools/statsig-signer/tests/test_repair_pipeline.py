@@ -7,11 +7,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import os
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from statsig_signer.agent import _hex_js_for_formula, _kernel, fixture_from_pair_file, update
+from statsig_signer.agent import _apply_batch, _hex_js_for_formula, _kernel, fixture_from_pair_file, update
 from statsig_signer.algorithm import Formula, compute_hex, decode_seed, encode_raw_std, inspect_statsig_id, valid_statsig_id
-from statsig_signer.recover import recover_formula
+from statsig_signer.recover import RecoverResult, recover_formula
 from statsig_signer.runtime import HotRuntime
 from statsig_signer.store import Pair, Store
 
@@ -25,6 +25,30 @@ WORKER_JS = ROOT / "hot" / "eval_worker.js"
 
 
 class RepairPipelineTest(unittest.TestCase):
+    def test_batch_holdout_mismatch_does_not_write(self) -> None:
+        """独立验签样本不匹配时，热代码、公式和 pair 都必须保持原样。"""
+        with TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            original = json.loads(PAIR_PATH.read_text())
+            store.save_pair(Pair.from_dict(original))
+            before_formula = store.formula
+            samples = []
+            for offset in (0, 7, 11):
+                item = dict(original, ok=True)
+                item["seed"] = encode_raw_std(bytes((index * (offset + 1) + offset) % 256 for index in range(48)))
+                samples.append(item)
+            samples[-1]["hex"] = "mismatch"
+            runtime = Mock(spec=HotRuntime)
+            runtime.eval_js.return_value = original["hex"]
+            with patch("statsig_signer.agent.recover_formula_stable", return_value=RecoverResult(
+                status="recovered", formula=Formula(seg_index=33), candidate_count=1,
+            )):
+                result = _apply_batch(store, runtime, samples)
+            self.assertFalse(result["ok"], result)
+            runtime.write_js.assert_not_called()
+            self.assertEqual(store.formula, before_formula)
+            self.assertEqual(store.pair.hex, original["hex"])
+
     def test_hook_capture_has_same_page_seed_hex_paths_and_seek(self) -> None:
         pair = json.loads(PAIR_PATH.read_text(encoding="utf-8"))
         debug = json.loads(HOOK_DEBUG.read_text(encoding="utf-8"))
