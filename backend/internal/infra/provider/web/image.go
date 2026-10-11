@@ -22,6 +22,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
@@ -809,6 +810,7 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 	return nil, fmt.Errorf("图片编辑 Clearance 重试耗尽")
 }
 
+// editImageAttempt 上传输入后执行区域编辑，在上游成图时先判定风控，再分段和归档结果。
 func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
 	if strings.TrimSpace(request.Quality) != "" {
 		return invalidImageRequest("Grok Web 图片模型不支持 quality")
@@ -897,7 +899,8 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 	if len(assets) > 0 && (len(request.SelectionRegions) > 0 || len(request.RegionEdits) > 0) {
 		referer = cfg.BaseURL + "/imagine/post/" + url.PathEscape(assets[0]) + "?scope=asset"
 	}
-	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.ImageTimeoutSeconds)*time.Second, referer)
+	var upstreamStarted time.Time
+	response, err := a.postJSONWithRefererTimed(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.ImageTimeoutSeconds)*time.Second, referer, &upstreamStarted)
 	if err != nil {
 		return nil, err
 	}
@@ -921,11 +924,47 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 	}
 	defer response.Body.Close()
 	capture := &boundedCapture{limit: 8 << 20}
-	parsed, consumeErr := consumeUpstream(io.TeeReader(response.Body, capture), nil)
+	guardRegionRisk := (len(request.SelectionRegions) > 0 || len(request.RegionEdits) > 0) &&
+		strings.EqualFold(modeldomain.ExternalPublicID(request.Credential.Provider, request.PublicModel), "grok-imagine-image-2.0-web")
+	parsed := parsedChat{}
+	var firstFinalImageReady time.Time
+	var finalImageURLs []string
+	consumeErr := consumeJSONObjects(io.TeeReader(response.Body, capture), 8<<20, func(data []byte) error {
+		frameReadyAt := time.Now()
+		if _, _, err := parseUpstreamFrame(data, &parsed); err != nil {
+			return err
+		}
+		if !guardRegionRisk {
+			return nil
+		}
+		// 区域结果只接受本帧完成检查通过的节点，普通解析器的累计图片不能绕过检查。
+		frameParsed := parsedChat{
+			Images:          extractCapturedImageURLsWithCompletion(data, true),
+			moderatedImages: parsed.moderatedImages,
+		}
+		urls := imageEditResultURLs(&frameParsed, nil)
+		for _, rawURL := range urls {
+			finalImageURLs = appendUniqueString(finalImageURLs, rawURL)
+		}
+		if len(urls) == 0 || !firstFinalImageReady.IsZero() {
+			return nil
+		}
+		firstFinalImageReady = frameReadyAt
+		return a.checkImageEditRisk(request, upstreamStarted, firstFinalImageReady, len(urls))
+	})
 	if consumeErr != nil {
 		return nil, consumeErr
 	}
-	urls := imageEditResultURLs(&parsed, capture.Bytes())
+	var urls []string
+	if guardRegionRisk {
+		// EOF 只沿用已确认的最终帧，禁止从原始预览或累计文本恢复成图。
+		if len(finalImageURLs) > 0 {
+			parsed.Images = finalImageURLs
+			urls = imageEditResultURLs(&parsed, nil)
+		}
+	} else {
+		urls = imageEditResultURLs(&parsed, capture.Bytes())
+	}
 	if len(urls) == 0 {
 		diagnostics := inspectLiteCapture(capture.Bytes())
 		_, hasKind := payload["kind"]
@@ -973,6 +1012,24 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 		result.QuotaUnits = 1
 	}
 	return result, err
+}
+
+// checkImageEditRisk 按首个最终成图帧的到达时刻判定，避免流尾、上传和下载耗时掩盖风控。
+func (a *Adapter) checkImageEditRisk(request provider.ImageEditRequest, startedAt, completedAt time.Time, completed int) error {
+	elapsed := completedAt.Sub(startedAt)
+	risk := provider.IsFastImageRisk(elapsed)
+	a.log().Info("image_edit_upstream_completed",
+		"account_id", request.Credential.ID,
+		"region_groups", len(request.RegionEdits),
+		"selection_regions", len(request.SelectionRegions),
+		"completed_images", completed,
+		"elapsed_ms", elapsed.Milliseconds(),
+		"risk", risk,
+	)
+	if risk {
+		return fmt.Errorf("%w: 上游区域编辑完成耗时 %dms", provider.ErrImageRiskScenery, elapsed.Milliseconds())
+	}
+	return nil
 }
 
 type imageEditPayloadOptions struct {
@@ -1315,11 +1372,16 @@ func (w *boundedCapture) Write(value []byte) (int, error) {
 func (w *boundedCapture) Bytes() []byte { return w.data }
 
 func extractCapturedImageURLs(data []byte) []string {
+	return extractCapturedImageURLsWithCompletion(data, false)
+}
+
+// extractCapturedImageURLsWithCompletion 复用已有候选提取，逐帧判定时排除未完成和受审查的图片节点。
+func extractCapturedImageURLsWithCompletion(data []byte, completedOnly bool) []string {
 	results := make([]string, 0, 2)
 	_ = consumeJSONObjects(bytes.NewReader(data), 8<<20, func(frame []byte) error {
 		var value any
 		if json.Unmarshal(frame, &value) == nil {
-			collectCapturedImageURLs(value, &results)
+			collectCapturedImageURLs(value, &results, completedOnly)
 		}
 		return nil
 	})
@@ -1421,34 +1483,47 @@ func sortedSetValues(values map[string]struct{}) []string {
 	return result
 }
 
-func collectCapturedImageURLs(value any, results *[]string) {
+// collectCapturedImageURLs 递归提取现有成图格式，完成检查优先排除显式非最终节点。
+func collectCapturedImageURLs(value any, results *[]string, completedOnly bool) {
 	switch current := value.(type) {
 	case map[string]any:
-		if rawURL := imageURLFromCardData(current); rawURL != "" {
-			appendCapturedImageURL(results, rawURL)
-		}
 		moderated, _ := current["moderated"].(bool)
 		progress, hasProgress := numberAsInt(current["progress"])
+		final, hasFinal := current["isFinal"].(bool)
+		completion, hasCompletion := numberAsInt(current["percentage_complete"])
+		if completedOnly && (moderated || (hasFinal && !final) || (hasProgress && progress < 100) || (hasCompletion && completion < 100)) {
+			return
+		}
+		if !completedOnly {
+			if rawURL := imageURLFromCardData(current); rawURL != "" {
+				appendCapturedImageURL(results, rawURL)
+			}
+		}
 		if !moderated && hasProgress && progress >= 100 {
 			appendCapturedImageURL(results, firstString(current, "imageUrl", "image_url", "url"))
 		}
 		for _, nested := range current {
-			collectCapturedImageURLs(nested, results)
+			collectCapturedImageURLs(nested, results, completedOnly)
 		}
 	case []any:
 		for _, nested := range current {
-			collectCapturedImageURLs(nested, results)
+			collectCapturedImageURLs(nested, results, completedOnly)
 		}
 	case string:
 		trimmed := strings.TrimSpace(current)
 		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 			var nested any
 			if json.Unmarshal([]byte(trimmed), &nested) == nil {
-				collectCapturedImageURLs(nested, results)
+				collectCapturedImageURLs(nested, results, completedOnly)
 				return
 			}
 		}
 		appendCapturedImageURL(results, trimmed)
+		if completedOnly {
+			for _, rawURL := range extractMarkdownImages(trimmed) {
+				*results = appendUniqueString(*results, absoluteAssetURL(rawURL))
+			}
+		}
 	}
 }
 
@@ -1680,6 +1755,11 @@ func (a *Adapter) postJSON(ctx context.Context, cfg Config, lease *egress.Lease,
 }
 
 func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *egress.Lease, token, endpoint string, payload any, timeout time.Duration, referer string) (*http.Response, error) {
+	return a.postJSONWithRefererTimed(ctx, cfg, lease, token, endpoint, payload, timeout, referer, nil)
+}
+
+// postJSONWithRefererTimed 从实际发送开始计时，签名刷新后的重发使用本次调用的独立起点。
+func (a *Adapter) postJSONWithRefererTimed(ctx context.Context, cfg Config, lease *egress.Lease, token, endpoint string, payload any, timeout time.Duration, referer string, startedAt *time.Time) (*http.Response, error) {
 	data, _ := json.Marshal(payload)
 	for attempt := 0; attempt < 2; attempt++ {
 		requestCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -1694,6 +1774,9 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 		// upstream return a compressed body that json.Unmarshal cannot parse.
 		request.Header.Set("Accept-Encoding", "gzip")
 		a.applySignedStatsig(requestCtx, request, token, lease)
+		if startedAt != nil {
+			*startedAt = time.Now()
+		}
 		response, err := lease.DoDeferredForbidden(request)
 		if err != nil {
 			cancel()

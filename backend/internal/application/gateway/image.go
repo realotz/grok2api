@@ -388,6 +388,12 @@ func (s *Service) executeImage(
 		lease.markSelectorUpstreamStarted()
 		response, err = execute(ctx, route.Provider, credential, route.UpstreamModel)
 		if err != nil {
+			if guardFastResult && errors.Is(err, provider.ErrImageRiskScenery) {
+				_ = s.markImageRiskAccount(eventID, requestID, externalModel, credential, time.Since(attemptStarted))
+				lease.Release()
+				writeFailureAudit(http.StatusServiceUnavailable, "image_risk_scenery", &credential)
+				return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
+			}
 			s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
 			if isSSOCredentialRejected(err, credential) {
 				s.markSSOCredentialRejected(ctx, credential, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
@@ -461,15 +467,7 @@ func (s *Service) executeImage(
 					_ = response.Body.Close()
 				}
 				elapsed := time.Since(attemptStarted)
-				s.logger.Warn("image_risk_scenery_detected", "event_id", eventID, "request_id", requestID, "model", externalModel, "account_id", credential.ID, "elapsed_ms", elapsed.Milliseconds())
-				markCtx, markCancel := context.WithTimeout(context.Background(), accountStateWriteTimeout)
-				markErr := s.accounts.MarkAccountMediaRisk(markCtx, credential, "image_scenery")
-				markCancel()
-				if markErr != nil {
-					s.logger.Error("image_risk_mark_failed", "event_id", eventID, "request_id", requestID, "account_id", credential.ID, "error", markErr)
-				} else {
-					s.selector.evictCandidate(credential.Provider, credential.ID)
-				}
+				_ = s.markImageRiskAccount(eventID, requestID, externalModel, credential, elapsed)
 				failedCredential := credential
 				lastCredentialFailure = &failedCredential
 				lastCredentialError = provider.ErrImageRiskScenery
@@ -548,6 +546,19 @@ func (s *Service) executeImage(
 	}
 	finalizationOwnsReservation = true
 	return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, Finalize: finalize}, nil
+}
+
+// markImageRiskAccount 复用媒体风控写入与候选池驱逐，保留账号及关联凭据的历史风险标记。
+func (s *Service) markImageRiskAccount(eventID, requestID, model string, credential accountdomain.Credential, elapsed time.Duration) error {
+	s.logger.Warn("image_risk_scenery_detected", "event_id", eventID, "request_id", requestID, "model", model, "account_id", credential.ID, "elapsed_ms", elapsed.Milliseconds())
+	markCtx, cancel := context.WithTimeout(context.Background(), accountStateWriteTimeout)
+	defer cancel()
+	if err := s.accounts.MarkAccountMediaRisk(markCtx, credential, "image_scenery"); err != nil {
+		s.logger.Error("image_risk_mark_failed", "event_id", eventID, "request_id", requestID, "account_id", credential.ID, "error", err)
+		return err
+	}
+	s.selector.evictCandidate(credential.Provider, credential.ID)
+	return nil
 }
 
 func isFastWebImage20Route(route modeldomain.Route, operation audit.Operation) bool {
