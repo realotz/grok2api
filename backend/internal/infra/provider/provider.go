@@ -656,8 +656,8 @@ type VideoResult struct {
 // as a risk result and must not be downloaded.
 const VideoRiskReadyWithin = 10 * time.Second
 
-// ImageRiskReadyWithin is the matching window for guarded Web image results.
-const ImageRiskReadyWithin = VideoRiskReadyWithin
+// ImageRiskReadyWithin 是 Web 图片独立的风控成图时间窗口。
+const ImageRiskReadyWithin = 5 * time.Second
 
 // ErrVideoRiskScenery is returned when a remote video becomes available too quickly.
 var ErrVideoRiskScenery = errors.New("视频过快完成，判定为风控风景片")
@@ -681,8 +681,7 @@ func IsFastRemoteVideoRisk(elapsed time.Duration, result VideoResult) bool {
 	return elapsed >= 0 && elapsed < VideoRiskReadyWithin
 }
 
-// IsFastImageRisk reports whether a guarded image result completed inside the
-// same strict window used by video scenery detection.
+// IsFastImageRisk 判断受保护的图片是否在独立的严格时间窗口内完成。
 func IsFastImageRisk(elapsed time.Duration) bool {
 	return elapsed >= 0 && elapsed < ImageRiskReadyWithin
 }
