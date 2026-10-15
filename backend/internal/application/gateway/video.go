@@ -156,7 +156,11 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, err
 	}
-	routes = preferVideo15Routes(routes)
+	if input.Duration > 0 && input.Duration != 6 {
+		routes = preferProviderVideo15Routes(routes, account.ProviderBuild)
+	} else {
+		routes = preferVideo15Routes(routes)
+	}
 	if len(input.Keyframes) > 0 {
 		compatible := routes[:0]
 		for _, route := range routes {
@@ -282,7 +286,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	return job, nil
 }
 
-// preferVideo15Routes 统一优先 Web 1.5；Web 无可调度路由时再按原顺序回退 Build/Console。
+// preferVideo15Routes 为 6 秒或未指定时长的请求优先选择 Web 1.5。
 func preferVideo15Routes(routes []model.Route) []model.Route {
 	return preferProviderVideo15Routes(routes, account.ProviderWeb)
 }
