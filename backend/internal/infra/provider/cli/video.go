@@ -281,6 +281,9 @@ func (a *Adapter) DownloadVideo(ctx context.Context, credential account.Credenti
 }
 
 func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile videoRequestProfile) (map[string]any, error) {
+	if err := mediadomain.ValidateVideoKeyframes(request.Keyframes, request.Duration); err != nil {
+		return nil, err
+	}
 	payload := map[string]any{
 		"model": profile.model,
 	}
@@ -305,6 +308,13 @@ func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile
 	}
 	if lastFrameURL := strings.TrimSpace(request.LastFrameURL); lastFrameURL != "" {
 		payload["last_frame"] = map[string]any{profile.imageURLField: lastFrameURL}
+	}
+	if len(request.Keyframes) > 0 {
+		frames := make([]map[string]any, 0, len(request.Keyframes))
+		for _, frame := range request.Keyframes {
+			frames = append(frames, map[string]any{"image": map[string]any{profile.imageURLField: frame.ImageURL}, "timestamp_s": frame.TimestampS})
+		}
+		payload["keyframes"] = frames
 	}
 	if len(request.ReferenceURLs) > 0 {
 		references := make([]map[string]any, 0, len(request.ReferenceURLs))
@@ -332,9 +342,9 @@ func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile
 		}
 		payload["reference_audios"] = audios
 	}
-	hasReferenceMode := len(request.ReferenceURLs) > 0 || len(request.ReferenceAudios) > 0
+	hasReferenceMode := len(request.ReferenceURLs) > 0 || len(request.ReferenceAudios) > 0 || len(request.Keyframes) > 0
 	if hasReferenceMode {
-		if strings.TrimSpace(request.Prompt) == "" {
+		if strings.TrimSpace(request.Prompt) == "" && request.ImageURL == "" && request.LastFrameURL == "" && len(request.Keyframes) == 0 {
 			return nil, fmt.Errorf("参考图/参考音频视频必须提供 prompt")
 		}
 		if strings.EqualFold(strings.TrimSpace(request.Resolution), "1080p") {

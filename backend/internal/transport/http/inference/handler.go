@@ -202,6 +202,10 @@ type videoGenerationAudio struct {
 }
 
 type videoGenerationRequest struct {
+	Keyframes []struct {
+		Image      videoGenerationImage `json:"image"`
+		TimestampS float64              `json:"timestamp_s"`
+	} `json:"keyframes"`
 	Model                   string                 `json:"model"`
 	Prompt                  string                 `json:"prompt"`
 	User                    *string                `json:"user"`
@@ -929,6 +933,7 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 	lastFrameURL := ""
 	referenceURLs := []string{}
 	referenceAudios := []string{}
+	keyframes := []mediadomain.VideoKeyframe{}
 	videoURL := ""
 	videoExtensionStartTime := 0.0
 
@@ -968,6 +973,17 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 				return
 			}
 			lastFrameURL = value
+		}
+		for i, frame := range request.Keyframes {
+			value, ok := parseVideoImage(frame.Image, fmt.Sprintf("keyframes[%d].image", i))
+			if !ok {
+				return
+			}
+			keyframes = append(keyframes, mediadomain.VideoKeyframe{ImageURL: value, TimestampS: frame.TimestampS})
+		}
+		if err := mediadomain.ValidateVideoKeyframes(keyframes, duration); err != nil {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
+			return
 		}
 		referenceURLs = make([]string, 0, len(request.ReferenceImages))
 		for _, input := range request.ReferenceImages {
@@ -1027,9 +1043,9 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_images 不能超过 %d 张", maxReferenceImages))
 			return
 		}
-		hasReferenceMode := len(referenceURLs) > 0 || len(referenceAudios) > 0
+		hasReferenceMode := len(referenceURLs) > 0 || len(referenceAudios) > 0 || len(keyframes) > 0
 		if hasReferenceMode {
-			if prompt == "" {
+			if prompt == "" && imageURL == "" && lastFrameURL == "" && len(keyframes) == 0 {
 				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "参考图/参考音频视频必须提供 prompt")
 				return
 			}
@@ -1060,7 +1076,7 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 			return
 		}
 		videoURL = value
-		if request.Image != nil || request.LastFrame != nil || len(request.ReferenceImages) > 0 || len(request.ReferenceAudios) > 0 {
+		if request.Image != nil || request.LastFrame != nil || len(request.ReferenceImages) > 0 || len(request.ReferenceAudios) > 0 || len(request.Keyframes) > 0 {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", label+"不支持 image、last_frame、reference_images 或 reference_audios")
 			return
 		}
@@ -1114,7 +1130,7 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		RequestID: requestID, ClientKey: clientKey, PublicModel: model,
 		Operation: op,
 		Prompt:    prompt, Duration: duration, AspectRatio: aspectRatio, Resolution: resolution,
-		ImageURL: imageURL, LastFrameURL: lastFrameURL, ReferenceURLs: referenceURLs, ReferenceAudios: referenceAudios, VideoURL: videoURL,
+		ImageURL: imageURL, LastFrameURL: lastFrameURL, ReferenceURLs: referenceURLs, ReferenceAudios: referenceAudios, VideoURL: videoURL, Keyframes: keyframes,
 		VideoExtensionStartTime: videoExtensionStartTime,
 	})
 	if err != nil {

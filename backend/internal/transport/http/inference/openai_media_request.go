@@ -288,7 +288,7 @@ func mediaFormField(name, value string, video bool) (json.RawMessage, error) {
 			kind = "integer"
 		case "video_extension_start_time":
 			kind = "number"
-		case "image", "last_frame", "reference_images", "reference_audios", "video", "output", "storage_options", "input_reference":
+		case "image", "last_frame", "reference_images", "reference_audios", "keyframes", "video", "output", "storage_options", "input_reference":
 			kind = "json"
 		}
 	} else {

@@ -17,6 +17,7 @@ func (a *Adapter) Definition() provider.Definition {
 			modeldomain.CapabilityImage,
 			modeldomain.CapabilityImageEdit,
 			modeldomain.CapabilityVideo,
+			modeldomain.CapabilityTTS,
 		},
 		Quota: provider.QuotaRemoteWindow,
 		Credential: provider.CredentialSurface{
@@ -26,7 +27,7 @@ func (a *Adapter) Definition() provider.Definition {
 			Responses: true, ChatCompletions: true, Messages: true, StoredResponses: true,
 		},
 		Media: provider.MediaSurface{
-			ImageGeneration: true, ImageEdit: true, VideoGeneration: true,
+			ImageGeneration: true, ImageEdit: true, VideoGeneration: true, TTS: true,
 		},
 		Inference: provider.InferencePolicy{Usage: provider.UsageEstimated, RetryForbiddenAsEgress: true},
 	}

@@ -613,6 +613,7 @@ const (
 )
 
 type VideoRequest struct {
+	Keyframes  []media.VideoKeyframe
 	Credential account.Credential
 	// Billing is used only to determine XAI eligibility in Build auto mode; nil means the account tier is unknown.
 	Billing *account.Billing

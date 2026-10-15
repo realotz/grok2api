@@ -324,6 +324,12 @@ func (a *Adapter) generateLegacyVideo(ctx context.Context, request provider.Vide
 
 // generateVideoV15 使用 Imagine Web 的 mediaGenInput 三分支协议。
 func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
+	if len(request.Keyframes) > 0 && request.Duration != applyFreeWebVideoDurationCap(request.Duration, a.config().FreeVideoDurationCap, request.Credential) {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("关键帧视频不允许按账号额度缩短 duration"))
+	}
+	if err := mediadomain.ValidateVideoKeyframes(request.Keyframes, request.Duration); err != nil {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
+	}
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
@@ -384,6 +390,14 @@ func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRe
 		}
 		referenceAssetIDs = append(referenceAssetIDs, assetID)
 	}
+	keyframes := make([]map[string]any, 0, len(request.Keyframes))
+	for _, frame := range request.Keyframes {
+		assetID, frameErr := prepareReference(frame.ImageURL)
+		if frameErr != nil {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(frameErr), 0, frameErr)
+		}
+		keyframes = append(keyframes, map[string]any{"asset": assetID, "timestampS": frame.TimestampS})
+	}
 	audioAssetIDs := make([]string, 0, len(request.ReferenceAudios))
 	for _, rawAudio := range request.ReferenceAudios {
 		assetID, audioErr := a.prepareVideoReferenceAudio(ctx, cfg, lease, token, rawAudio)
@@ -403,7 +417,7 @@ func (a *Adapter) generateVideoV15(ctx context.Context, request provider.VideoRe
 	ratio := resolveAspectRatio(request.AspectRatio)
 	resolution := resolveWebVideoV15Resolution(request.Credential.WebTier, request.Resolution)
 	prompt := webVideoPrompt(request.Prompt, imageAssetID, referenceAssetIDs, audioAssetIDs)
-	payload := videoV15CreatePayload(prompt, ratio, resolution, segments[0], imageAssetID, lastFrameAssetID, referenceAssetIDs, audioAssetIDs)
+	payload := videoV15CreatePayload(prompt, ratio, resolution, segments[0], imageAssetID, lastFrameAssetID, referenceAssetIDs, audioAssetIDs, keyframes...)
 	referer := cfg.BaseURL + "/imagine"
 	if parentID != "" {
 		referer = cfg.BaseURL + "/imagine/post/" + parentID
@@ -1168,20 +1182,24 @@ func videoCreatePayload(prompt, parentID, ratio, resolution string, seconds int,
 // <IMAGE_n> is reference_images[n], or the single first-frame image in i2v;
 // <AUDIO_n> is reference_audios[n] after those clips are uploaded. The two sequences are independent and 0-based.
 func webVideoPrompt(prompt, imageAssetID string, referenceAssetIDs, audioAssetIDs []string) string {
-	imageIDs := append([]string{}, referenceAssetIDs...)
-	if len(imageIDs) == 0 && imageAssetID != "" {
-		imageIDs = []string{imageAssetID}
+	imageIDs := make([]string, 0, len(referenceAssetIDs)+1)
+	if imageAssetID != "" {
+		imageIDs = append(imageIDs, imageAssetID)
 	}
+	imageIDs = append(imageIDs, referenceAssetIDs...)
 	return mediadomain.RewriteOfficialPromptToWebUUIDs(prompt, imageIDs, audioAssetIDs)
 }
 
 // videoV15CreatePayload 按 Imagine Web 新协议区分文生、单图和多参考图视频。
-func videoV15CreatePayload(prompt, ratio, resolution string, seconds int, imageAssetID, lastFrameAssetID string, referenceAssetIDs, audioAssetIDs []string) map[string]any {
+func videoV15CreatePayload(prompt, ratio, resolution string, seconds int, imageAssetID, lastFrameAssetID string, referenceAssetIDs, audioAssetIDs []string, keyframes ...map[string]any) map[string]any {
 	parameters := map[string]any{"prompt": prompt, "aspectRatio": ratio, "duration": seconds, "resolutionName": resolution}
 	mediaGenInput := map[string]any{}
-	combinedReferenceMode := lastFrameAssetID != "" || (imageAssetID != "" && (len(referenceAssetIDs) > 0 || len(audioAssetIDs) > 0))
+	combinedReferenceMode := lastFrameAssetID != "" || len(keyframes) > 0 || (imageAssetID != "" && (len(referenceAssetIDs) > 0 || len(audioAssetIDs) > 0))
 	switch {
 	case combinedReferenceMode:
+		if len(keyframes) > 0 {
+			parameters["keyframes"] = keyframes
+		}
 		if len(referenceAssetIDs) > 0 {
 			parameters["inputAssets"] = referenceAssetIDs
 		}

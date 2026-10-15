@@ -16,6 +16,7 @@ type ModelSpec struct {
 }
 
 var catalog = []ModelSpec{
+	{PublicID: "grok-voice-web", UpstreamModel: "grok-voice-web", Capability: modeldomain.CapabilityTTS, Mode: "fast", MinimumTier: account.WebTierBasic},
 	{PublicID: "grok-chat-fast", UpstreamModel: "grok-chat-fast", Capability: modeldomain.CapabilityChat, Mode: "fast", MinimumTier: account.WebTierBasic},
 	{PublicID: "grok-chat-auto", UpstreamModel: "grok-chat-auto", Capability: modeldomain.CapabilityChat, Mode: "auto", MinimumTier: account.WebTierSuper},
 	{PublicID: "grok-chat-expert", UpstreamModel: "grok-chat-expert", Capability: modeldomain.CapabilityChat, Mode: "expert", MinimumTier: account.WebTierSuper},
