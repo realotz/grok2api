@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,7 +65,7 @@ func (a *Adapter) ConvertToBuild(ctx context.Context, credential accountdomain.C
 	defer cancel()
 	flow := &ssoBuildFlow{
 		client: lease, userAgent: lease.UserAgent,
-		cookies: map[string]string{"sso": token, "sso-rw": token},
+		cookies: ssoBuildCookies(token, lease.CFCookies),
 	}
 	seed, err := flow.convert(requestCtx, credential)
 	if err != nil {
@@ -105,7 +106,7 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 	}
 
 	// verify 只解析首个重定向，随后读取 consent 页面取得一次性授权令牌。
-	status, finalURL, _, err := f.doWithFollow(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}}, false, nil)
+	status, finalURL, verifyBody, err := f.doWithFollow(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}}, false, nil)
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
@@ -129,17 +130,22 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		"Sec-Fetch-Site":            "same-site",
 		"Sec-Fetch-User":            "?1",
 		"Upgrade-Insecure-Requests": "1",
+		"Referer":                   "https://auth.x.ai/",
 	}
-	status, consentPage, consentBody, err := f.doWithFollow(ctx, http.MethodGet, consentPage, nil, true, browserHeaders)
-	if err != nil {
-		return provider.CredentialSeed{}, err
-	}
-	if status < 200 || status >= 400 {
-		return provider.CredentialSeed{}, fmt.Errorf("SSO Device Consent 页面加载失败: %w", conversionHTTPError{status: status})
-	}
-	consentToken := scrapeConsentToken(consentBody)
+	consentToken := scrapeConsentToken(verifyBody)
 	if consentToken == "" {
-		return provider.CredentialSeed{}, fmt.Errorf("SSO Device Consent 缺少 consent_token")
+		var consentBody []byte
+		status, consentPage, consentBody, err = f.doWithFollow(ctx, http.MethodGet, consentPage, nil, true, browserHeaders)
+		if err != nil {
+			return provider.CredentialSeed{}, err
+		}
+		if status < 200 || status >= 300 {
+			return provider.CredentialSeed{}, fmt.Errorf("SSO Device Consent 页面加载失败: %w", conversionHTTPError{status: status})
+		}
+		consentToken = scrapeConsentToken(consentBody)
+	}
+	if !consentTokenMatchesDevice(consentToken, device.DeviceCode) {
+		return provider.CredentialSeed{}, fmt.Errorf("SSO Device Consent 缺少匹配当前设备的 consent_token")
 	}
 	status, finalURL, _, err = f.doWithFollow(ctx, http.MethodPost, ssoApproveURL, url.Values{
 		"user_code": {device.UserCode}, "action": {"allow"}, "principal_type": {"User"}, "principal_id": {""},
@@ -310,7 +316,7 @@ func (f *ssoBuildFlow) doWithFollow(ctx context.Context, method, endpoint string
 			return response.StatusCode, currentURL, data, fmt.Errorf("xAI OAuth 重定向到非受信域名")
 		}
 		if !follow {
-			return response.StatusCode, currentURL, nil, nil
+			return response.StatusCode, currentURL, data, nil
 		}
 		if response.StatusCode == http.StatusSeeOther || ((response.StatusCode == http.StatusMovedPermanently || response.StatusCode == http.StatusFound) && currentMethod != http.MethodGet && currentMethod != http.MethodHead) {
 			currentMethod = http.MethodGet
@@ -335,12 +341,17 @@ func (f *ssoBuildFlow) captureCookies(response *http.Response) {
 	}
 }
 
-// scrapeConsentToken 从隐藏表单字段读取令牌，不依赖 HTML 属性顺序。
+var consentTokenJSONRe = regexp.MustCompile(`(?i)\\?["']?(?:consentToken|consent_token)\\?["']?\s*[:=]\s*\\?["'](eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\\?["']`)
+
+// scrapeConsentToken 优先读取隐藏表单字段，兼容授权页内嵌的 JSON 令牌。
 func scrapeConsentToken(body []byte) string {
 	tokenizer := html.NewTokenizer(bytes.NewReader(body))
 	for {
 		switch tokenizer.Next() {
 		case html.ErrorToken:
+			if match := consentTokenJSONRe.FindSubmatch(body); match != nil {
+				return string(match[1])
+			}
 			return ""
 		case html.StartTagToken, html.SelfClosingTagToken:
 			token := tokenizer.Token()
@@ -361,6 +372,25 @@ func scrapeConsentToken(body []byte) string {
 			}
 		}
 	}
+}
+
+// consentTokenMatchesDevice 防止提交其他设备授权流程的一次性令牌。
+func consentTokenMatchesDevice(token, deviceCode string) bool {
+	parts := strings.Split(token, ".")
+	return len(parts) == 3 && parts[0] != "" && parts[2] != "" &&
+		deviceCode != "" && claimString(decodeBuildClaims(token), "dc") == deviceCode
+}
+
+// ssoBuildCookies 合并出口已有的 Cloudflare Cookie 与当前账号的 SSO。
+func ssoBuildCookies(token, cloudflareCookies string) map[string]string {
+	cookies := make(map[string]string)
+	for _, part := range strings.Split(infraegress.BuildSSOCookie(token, cloudflareCookies), ";") {
+		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if ok && name != "" {
+			cookies[name] = value
+		}
+	}
+	return cookies
 }
 
 func ssoDeviceRedirectState(raw string) string {

@@ -824,6 +824,20 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	quotaMode := videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), job.Quality)
 	quotaRefreshGroup := s.providers.QuotaRefreshGroup(route.Provider, route.UpstreamModel)
 	pinnedOnly := decodeVideoPinnedOnly(job.InputJSON)
+	// 异步执行与换号重试均沿用客户端 Key 的账号范围，不能扩大到整个号池。
+	accountScope := clientkey.AccountScope{}
+	if job.ClientKeyID > 0 {
+		key, keyErr := s.clientKeys.Get(ctx, job.ClientKeyID)
+		if keyErr != nil {
+			if parent.Err() != nil {
+				s.deferVideoJob(parent, job)
+				return
+			}
+			s.failVideoJob(ctx, job, "client_key_unavailable", keyErr, 0, nil)
+			return
+		}
+		accountScope = key.AccountScope()
+	}
 	attemptPolicy := s.videoAttemptPolicy()
 	if pinnedOnly {
 		// Account-model tests must stay on the pinned credential. Never rotate.
@@ -865,7 +879,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			} else if pinnedOnly {
 				lease, err = s.selector.AcquirePinnedIgnoringSSORisk(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true)
 			} else {
-				lease, err = s.selector.AcquirePinned(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true)
+				lease, err = s.selector.AcquirePinnedForKey(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true, accountScope)
 			}
 			if err != nil {
 				excluded[pinnedAccountID] = true
@@ -879,7 +893,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 				}
 			} else {
 				if selection == nil {
-					selection, err = s.selector.beginSelectionSessionForKeyAndTier(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, clientkey.AccountScope{}, webVideoRequiredTier(route.Provider, route.UpstreamModel, job.Quality, job.Seconds))
+					selection, err = s.selector.beginSelectionSessionForKeyAndTier(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, accountScope, webVideoRequiredTier(route.Provider, route.UpstreamModel, job.Quality, job.Seconds))
 				}
 				if err == nil {
 					lease, err = selection.Acquire(ctx, excluded, false)
