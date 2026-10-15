@@ -82,7 +82,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	default:
 		return media.Job{}, fmt.Errorf("不支持的视频操作")
 	}
-	if len(input.Prompt) > 100000 {
+	if len(input.Prompt) > media.MaxVideoPromptBytes {
 		return media.Job{}, fmt.Errorf("prompt 过长")
 	}
 	if operation == provider.VideoOperationGenerate {

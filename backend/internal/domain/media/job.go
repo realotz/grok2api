@@ -18,6 +18,9 @@ const (
 // Keep the relational CHECK constraint and gateway encode guard aligned with this value.
 const MaxInputJSONBytes = 32 << 20
 
+// MaxVideoPromptBytes 是各视频渠道共用的 UTF-8 请求上限，不按渠道额外截断。
+const MaxVideoPromptBytes = 100000
+
 // MaxInputImages 是旧图片和视频模型保留的参考图上限。
 const MaxInputImages = 8
 
@@ -25,7 +28,7 @@ const MaxInputImages = 8
 const MaxModelReferenceImages = 14
 
 // MaxPersistedInputImages 是视频任务的绝对存储上限，模型限制在入库前单独校验。
-const MaxPersistedInputImages = MaxModelReferenceImages
+const MaxPersistedInputImages = MaxModelReferenceImages + 2 + 4
 
 // ReferenceImageLimit 根据公开或上游模型名返回参考图上限，其他模型保持旧限制。
 func ReferenceImageLimit(model string) int {

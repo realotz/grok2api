@@ -4,23 +4,26 @@
 
 ## 交付状态
 
-代码提交：`9d32af38`，已推送 `realotz/grok2api` 的 `main` 与
+关键帧与 TTS 基础提交：`9d32af38`，已推送 `realotz/grok2api` 的 `main` 与
 `codex/web-video-keyframes-voices`。**尚未部署新功能，不能视为全部验收通过。**
 
 | 项目 | 实现 | 真实验证 |
 | --- | --- | --- |
 | Web 关键帧 | 已完成参数、上传资产、时间戳及任务持久化适配 | 等待新版本部署 |
-| Build 关键帧 | 已完成官方请求结构及现有 Build/XAI 出站字段映射 | 无可用 Super Build 凭据，未验证 |
+| Build 关键帧 | 已完成官方请求结构及现有 Build/XAI 出站字段映射 | 同账号上游请求完成；4 秒画面符合参考，2 秒有过渡重影，精确锚点尚未通过完整验收 |
 | URL 参考图片 | 沿用现有安全下载、上传与任务管线 | Web 6 秒视频成功，已检查 MP4 |
 | 视频预设音色 `reference_audios` | 沿用现有 `voice_id` 支持 | Eve 实测失败，不标为可用 |
 | Web 文本转语音及音色列表 | 新增 `grok-voice-web` 和 TTS 适配器 | 等待新版本部署 |
-| Build 超 4K 提示词 | 保留原限制 | 未实测，未放开 |
+| Build 超 4K 提示词 | 删除独有 4096 字节门槛，与 Web 共用 100,000 UTF-8 字节上限 | 5000 ASCII 字符及 10,000 中文字符均生成成功 |
 
 生产仍是 `b62dfd3a7d7d288b0d4fef6ff54cac93d8596c40`。
 GitHub 拒绝触发 `oracle-release.yml`：HTTP 422，
 `Actions has been disabled for this repository`。
-仓库 Actions 权限及工作流查询均显示启用，重新设置启用后仍被拒绝。
-需要先解除 GitHub 对该仓库／账号的 Actions 执行限制，再运行既有发布流程。
+仓库 Actions 权限及工作流查询均显示启用。Actions 页面明确显示该 fork
+因 GitHub Actions 使用规模被暂停，需要仓库维护者重新启用。
+REST 仓库权限设置和工作流 enable 接口没有解除该暂停；
+当前浏览器仅登录 `yuzimu`，没有 `realotz` 的维护者网页会话。
+需要在网页登录 `realotz` 并恢复该 fork 的工作流，再运行既有发布流程。
 未在生产主机编译，也未通过本地 Docker 绕过 CI。
 
 ## 参数契约
@@ -56,6 +59,8 @@ GitHub 拒绝触发 `oracle-release.yml`：HTTP 422，
 - 关键帧不能用于视频编辑或延长。账号不支持请求时长时，不能偷偷缩短时长。
 - 同时提供首帧与参考图时，`<IMAGE_0>` 是首帧，
   `reference_images[0]` 对应 `<IMAGE_1>`，依次递增。
+- Build 与 Web 共用网关 `100,000` UTF-8 字节提示词上限，不截断。
+  上游已实测到 10,000 个中文字符／30,000 字节，不代表 100,000 字节已实测。
 - 任务受理后只轮询原任务，不因等待超时重新生成。
 
 Web 出站：
@@ -143,13 +148,13 @@ curl "$BASE_URL/v1/audio/speech" \
 “视频上游错误：未提供错误详情”。没有可验收音频／视频产物。
 未反复生成以掩盖失败，尚不能确认是音色资产映射还是上游能力限制。
 
-### SuperGrok 转 Build：阻塞
+### SuperGrok 转 Build：本地授权成功
 
 通过正式管理接口 `POST /api/admin/v1/accounts/web/convert-to-build`，
 分别选择 SuperGrok 14046 和 14047，`strategy="missing"`。
 两次均未创建或关联 Build 账号；批准 Device Flow 阶段返回 xAI OAuth 403。
 随后只读检查授权页面时遇到人机验证。原 Web 账号保留，没有重置账号或强行改资格。
-数据库中当前没有 `build_super_entitled=true` 的 Build 账号。
+这两次自动转换没有产生 Build 账号。
 
 用户授权手动完成一次验证后，使用账号 14047 和正式 Device OAuth 入口，
 在临时云浏览器打开官方设备登录页。页面处于已登录状态，点击“继续”后，
@@ -159,14 +164,55 @@ curl "$BASE_URL/v1/audio/speech" \
 这属于授权入口拦截，不能用“手动验证完成”描述。未创建 Build 账号，
 本次临时浏览器与 Profile 已关闭并清理，没有改变原 SuperGrok。
 
+随后按用户要求，在本地隔离 Chrome 中使用同一账号 14047 的 SSO，
+通过正式 Device OAuth 登录及授权。SSO 只经内存传输，不写入源码或文档。
+官方页面显示“设备已授权”，服务器正式轮询接口完成加密入库：
+
+- 新 Build 账号 ID：**14049**，`authStatus=active`、`enabled=true`。
+- 原 Web 账号 ID：**14047**，关联已建立，原账号保留。
+- 普通 6 秒视频经正式管理接口成功，任务 `video_A-OlG68x39C9v-AvASJgfa1C`。
+- 视频资产：`vid_G4YCiAz7OFV1YfLDEVNZWJQllJu48Yyq`。
+- 本地临时浏览器已关闭。
+
+### Build 关键帧上游验证
+
+固定使用 Build 账号 14049，直接访问既有 Build 主地址
+`https://cli-chat-proxy.grok.com/v1/videos/generations`，
+沿用该账号 OAuth 和现有 Build 请求头及出口，没有降级到 XAI／Web。
+两张图片分别使用前述湖景 URL，以及
+`https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=1280&q=80`，
+时间戳 2 秒与 4 秒，`duration=6`、720p、16:9。
+Build 主地址每项图片使用 `image: {"image_url":"..."}`。
+
+任务 `15e6ac06-77b8-959d-a48a-f70269274c1b` 完成，MP4 11,255,687 字节，
+1280×720、24fps、H.264＋AAC，视频 6.041667 秒、音轨 6 秒。
+4 秒抽帧呈现第二张湖景参考；2 秒抽帧存在过渡混合，
+所以只能确认请求受理并生成视频，不能声称精确关键帧一致性已全部通过。
+本地结果：`outputs/keyframes-voices-20261016/build-keyframes.mp4`。
+
 ### 超过 4K 提示词
 
 原限制为 Build 主地址 **4096 UTF-8 字节**，不是 4096 个汉字。
-网关总上限和 XAI 分支原有行为未改变。
-没有可用 Super Build 凭据，因此未提交 >4096 字节的 Build 视频请求，
-也没有放开限制。后续应固定 Build 渠道，记录 UTF-8 字节数与字符数，
-先验证普通 6 秒视频，再验证 5000 个 ASCII 字符的 6 秒视频，
-取得真实产物后才调整该上限。
+使用新 Build 账号 14049，直接访问上述 Build 主地址，未经过旧网关的 4096 字节拦截，
+也未切换供应商，分别完成：
+
+| 提示词 | 字符数 | UTF-8 字节 | 上游任务 | 结果 |
+| --- | --- | --- | --- | --- |
+| 英文陶瓷杯场景 | 5000 | 5000 | `7559555e-90ec-98b5-9c5a-2a33281a0f35` | done / 100，MP4 3,279,207 字节 |
+| 中文陶瓷杯场景 | 10000 | 30000 | `6c848681-7ac5-98f6-a439-bd88adf70e6b` | done / 100，MP4 2,466,386 字节 |
+
+中文提示词由以下同一场景描述重复并截取到恰好 10,000 个 Unicode 字符构成，
+用来验证长度，不将重复文字视为复杂提示词语义服从度验证：
+
+> 明亮的摄影棚里，一只白色陶瓷杯放在整洁的木桌上，镜头缓慢向前移动，窗外的自然光照亮杯身，细腻的纹理和柔和的阴影保持真实，背景安静且稳定，不出现文字。
+
+10,000 字符成片已下载并用 ffprobe 核验：1280×720、24fps、H.264＋AAC，
+容器 6.041667 秒，AAC 音轨 6 秒；中间帧为正常陶瓷杯场景。
+产物：`outputs/keyframes-voices-20261016/build-prompt-10000-chars.mp4`。
+
+已按用户要求删除 Build 独有的 4K 限制，与 Web 共用
+`media.MaxVideoPromptBytes=100000`。线上旧镜像尚未更新，
+因此“上游支持”与“生产网关限制已生效”必须分开；后者仍受 CI 发布阻塞。
 
 ## 代码检查与后续验收
 
@@ -180,7 +226,8 @@ curl "$BASE_URL/v1/audio/speech" \
 3. 验证两张 URL 关键帧分别位于 2 秒、4 秒的 6 秒视频；
    下载原任务结果，核对帧位、尺寸、时长与音轨。
 4. 获取 Web 音色列表并实际合成一段短音频，核验音频编码及可听内容。
-5. 完成一个 SuperGrok 的官方 Build 授权后，继续 Build 关键帧和超 4K 验证。
+5. 使用已创建的 Build 账号 14049，通过新网关再复验长提示词，
+   并继续检查关键帧准确时间点，不重复转换账号。
 
 ## 对照来源
 

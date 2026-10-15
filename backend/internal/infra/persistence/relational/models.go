@@ -441,8 +441,8 @@ type mediaJobModel struct {
 	Progress       int     `gorm:"not null;check:chk_media_jobs_progress,progress BETWEEN 0 AND 100"`
 	// InputJSON limit 33554432 must stay equal to media.MaxInputJSONBytes (GORM tags require literals).
 	InputJSON string `gorm:"type:text;not null;default:'{}';check:chk_media_jobs_input_json,length(input_json) <= 33554432"`
-	// InputImageCount upper bound 14 must stay equal to media.MaxPersistedInputImages.
-	InputImageCount *int   `gorm:"check:chk_media_jobs_input_image_count,input_image_count IS NULL OR input_image_count BETWEEN 0 AND 14"`
+	// 参考图 14 张、首尾帧 2 张、关键帧 4 张，共用持久化计数上限。
+	InputImageCount *int   `gorm:"check:chk_media_jobs_input_image_count,input_image_count IS NULL OR input_image_count BETWEEN 0 AND 20"`
 	UpstreamURL     string `gorm:"type:text;not null;default:'';check:chk_media_jobs_upstream_url,length(upstream_url) <= 8192"`
 	ResultAssetID   string `gorm:"size:64;not null;default:'';check:chk_media_jobs_result_asset_id,result_asset_id = '' OR length(trim(result_asset_id)) BETWEEN 16 AND 64"`
 	ContentType     string `gorm:"size:128;not null;default:'';check:chk_media_jobs_content_type,length(content_type) <= 128"`
